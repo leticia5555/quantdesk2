@@ -347,3 +347,115 @@ usa `#0a0a0a` y la mono del sistema — una divergencia que viene de R1. Copié 
 **estructura** del artboard y dejé la paleta de la página: si Mundo estrenara
 otra, se vería como otra app al lado de EE.UU. y México. Migrar la paleta toca
 las tres pestañas y merece su propia rebanada.
+
+---
+
+## R2(b/c) — los cinco de la revisión contra prod (2026-09-29)
+
+### 1. El precio y el % eran de días distintos
+
+`price` es el último precio de mercado y la serie diaria termina en el último
+**cierre**. Cuando la sesión de hoy ya corrió pero su cierre no entró a la
+serie, son de días distintos — y el cuadro mostraba el precio de hoy con el % de
+ayer. El KOSPI: **6,870.81 con −2.70%**, que era el 1D del lunes (6,889.74
+contra 7,080.92). El de hoy era **−0.27%**.
+
+Dos cosas faltaban, y la primera no se podía arreglar sin la segunda:
+
+- **El endpoint no mandaba la fecha del precio.** Ahora `extractMacro` devuelve
+  `precio_t` desde `meta.regularMarketTime`, o `null` si Yahoo no lo manda. Sin
+  ese dato, "¿es más nuevo?" no se puede contestar y no se adivina.
+- **La regla**, en `serieConPrecio`: si `price` es más nuevo que el último
+  punto, entra como el punto de hoy **antes** de calcular; si no, el precio que
+  se muestra es el del último punto y la etiqueta dice su fecha (`6,889.74 ·
+  09-28`).
+
+Y apareció otra: `extractMacro` tenía `series.slice(-70)`, que **dejaba sin
+efecto el `range=1y`** de R2(a) — el fetch pedía un año y el recorte devolvía 70
+puntos, con los que el ancla de fin de año no existe y YTD sale "—". El tope
+ahora es 280 (~252 sesiones más margen).
+
+### 2. El peso tenía dos fuentes en la misma pantalla
+
+El cuadro USD/MXN salía de `MXN=X` de Yahoo y daba **+2.19%** 1D —a esa serie le
+faltaba el 28-sep, así que comparaba 18.1376 contra 17.7487 del 27— mientras la
+conversión a pesos, que usa el FIX, daba **+0.74%**. Dos números del mismo peso,
+uno al lado del otro.
+
+El cuadro pasa a salir del **mismo FIX** que convierte, con su fecha y con
+`fuente: banxico:SF43718`. Si el FIX no llega, el cuadro **no cae a Yahoo**:
+dice por qué no está.
+
+### 3, 4 y 5
+
+- El aviso *"cripto todavía no"* se fue: con Bitcoin en la rejilla era falso, y
+  un aviso falso es peor que ninguno.
+- El chip contaba **cuadros**, no bolsas: el S&P 500 y el Nasdaq 100 son dos
+  cuadros y **una** bolsa, y Nueva York no abre dos veces. Ahora cuenta claves
+  de bolsa sin repetir, y la prueba compara los dos números en vez de fijar una
+  cifra — así no depende de cuántos índices tenga el catálogo.
+- **`^COLCAP` no existe en Yahoo** (comprobado por Lety contra prod). Colombia
+  sale, entra **Chile (`^IPSA`)** con la Bolsa de Santiago y su cruce `CLP=X`.
+
+### Dos detalles de la segunda revisión (2026-09-29)
+
+**El estado de la región salía de otra fecha que el número.** El encabezado de
+Asia decía *"cierre del lunes"* mientras los cuadros mostraban el martes: el
+encabezado miraba `ultimo_cierre` —la última fecha de la **serie**— y los
+cuadros miraban el precio, que desde el arreglo del KOSPI puede ser más nuevo.
+Ahora el cuadro lleva `fecha_dato` —la del número que se está viendo— y de ahí
+salen tanto el chip como el encabezado. `ultimo_cierre` sigue existiendo y sigue
+siendo el último **cierre**: son dos cosas distintas y las dos hacen falta.
+
+**La fecha va SIEMPRE junto al nivel.** Estaba sólo cuando el dato era viejo, o
+sea que quedaban sin fecha justo los más frescos —los de Asia, que ya traían el
+precio de hoy— y había que saber la regla para leer la pantalla.
+
+**Y `^IPSA` costó una ronda que no debió costar.** El símbolo **sí** estaba en
+`MACRO_SYMBOLS`; lo que no se podía decidir desde el cliente era si faltaba por
+el ticker, por Yahoo o por la caché, porque el endpoint **omitía en silencio**
+(`if (!r.ok) return;`). Ahora cada omisión viaja con su razón en `omitidos`, y
+el cuadro gris la repite: *"Yahoo respondió HTTP 404"* se arregla cambiando el
+ticker y *"no se pudo consultar"* no. Sin razón declarada, el cuadro dice que no
+la hay en vez de afirmar una.
+
+### El texto invisible, y lo que la medición dijo de la escala
+
+`qdPctTag` pinta el número de verde o rojo con un `style` en línea — correcto
+sobre fondo oscuro, como en la tira de arriba y en la hoja. Pero en Mundo el
+**fondo ya es verde o rojo**, así que el número salía del mismo color que su
+cuadro. Medido:
+
+| texto | sobre | contraste |
+| :--- | :--- | ---: |
+| rojo `#E24B4A` | rojo claro `#D2635C` | **1.06** |
+| verde `#00c97d` | verde claro `#4CAF7D` | **1.25** |
+
+1.06 es invisible. El arreglo es blanco, como en el mapa de EE.UU., forzado con
+`!important` porque hay que ganarle a un `style` en línea sin tocar el
+calculador compartido que usa toda la app.
+
+**Y la medición dejó un dato que es decisión de diseño, no de código:** con la
+escala del mockup, el blanco **no llega a WCAG AA (4.5)** en tres de los siete
+pasos —`#4CAF7D` da 2.71, `#1E9E5F` 3.44, `#D2635C` 3.70—, y en la corrida con
+el fixture repartido por toda la escala quedan **24 de 51** textos bajo 4.5. Se
+gana legibilidad real con el `text-shadow` que el mapa ya usa, pero un ratio no
+lo ve.
+
+Las dos maneras de llegar a AA, si se quiere:
+
+1. **oscurecer esos tres pasos** de la escala (toca el mapa de EE.UU. también,
+   porque es la misma escala), o
+2. **elegir el color del texto según el fondo** — blanco en los oscuros, casi
+   negro en los claros.
+
+El piso de la prueba quedó en **2.5**: atrapa el bug de verdad (mismo color que
+el fondo da ~1.0) y no convierte una decisión de la escala en un rojo de CI. Y
+`tests/mercado-mapa.test.mjs` fija el otro lado: si alguien aclara un paso de la
+escala, el contraste cae y se pone rojo antes de que se vea en un teléfono.
+
+**Una nota sobre el fixture:** la prueba de contraste pasó la primera vez sin
+haber mirado un solo cuadro de color — la rampa suave dejaba todos los 1D en
+±0.03% y por lo tanto todos los cuadros en el gris de ±0.5%. Una prueba que
+pasa sin tocar el caso que mide es decorativa, así que el fixture ahora reparte
+saltos del último día entre −3.8% y +3.6% y cubre los siete pasos.

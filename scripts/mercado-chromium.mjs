@@ -27,6 +27,9 @@ if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 const require = createRequire(import.meta.url);
 const PW = process.env.PW_PATH || '/tmp/claude-0/-home-user-quantdesk2/978a1f3c-866a-59be-9b12-d16e6c760a3e/scratchpad/node_modules/playwright-core';
 const { chromium } = require(PW);
+// El MISMO calculador que la pantalla (regla 1): la comprobación de la cuenta
+// en pesos no puede traer su propia aritmética del periodo.
+const { qdPeriodChange } = require(join(ROOT, 'qd-periods.js'));
 
 // ── El fixture: un mapa con todo lo que tiene que saberse pintar ───
 // Incluye a propósito un cuadro SIN serie y uno SIN ancla YTD: si el "—" con
@@ -123,7 +126,12 @@ function cuadrosUs() {
 // cruce contra el peso. `^FTSE` llega con UN punto a propósito: sin dos
 // cierres no hay periodo que calcular, y eso tiene que salir como "sin dato
 // con causa" y no como un cuadro de color.
-function serieAnual(base, drift) {
+// `salto` es el movimiento del ÚLTIMO día, en por ciento. Sin él, la rampa
+// suave dejaba todos los 1D en ±0.03% y por lo tanto todos los cuadros en el
+// gris de ±0.5%: la prueba de contraste pasaba sin haber mirado un solo cuadro
+// de color, que es una prueba decorativa. Con el salto, los cuadros cubren los
+// siete pasos de la escala y el contraste se mide donde importa.
+function serieAnual(base, drift, salto) {
   // 365 días, no 260: con 260 la serie arranca en enero y NO alcanza a tocar un
   // cierre del año anterior, así que YTD sale "—" con causa — correcto, pero
   // entonces la prueba no mediría que YTD FUNCIONA, sólo que falla bien. El
@@ -133,37 +141,58 @@ function serieAnual(base, drift) {
   for (let i = 365; i >= 0; i--) {
     pts.push({ t: hoy - i * 86400, c: +(base * (1 + drift * (365 - i) / 365)).toFixed(4) });
   }
+  if (Number.isFinite(salto)) {
+    const prev = pts[pts.length - 2].c;
+    pts[pts.length - 1] = { t: pts[pts.length - 1].t, c: +(prev * (1 + salto / 100)).toFixed(4) };
+  }
   return pts;
 }
 const MACRO = {
   data: {
-    '^GSPC': { price: 6810, currency: 'USD', series: serieAnual(6100, 0.115) },
-    '^NDX': { price: 25100, currency: 'USD', series: serieAnual(22000, 0.14) },
-    '^GSPTSE': { price: 29400, currency: 'CAD', series: serieAnual(28000, 0.05) },
-    '^FCHI': { price: 8100, currency: 'EUR', series: serieAnual(7900, 0.025) },
-    '000001.SS': { price: 3820, currency: 'CNY', series: serieAnual(3500, 0.09) },
-    '^NSEI': { price: 26800, currency: 'INR', series: serieAnual(25200, 0.063) },
-    '^AXJO': { price: 8950, currency: 'AUD', series: serieAnual(8600, 0.04) },
-    // COLCAP a propósito AUSENTE: no pude verificar su ticker, y lo que tiene
-    // que pasar entonces es que el cuadro diga por qué no está.
-    'BTC-USD': { price: 114240, currency: 'USD', series: serieAnual(98000, 0.165) },
-    'MXN=X': { price: 18.21, currency: 'MXN', series: serieAnual(19.4, -0.061) },
-    'GC=F': { price: 3684, currency: 'USD', series: serieAnual(3100, 0.188) },
+    '^GSPC': { price: 6810, currency: 'USD', series: serieAnual(6100, 0.115, 0.8) },
+    '^NDX': { price: 25100, currency: 'USD', series: serieAnual(22000, 0.14, 2.4) },
+    '^GSPTSE': { price: 29400, currency: 'CAD', series: serieAnual(28000, 0.05, 3.6) },
+    '^FCHI': { price: 8100, currency: 'EUR', series: serieAnual(7900, 0.025, -1.2) },
+    '000001.SS': { price: 3820, currency: 'CNY', series: serieAnual(3500, 0.09, -2.6) },
+    '^NSEI': { price: 26800, currency: 'INR', series: serieAnual(25200, 0.063, -3.8) },
+    // `^AXJO` a propósito AUSENTE: lo que tiene que pasar es que el cuadro
+    // diga por qué no está, en vez de desaparecer de la rejilla.
+    // Un símbolo AUSENTE a propósito: lo que tiene que pasar es que el cuadro
+    // diga por qué no está, en vez de desaparecer.
+    'BTC-USD': { price: 114240, currency: 'USD', series: serieAnual(98000, 0.165, 1.9) },
+    // A propósito DISTINTO del FIX: si el cuadro tomara esto, se vería.
+    'MXN=X': { price: 99.99, currency: 'MXN', series: serieAnual(99, 0.5) },
+    'GC=F': { price: 3684, currency: 'USD', series: serieAnual(3100, 0.188, -1.7) },
     'CAD=X': { price: 1.38, currency: 'CAD', series: serieAnual(1.42, -0.028) },
-    'COP=X': { price: 3980, currency: 'COP', series: serieAnual(4200, -0.052) },
     'CNY=X': { price: 7.06, currency: 'CNY', series: serieAnual(7.2, -0.019) },
     'INR=X': { price: 88.4, currency: 'INR', series: serieAnual(86, 0.028) },
     'AUD=X': { price: 1.49, currency: 'AUD', series: serieAnual(1.53, -0.026) },
     '^MXX': { price: 56200, currency: 'MXN', series: serieAnual(52000, 0.08) },
-    '^BVSP': { price: 139000, currency: 'BRL', series: serieAnual(132000, 0.05) },
+    '^BVSP': { price: 139000, currency: 'BRL', series: serieAnual(132000, 0.05, -2.1) },
     'ES=F': { price: 6120, currency: 'USD', series: serieAnual(5800, 0.055) },
     'NQ=F': { price: 22400, currency: 'USD', series: serieAnual(20500, 0.09) },
     'YM=F': { price: 45200, currency: 'USD', series: serieAnual(44000, 0.027) },
-    '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095) },
-    '^FTSE': { price: 9450, currency: 'GBP', series: serieAnual(9100, 0.038) },
-    '^N225': { price: 45800, currency: 'JPY', series: serieAnual(42000, 0.09) },
-    '^KS11': { price: 3480, currency: 'KRW', series: serieAnual(3600, -0.033) },
-    '^HSI': { price: 26100, currency: 'HKD', series: serieAnual(25000, 0.044) },
+    '^GDAXI': { price: 24100, currency: 'EUR', series: serieAnual(22000, 0.095, -0.9) },
+    '^FTSE': { price: 9450, currency: 'GBP', series: serieAnual(9100, 0.038, 0.2) },
+    // Nikkei con el precio de HOY (martes) sobre una serie que termina el
+    // lunes: es el caso que hacía que el encabezado de Asia dijera "cierre del
+    // lunes" mientras los cuadros mostraban martes.
+    '^N225': {
+      price: 45800, precio_t: Date.parse('2026-09-22T06:00:00Z') / 1000, currency: 'JPY',
+      series: serieAnual(42000, 0.09),
+    },
+    // EL CASO DEL KOSPI, con los números que Lety vio en prod el 2026-09-29:
+    // la serie termina el lunes 28 en 6,889.74 (viniendo de 7,080.92 el
+    // viernes) y `price` es 6,870.81, de HOY. El 1D correcto es −0.27%; el que
+    // se mostraba, −2.70%, era el del lunes.
+    '^KS11': {
+      price: 6870.81, precio_t: Date.parse('2026-09-22T06:00:00Z') / 1000, currency: 'KRW',
+      series: serieAnual(6500, 0.06).slice(0, -1).concat([
+        { t: Date.parse('2026-09-18T20:00:00Z') / 1000, c: 7080.92 },
+        { t: Date.parse('2026-09-21T20:00:00Z') / 1000, c: 6889.74 },
+      ]),
+    },
+    '^HSI': { price: 26100, currency: 'HKD', series: serieAnual(25000, 0.044, 2.9) },
     'DX-Y.NYB': { price: 97.4, currency: 'USD', series: serieAnual(99, -0.016) },
     'EURUSD=X': { price: 1.182, currency: 'USD', series: serieAnual(1.16, 0.019) },
     'JPY=X': { price: 148.2, currency: 'JPY', series: serieAnual(150, -0.012) },
@@ -175,6 +204,10 @@ const MACRO = {
     'HKD=X': { price: 7.78, currency: 'HKD', series: serieAnual(7.8, -0.003) },
     'BRL=X': { price: 5.32, currency: 'BRL', series: serieAnual(5.5, -0.033) },
   },
+  // El endpoint dice POR QUÉ falta cada uno: "no llegó" tenía tres causas
+  // indistinguibles desde el cliente (ticker malo, Yahoo caído, respuesta sin
+  // serie) y con `^IPSA` costó una ronda no poder elegir entre ellas.
+  omitidos: { '^AXJO': 'Yahoo respondió HTTP 404' },
   generated_at: '2026-09-21T20:05:00.000Z',
 };
 
@@ -237,16 +270,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/banxico') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
-    // El FIX es DIARIO y sólo de días hábiles. 300 puntos de ~420 días
-    // naturales es lo que Banxico devuelve de verdad, y con eso YTD alcanza.
-    const pts = [];
-    const fin = Date.parse('2026-09-21T12:00:00Z');
-    for (let i = 420; i >= 0; i--) {
-      const d = new Date(fin - i * 86400000);
-      const dow = d.getUTCDay();
-      if (dow === 0 || dow === 6) continue;
-      pts.push({ date: d.toISOString().slice(0, 10), value: +(19.4 * (1 - 0.061 * (420 - i) / 420)).toFixed(4) });
-    }
+    const pts = PUNTOS_FIX;
     return res.end(JSON.stringify({
       series: 'USDMXN', code: 'SF43718', title: 'Tipo de cambio FIX',
       points: pts, latest: pts[pts.length - 1], fetched_at: '2026-09-21T20:00:00.000Z',
@@ -289,6 +313,29 @@ const server = createServer(async (req, res) => {
     res.end(buf);
   } catch { res.writeHead(404); res.end('no'); }
 });
+
+// ── EL FIX DE BANXICO DEL FIXTURE ────────────────────────────────────
+// Es DIARIO y sólo de días hábiles: ~300 puntos en 420 días naturales es lo
+// que Banxico devuelve de verdad, y con eso el ancla de YTD existe.
+//
+// Cae 6.1% en el año (el peso apreciándose contra el dólar) a propósito: con
+// un tipo de cambio plano, "el % en pesos cambió" no probaría nada.
+//
+// Vive acá arriba, y no dentro del servidor, porque la comprobación de la
+// cuenta multiplicativa la recalcula con `qdPeriodChange` —el mismo
+// calculador de la regla 1— en lugar de leerle el resultado a la página.
+const PUNTOS_FIX = (() => {
+  const pts = [];
+  const fin = Date.parse('2026-09-21T12:00:00Z');
+  for (let i = 420; i >= 0; i--) {
+    const d = new Date(fin - i * 86400000);
+    const dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    pts.push({ date: d.toISOString().slice(0, 10), value: +(19.4 * (1 - 0.061 * (420 - i) / 420)).toFixed(4) });
+  }
+  return pts;
+})();
+const SERIE_FIX = PUNTOS_FIX.map((x) => ({ t: Date.parse(x.date + 'T12:00:00Z') / 1000, c: x.value }));
 
 // ── EL RELOJ, FIJO ───────────────────────────────────────────────────
 // El caso que rompió en el teléfono: **lunes 17:00 CT con la tabla al
@@ -356,29 +403,27 @@ try {
     v: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
   }));
   chequeo('sin scroll horizontal a 390 px', !scroll.h);
-  // ── EN CELULAR EL MAPA ES LARGO, A PROPÓSITO ───────────────────────
-  // Hasta el 2026-09-29 esto exigía que el mapa cupiera en una pantalla de
-  // 390px. Con ~550 cuadros, caber significa que el más chico queda en 3px: se
-  // ve, se toca, y no se puede saber de quién es. Decisión de Lety: en celular
-  // el alto es max(2000, ancho × 5) y se recorre. El no-scroll sigue siendo la
-  // regla en escritorio, y se comprueba abajo a 1440×900.
+  // ── EL MAPA CABE EN UNA PANTALLA (como TradingView) ────────────────
+  // Hasta el 2026-10-01 el mapa del celular era LARGO (alto = ancho × 12) y se
+  // recorría. Se fue: "nadie estira el mapa hacia abajo; todos lo dejan en una
+  // pantalla y la letra aparece con el zoom" (Lety, 2026-10-02). Lo que se
+  // comprueba es que NO hay scroll y que el lienzo mide lo que <main> le deja.
   const alto = await p.evaluate(() => {
-    const l = document.getElementById('lienzo');
+    const l = document.getElementById('lienzo').getBoundingClientRect();
+    const m = document.querySelector('main').getBoundingClientRect();
     return {
-      lienzo: Math.round(l.getBoundingClientRect().height),
-      ancho: Math.round(l.getBoundingClientRect().width),
+      lienzo: Math.round(l.height), ancho: Math.round(l.width), main: Math.round(m.height),
       scrollBody: document.documentElement.scrollHeight,
-      marcado: document.body.getAttribute('data-scroll'),
-      // Las constantes salen de la página, no se repiten acá: un número
-      // copiado en dos lados se desincroniza y la prueba mide lo de ayer.
+      pantalla: window.innerHeight,
       k: window.QD_MAPA,
     };
   });
-  chequeo(`en celular el mapa es LARGO: max(${alto.k.ALTO_MIN_MOVIL}, ancho × ${alto.k.FACTOR_ALTO_MOVIL})`,
-    alto.marcado === '1'
-      && alto.lienzo === Math.max(alto.k.ALTO_MIN_MOVIL, Math.round(alto.ancho * alto.k.FACTOR_ALTO_MOVIL)),
+  chequeo('el mapa cabe en UNA pantalla: el lienzo es el alto que deja <main>, y no hay scroll',
+    !scroll.v && alto.lienzo === alto.main && alto.lienzo > 0 && alto.lienzo < alto.pantalla,
     JSON.stringify(alto));
-  chequeo('y la página se recorre en vertical', scroll.v, JSON.stringify(alto));
+  chequeo('ya no existe el mapa largo: ninguna constante de factor de alto',
+    alto.k.FACTOR_ALTO_MOVIL === undefined && alto.k.ALTO_MIN_MOVIL === undefined,
+    JSON.stringify(alto.k));
 
   const taps = await p.evaluate(() => {
     const sel = ['nav button', '.toggle button', '#cerrar'];
@@ -450,14 +495,21 @@ try {
         out.tallas[f] = (out.tallas[f] || 0) + 1;
       }
       if (val) out.conDos++;
-      if (area >= 900) {
+      // EL UMBRAL ES LA GEOMETRÍA DEL TICKER, NO UN ÁREA. Era "≥900px² (30×30)",
+      // que daba por sentado que los cuadros son casi cuadrados. Con el mapa en
+      // una sola pantalla hay astillas —MNST salía de 14×121, o sea 1,694px²—
+      // donde el área sobra y el ANCHO no alcanza: 4 letras a 6px miden 14.45px
+      // con la fuente real y necesitan 16.45px con su margen. Media palabra no
+      // se pinta, así que ir sin letra ahí es correcto.
+      const t = e.getAttribute('aria-label') || '';
+      if (r.width >= t.length * 6 * 0.6022 + 2 && r.height >= 6) {
         out.total++;
-        if (!sym) out.mudos.push({ w: Math.round(r.width), h: Math.round(r.height), aria: e.getAttribute('aria-label') });
+        if (!sym) out.mudos.push({ w: Math.round(r.width), h: Math.round(r.height), aria: t });
       }
     }
     return out;
   });
-  chequeo('ningún cuadro de ≥900px² se queda sin texto',
+  chequeo('ningún cuadro con sitio para su ticker se queda sin texto',
     mudos.mudos.length === 0, `${mudos.mudos.length} de ${mudos.total}: ${JSON.stringify(mudos.mudos.slice(0, 5))}`);
   // Y la fuente escala de verdad: si todas las tallas fueran iguales, seguiría
   // siendo el tamaño fijo con otro número.
@@ -528,12 +580,145 @@ try {
   chequeo('ningún cuadro con sitio para su ticker se queda sin él',
     tickers.deben.length === 0,
     `${tickers.deben.length} tienen sitio y están mudos: ${JSON.stringify(tickers.deben.slice(0, 6))}`);
-  // El número que Lety pidió reportar, con SU regla plana de 14px.
-  chequeo('menos de 20 cuadros caen bajo los 14px de lado',
-    tickers.bajo14 < 20, `${tickers.bajo14} de ${tickers.total}`);
-  console.log(`     ↳ sin ticker: ${tickers.sin} de ${tickers.total} cuadros · `
-    + `${tickers.bajo14} bajo 14px de lado · ${tickers.excepcion} no les cabe su propio ticker a 6px `
-    + `· el más angosto mide ${tickers.anchoMin}px`);
+  // A 1× casi todo el mapa es minúsculo y eso es correcto: en una pantalla de
+  // 390px, 550 cuadros dan 3px de lado. Lo que NO puede pasar es que el mayor
+  // —el que sí tiene sitio de sobra— se quede sin nombre y sin número.
+  const mayor = await p.evaluate(() => {
+    let a = 0, el = null;
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      if (r.width * r.height > a) { a = r.width * r.height; el = e; }
+    }
+    return el && {
+      sym: el.getAttribute('aria-label'),
+      w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height),
+      ticker: (el.querySelector('.sym') || {}).textContent || '',
+      pct: (el.querySelector('.val') || {}).textContent || '',
+    };
+  });
+  chequeo('a 1× el mayor del mapa (el NVDA del fixture) lleva ticker Y %',
+    mayor && mayor.ticker && /%/.test(mayor.pct), JSON.stringify(mayor));
+  console.log(`     ↳ a 1×: sin ticker ${tickers.sin} de ${tickers.total} cuadros · `
+    + `${tickers.bajo14} bajo 14px de lado · el más angosto mide ${tickers.anchoMin}px`);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // EL ZOOM: pellizcar amplía, y la letra aparece conforme hay sitio.
+  //
+  // Los gestos se mandan con dedos de verdad (`Input.dispatchTouchEvent` por
+  // CDP), no llamando a una función de la página: un atajo que saltara el
+  // gesto dejaría sin probar justo lo que se acaba de escribir.
+  // ═══════════════════════════════════════════════════════════════════
+  const cdp = await movil.newCDPSession(p);
+  const dedos = (type, puntos) => cdp.send('Input.dispatchTouchEvent', {
+    type,
+    touchPoints: puntos.map((q, i) => ({ x: q.x, y: q.y, id: i, radiusX: 4, radiusY: 4, force: 1 })),
+  });
+  const caja = await p.evaluate(() => {
+    const r = document.getElementById('lienzo').getBoundingClientRect();
+    return { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+  });
+  const verVista = () => p.evaluate(() => ({ ...window.QD_MAPA.vista, reset: getComputedStyle(document.getElementById('reset')).display }));
+
+  /** Pellizco de `k` veces alrededor del centro del lienzo. */
+  async function pellizcar(k, { soltarUnoPrimero = false } = {}) {
+    const d0 = 60, d1 = 60 * k;
+    await dedos('touchStart', [{ x: caja.cx - d0, y: caja.cy }, { x: caja.cx + d0, y: caja.cy }]);
+    for (let i = 1; i <= 6; i++) {
+      const d = d0 + (d1 - d0) * (i / 6);
+      await dedos('touchMove', [{ x: caja.cx - d, y: caja.cy }, { x: caja.cx + d, y: caja.cy }]);
+    }
+    // Levantar un dedo antes que el otro es lo normal al pellizcar, y es el
+    // caso que hacía que el final pareciera un toque.
+    if (soltarUnoPrimero) await dedos('touchEnd', [{ x: caja.cx - d1, y: caja.cy }]);
+    await dedos('touchEnd', []);
+    await p.waitForTimeout(80);
+  }
+
+  await pellizcar(4);
+  const v4 = await verVista();
+  chequeo('pellizcar amplía: la vista queda en ~4× y aparece el botón ⤢',
+    Math.abs(v4.z - 4) < 0.25 && v4.reset !== 'none', JSON.stringify(v4));
+
+  // EL CRITERIO DE LETY (2026-10-02): "a 4×, contar los cuadros visibles sin
+  // ticker que midan ≥17px en pantalla debe dar 0". Los 17px son la geometría
+  // del ticker más largo: 4 letras a 6px miden 14.45px con la fuente real, más
+  // 1px de margen por lado.
+  const a4 = await p.evaluate(() => {
+    const l = document.getElementById('lienzo').getBoundingClientRect();
+    const out = { visibles: 0, grandes: 0, mudos: [] };
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      // "Visible" es lo que de verdad se ve: un cuadro medio fuera del borde
+      // cuenta por la parte que entra, no por su tamaño completo.
+      const w = Math.min(r.right, l.right) - Math.max(r.left, l.left);
+      const h = Math.min(r.bottom, l.bottom) - Math.max(r.top, l.top);
+      if (w <= 0 || h <= 0) continue;
+      out.visibles++;
+      if (w < 17 || h < 17) continue;
+      out.grandes++;
+      if (!((e.querySelector('.sym') || {}).textContent || '')) {
+        out.mudos.push({ sym: e.getAttribute('aria-label'), w: Math.round(w), h: Math.round(h) });
+      }
+    }
+    return out;
+  });
+  chequeo('a 4×, cero cuadros visibles de ≥17px sin ticker',
+    a4.mudos.length === 0,
+    `${a4.mudos.length} mudos de ${a4.grandes} que miden ≥17px (${a4.visibles} visibles): ${JSON.stringify(a4.mudos.slice(0, 6))}`);
+  await p.screenshot({ path: join(OUT, 'mercado-390-zoom4.png') });
+  console.log(`     → ${join(OUT, 'mercado-390-zoom4.png')}`);
+  chequeo('y ampliar NO repinta el mapa entero: sólo se dibuja lo que se ve',
+    a4.visibles < tickers.total,
+    `${a4.visibles} cuadros en el DOM a 4× contra ${tickers.total} a 1×`);
+
+  // ── UN DEDO MUEVE EL MAPA AMPLIADO ─────────────────────────────────
+  const antesPan = await verVista();
+  await dedos('touchStart', [{ x: caja.cx + 80, y: caja.cy + 80 }]);
+  for (let i = 1; i <= 5; i++) await dedos('touchMove', [{ x: caja.cx + 80 - i * 14, y: caja.cy + 80 - i * 14 }]);
+  await dedos('touchEnd', []);
+  await p.waitForTimeout(80);
+  const traPan = await verVista();
+  chequeo('con un dedo se recorre el mapa ampliado, y el zoom no cambia',
+    traPan.px > antesPan.px && traPan.py > antesPan.py && Math.abs(traPan.z - antesPan.z) < 0.01,
+    `${JSON.stringify(antesPan)} → ${JSON.stringify(traPan)}`);
+  chequeo('y el arrastre NO abre la hoja',
+    (await p.locator('.hoja').getAttribute('data-abierta')) !== '1');
+
+  // ── EL TAP DE UN PELLIZCO NO ABRE NADA ─────────────────────────────
+  // Soltando un dedo antes que el otro, el final del gesto parece un toque:
+  // un dedo abajo, sin movimiento, que se levanta. Es el caso que abría la
+  // hoja de un cuadro cualquiera al terminar de ampliar.
+  await p.locator('#reset').tap();
+  await p.waitForTimeout(80);
+  await pellizcar(2, { soltarUnoPrimero: true });
+  await p.waitForTimeout(400);
+  const trasPellizco = await p.locator('.hoja').getAttribute('data-abierta');
+  chequeo('el tap que cierra un pellizco NO abre la hoja',
+    trasPellizco !== '1', `data-abierta=${trasPellizco}`);
+
+  // ── DOBLE TAP: 2× DONDE SE TOCÓ ────────────────────────────────────
+  await p.locator('#reset').tap();
+  await p.waitForTimeout(80);
+  const antesDoble = await verVista();
+  for (let i = 0; i < 2; i++) {
+    await dedos('touchStart', [{ x: caja.cx, y: caja.cy }]);
+    await dedos('touchEnd', []);
+    await p.waitForTimeout(40);
+  }
+  await p.waitForTimeout(120);
+  const trasDoble = await verVista();
+  chequeo('doble tap amplía 2× y no abre la hoja',
+    Math.abs(trasDoble.z - antesDoble.z * 2) < 0.01
+      && (await p.locator('.hoja').getAttribute('data-abierta')) !== '1',
+    `${antesDoble.z}× → ${trasDoble.z}×`);
+
+  // ── ⤢ VUELVE A 1× ──────────────────────────────────────────────────
+  await p.locator('#reset').tap();
+  await p.waitForTimeout(120);
+  const tras1x = await verVista();
+  chequeo('el botón ⤢ vuelve a 1× y se esconde',
+    tras1x.z === 1 && tras1x.px === 0 && tras1x.py === 0 && tras1x.reset === 'none',
+    JSON.stringify(tras1x));
 
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
   const imgs = await p.evaluate(() => {
@@ -711,8 +896,10 @@ try {
     mundo.regiones.slice(0, 4).map((r) => r.titulo.trim()).join(' | ')
       === 'América | Europa | Asia | Cripto · FX · Materias primas',
     mundo.regiones.map((r) => r.titulo.trim()).join(' · '));
+  // `^AXJO` no está en la lista porque el fixture lo omite A PROPÓSITO: es el
+  // caso de "no llegó → se dice con su causa", que se comprueba más abajo.
   const esperados = ['^GSPC', '^NDX', '^MXX', '^BVSP', '^GSPTSE', '^GDAXI', '^FTSE', '^FCHI',
-    '^N225', '^KS11', '^HSI', '000001.SS', '^NSEI', '^AXJO', 'BTC-USD', 'MXN=X', 'GC=F'];
+    '^N225', '^KS11', '^HSI', '000001.SS', '^NSEI', 'BTC-USD', 'MXN=X', 'GC=F'];
   const symsMundo = mundo.cajas.map((c) => c.sym);
   chequeo('los índices del mockup están, y los cruces de moneda NO ocupan cuadro',
     esperados.every((e) => symsMundo.includes(e))
@@ -748,9 +935,95 @@ try {
     mundo.titular === 'El mundo, ahora' && mundo.sub.length > 8, `${mundo.titular} · ${mundo.sub}`);
 
   // ── REGLA 2 ────────────────────────────────────────────────────────
-  chequeo('COLCAP, que no llegó, sale con su causa en vez de desaparecer',
-    mundo.notas.join(' ').includes('COLCAP') && /no devolvió este símbolo/.test(mundo.notas.join(' ')),
+  chequeo('un símbolo que no llegó sale con la causa QUE DIO EL ENDPOINT',
+    /Yahoo respondió HTTP 404/.test(mundo.notas.join(' '))
+      && !/ni dijo por qué/.test(mundo.notas.join(' ')),
     mundo.notas.join(' | ').slice(0, 160));
+
+  // ── EL ESTADO Y EL NÚMERO, DE LA MISMA FECHA ───────────────────────
+  const asia = mundo.regiones.find((r) => /Asia/.test(r.titulo));
+  const nikkei = mundo.cajas.find((c) => c.sym === '^N225');
+  chequeo('el encabezado de Asia NO dice "cierre del lunes" con los cuadros en martes',
+    !/cierre del lunes/.test(asia.estado), `${asia.estado} · Nikkei ${nikkei.chico}`);
+  // ── EL TEXTO SE TIENE QUE LEER SOBRE SU PROPIO CUADRO ──────────────
+  // `qdPctTag` pinta el número de verde o rojo con un `style` en línea, que es
+  // lo correcto sobre fondo oscuro. Pero en Mundo el FONDO ya es verde o rojo,
+  // así que el número salía del mismo color que su cuadro: el CAC 40 en rojo
+  // sobre rojo daba **1.06 de contraste** —invisible— y el Nasdaq verde sobre
+  // verde, 1.25. El signo ya lo dice el fondo; el texto sólo tiene que leerse.
+  const contraste = await p.evaluate(() => {
+    const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const rgb = (s) => (s.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+    const L = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    const ratio = (a, b) => {
+      const la = L(a), lb = L(b);
+      const [hi, lo] = la > lb ? [la, lb] : [lb, la];
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const filas = [];
+    for (const c of document.querySelectorAll('#mundo .c')) {
+      const fondo = rgb(getComputedStyle(c).backgroundColor);
+      for (const sel of ['.v .qd-pct', '.n', '.l']) {
+        const el = c.querySelector(sel);
+        if (!el || !el.textContent.trim()) continue;
+        filas.push({
+          sym: c.dataset.sym, parte: sel,
+          color: getComputedStyle(el).color,
+          r: Math.round(ratio(rgb(getComputedStyle(el).color), fondo) * 100) / 100,
+        });
+      }
+    }
+    return filas;
+  });
+  const peor = contraste.reduce((a, b) => (b.r < a.r ? b : a));
+  const pctBlancos = contraste.filter((f) => f.parte === '.v .qd-pct');
+  chequeo('el % NO se pinta del color de su propio cuadro: va en blanco',
+    pctBlancos.length > 0 && pctBlancos.every((f) => /rgb\(255, 255, 255\)/.test(f.color)),
+    JSON.stringify(pctBlancos.slice(0, 3)));
+  // El piso es 2.5 y no 4.5 a propósito, y el número de abajo dice por qué: con
+  // la escala del mockup, BLANCO sobre el verde claro (#4CAF7D) da 2.71 y sobre
+  // el rojo claro (#D2635C) da 3.70. Llegar a AA (4.5) pide oscurecer esos tres
+  // pasos o elegir texto oscuro en los claros, y la escala es la del mockup:
+  // es decisión de Lety, no un efecto secundario de esta prueba. Lo que este
+  // piso SÍ atrapa es el bug de verdad — mismo color que el fondo da ~1.0.
+  chequeo('ningún texto queda por debajo de 2.5 de contraste sobre su cuadro',
+    peor.r >= 2.5, `el peor: ${peor.sym} ${peor.parte} ${peor.r} (${peor.color})`);
+  console.log(`     ↳ contraste mínimo ${peor.r} en ${peor.sym} ${peor.parte}`
+    + ` · bajo AA (4.5): ${contraste.filter((f) => f.r < 4.5).length} de ${contraste.length}`);
+
+  chequeo('todos los niveles llevan su fecha, también los de Asia',
+    mundo.cajas.every((c) => / · \d{2}-\d{2}$/.test(c.chico)),
+    JSON.stringify(mundo.cajas.slice(0, 3).map((c) => c.chico)));
+  chequeo('ya no dice "cripto todavía no": Bitcoin está en la rejilla',
+    !/cripto todavía no/.test(mundo.regiones.map((r) => r.estado).join(' '))
+      && symsMundo.includes('BTC-USD'),
+    mundo.regiones.map((r) => r.estado).join(' | ').slice(0, 120));
+
+  // ── EL PRECIO Y EL % SON DEL MISMO DÍA (el caso del KOSPI) ─────────
+  const kospi = mundo.cajas.find((c) => c.sym === '^KS11');
+  chequeo('el KOSPI muestra el % de HOY (−0.27%), no el del lunes (−2.70%)',
+    /-0\.3%|-0\.27%/.test(kospi.grande) && !/-2\.7/.test(kospi.grande),
+    `grande ${kospi.grande} · chico ${kospi.chico}`);
+  chequeo('y su nivel es el precio de hoy, sin fecha vieja pegada',
+    /6,870/.test(kospi.chico), kospi.chico);
+
+  // ── UNA SOLA FUENTE DE VERDAD PARA EL PESO ─────────────────────────
+  const peso = mundo.cajas.find((c) => c.sym === 'MXN=X');
+  chequeo('el cuadro USD/MXN sale del FIX, no de Yahoo',
+    /18\./.test(peso.chico) && !/99/.test(peso.chico) && /FIX/.test(peso.pais),
+    `${peso.pais} · ${peso.chico} · ${peso.grande}`);
+
+  // ── EL CHIP CUENTA BOLSAS, NO ÍNDICES ──────────────────────────────
+  // El S&P 500 y el Nasdaq 100 son dos cuadros y UNA bolsa: Nueva York no abre
+  // dos veces. Con 17 cuadros hay 11 bolsas distintas más los 24h.
+  // El S&P 500 y el Nasdaq 100 son dos cuadros y UNA bolsa: Nueva York no abre
+  // dos veces. Así que las bolsas tienen que ser MENOS que los cuadros que no
+  // son 24h — comparar los dos números es lo que distingue "cuenta bolsas" de
+  // "cuenta cuadros", y no depende de cuántos índices tenga el catálogo.
+  const no24h = mundo.cajas.filter((c) => !['BTC-USD', 'MXN=X', 'GC=F'].includes(c.sym)).length;
+  const enChip = Number((mundo.chip.match(/de (\d+) bolsas/) || [])[1]);
+  chequeo('el chip cuenta BOLSAS, no cuadros (NY tiene dos índices y una bolsa)',
+    Number.isFinite(enChip) && enChip < no24h, `${mundo.chip} · cuadros no-24h: ${no24h}`);
   chequeo('el pie declara la fuente y que el estado es por bolsa',
     /macro-markets/.test(mundo.pie) && /por bolsa, no global/.test(mundo.pie)
       && /Información, no asesoría/.test(mundo.pie), mundo.pie);
@@ -830,6 +1103,104 @@ try {
   chequeo('y YTD da un número de verdad, que es para lo que se subió a range=1y',
     ytd.filter((t) => /YTD/.test(t) && /%/.test(t)).length >= 10,
     `${ytd.filter((t) => /%/.test(t)).length} con número de ${ytd.length}: ${ytd.slice(0, 3).join(' ')}`);
+
+  // ── EL TOGGLE MXN TAMBIÉN EN EL MAPA DE EE.UU. ─────────────────────
+  // En el iPhone NVDA decía +1.7% en Local y +1.7% en MXN: el toggle se
+  // pintaba y no hacía nada. La causa era que el FIX sólo se pedía en la rama
+  // de Mundo, así que en EE.UU. no había con qué convertir.
+  //
+  // Se comprueba lo que se ve: que el NÚMERO cambie, que el COLOR siga al
+  // número en pesos (si el cuadro se pinta por el % en dólares mientras el
+  // número dice pesos, el color miente), y que la cuenta sea la multiplicativa
+  // de `qd-pesos.js` y no la suma.
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=YTD`, { waitUntil: 'networkidle' });
+  const leerUs = () => p.evaluate(() => {
+    const out = {};
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const aria = e.getAttribute('aria-label') || '';
+      const sym = aria.split(' ')[0];
+      out[sym] = { val: (e.querySelector('.val') || {}).textContent || '', color: getComputedStyle(e).backgroundColor, aria };
+    }
+    return {
+      cuadros: out,
+      pie: (document.getElementById('pie') || {}).textContent || '',
+      toggleOculto: document.getElementById('moneda').hidden,
+      botones: [...document.querySelectorAll('#moneda button')].map((b) => b.textContent),
+    };
+  });
+  const usLocal = await leerUs();
+  chequeo('el toggle de moneda se ofrece en EE.UU.',
+    usLocal.toggleOculto === false && usLocal.botones.join('|') === 'Local|MXN', JSON.stringify(usLocal.botones));
+
+  const antesUs = pedidosApi;
+  await p.locator('#moneda button[data-mon="mxn"]').tap();
+  await p.waitForTimeout(250);
+  const usMxn = await leerUs();
+
+  // El FIX del fixture cae 6.1% en el año: en pesos TODO el mapa de EE.UU.
+  // tiene que moverse. Cero cuadros movidos es exactamente el bug de ella.
+  //
+  // Con el mapa en UNA pantalla, el % impreso lo llevan sólo los cuadros
+  // grandes —el resto no tiene sitio hasta que se amplía—, así que el número
+  // se compara en los que lo muestran y el COLOR en todos: el color lo tiene
+  // cada cuadro, lo lleve o no escrito.
+  const symsUs = Object.keys(usLocal.cuadros).filter((k) => /%/.test(usLocal.cuadros[k].val));
+  const movidos = symsUs.filter((k) => usMxn.cuadros[k] && usMxn.cuadros[k].val !== usLocal.cuadros[k].val);
+  chequeo('en MXN el % de los cuadros de EE.UU. cambia (era el bug: +1.7% en las dos)',
+    symsUs.length > 0 && movidos.length === symsUs.length,
+    `${movidos.length} de ${symsUs.length} con % impreso cambiaron`);
+
+  // EL COLOR SIGUE AL NÚMERO EN PESOS. Con el peso apreciándose 6.1%, los
+  // cuadros que estaban apenas en verde cruzan a rojo: si ninguno cambia de
+  // color, el color se está pintando con el número viejo.
+  const recoloreados = symsUs.filter((k) => usMxn.cuadros[k] && usMxn.cuadros[k].color !== usLocal.cuadros[k].color);
+  chequeo('y el color sigue al número en pesos, no al local',
+    recoloreados.length > 0,
+    `${recoloreados.length} cuadros cambiaron de color; ej. ${recoloreados.slice(0, 3).map((k) => `${k} ${usLocal.cuadros[k].val}→${usMxn.cuadros[k].val}`).join(', ')}`);
+
+  chequeo('el pie de EE.UU. declara con qué FIX y de qué fecha se convirtió',
+    /FIX de Banxico \(SF43718\) del \d{4}-\d{2}-\d{2}/.test(usMxn.pie), usMxn.pie);
+  chequeo('el toggle de moneda no vuelve a pedir datos en EE.UU. tampoco',
+    pedidosApi === antesUs, `${pedidosApi - antesUs} peticiones nuevas`);
+
+  // LA CUENTA ES MULTIPLICATIVA. Se recalcula acá desde el local y el FIX que
+  // la propia página tiene, y se compara con el número pintado: si alguien
+  // cambia la fórmula por una suma, el cruzado se pierde y esto lo ve.
+  const rmFix = qdPeriodChange(SERIE_FIX, 'YTD').pct;
+  // El mayor del mapa es el que seguro trae su % impreso a 1×.
+  const refUs = symsUs[0];
+  const rlLocal = parseFloat(String((usLocal.cuadros[refUs] || {}).val || '').replace(/[^\-0-9.]/g, ''));
+  const pintado = parseFloat(String((usMxn.cuadros[refUs] || {}).val || '').replace(/[^\-0-9.]/g, ''));
+  const esperado = ((1 + rlLocal / 100) * (1 + rmFix / 100) - 1) * 100;
+  const suma = rlLocal + rmFix;
+  chequeo('el % en pesos es (1+r_local)(1+r_moneda)−1, no la suma',
+    Number.isFinite(pintado) && Math.abs(pintado - esperado) < 0.1 && Math.abs(esperado - suma) > 0.15,
+    `${refUs}: local ${rlLocal}% · FIX ${rmFix.toFixed(3)}% → pintado ${pintado}% · multiplicativo ${esperado.toFixed(3)}% · suma ingenua ${suma.toFixed(3)}%`);
+
+  // LA HOJA: las dos líneas y el FIX, igual que en Mundo.
+  await p.locator(`.cuadro[aria-label="${refUs}"]`).first().tap();
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaUs = await p.locator('#hojaCuerpo').innerText();
+  chequeo('la hoja de una acción de EE.UU. en pesos trae las dos líneas y su FIX',
+    /rendimiento en pesos/.test(hojaUs) && /cambio local/.test(hojaUs)
+      && /fuente del peso/.test(hojaUs) && /banxico:SF43718 \(FIX del \d{4}-\d{2}-\d{2}\)/.test(hojaUs),
+    hojaUs.slice(0, 260).replace(/\n/g, ' '));
+  chequeo('y el precio dice USD, para que no se lea como pesos',
+    /precio\s+[\d.,]+ USD/.test(hojaUs), hojaUs.slice(0, 200).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
+
+  // ── EN MÉXICO EL TOGGLE NO SE OFRECE ───────────────────────────────
+  // "En la pestaña México, esconde el toggle: esas acciones ya están en
+  // pesos" (Lety). Un botón que no puede hacer nada es un botón que miente.
+  await p.goto(`${BASE}/mercado?mapa=mx&periodo=YTD&moneda=mxn`, { waitUntil: 'networkidle' });
+  const mxTog = await p.evaluate(() => ({
+    oculto: document.getElementById('moneda').hidden,
+    pie: (document.getElementById('pie') || {}).textContent || '',
+  }));
+  chequeo('en México el toggle de moneda está escondido',
+    mxTog.oculto === true, `hidden=${mxTog.oculto}`);
+  chequeo('y el pie de México no habla de ningún FIX: ya está en pesos',
+    !/FIX/.test(mxTog.pie), mxTog.pie);
 
   // ── LA CAUSA DE UN GRIS NO SE INVENTA ──────────────────────────────
   // El 2026-09-26, en el iPhone: ORCL, MNST y APH decían "EDGAR no dio acciones

@@ -62,7 +62,6 @@ const MONEDAS = {
   HKD: { symbol: 'HKD=X', invertir: false },
   BRL: { symbol: 'BRL=X', invertir: false },
   CAD: { symbol: 'CAD=X', invertir: false },
-  COP: { symbol: 'COP=X', invertir: false },
   CNY: { symbol: 'CNY=X', invertir: false },
   INR: { symbol: 'INR=X', invertir: false },
   AUD: { symbol: 'AUD=X', invertir: false },
@@ -88,10 +87,6 @@ const CATALOGO = [
   { symbol: '^MXX', nombre: 'IPC', pais: 'México', region: 'america', bolsa: 'bmv', moneda: 'MXN' },
   { symbol: '^BVSP', nombre: 'Bovespa', pais: 'Brasil', region: 'america', bolsa: 'saopaulo', moneda: 'BRL' },
   { symbol: '^GSPTSE', nombre: 'S&P/TSX', pais: 'Canadá', region: 'america', bolsa: 'toronto', moneda: 'CAD' },
-  // COLCAP: no pude verificar el ticker desde acá (sin salida a Yahoo). Si
-  // `^COLCAP` no existe, el cuadro sale "sin dato" con su causa y se arregla
-  // con un renglón — no se inventa un número ni se esconde el hueco.
-  { symbol: '^COLCAP', nombre: 'COLCAP', pais: 'Colombia', region: 'america', bolsa: 'bogota', moneda: 'COP', sin_verificar: true },
   // ── Europa ──────────────────────────────────────────────────────────
   { symbol: '^GDAXI', nombre: 'DAX', pais: 'Alemania', region: 'europa', bolsa: 'francfort', moneda: 'EUR' },
   { symbol: '^FTSE', nombre: 'FTSE 100', pais: 'Reino Unido', region: 'europa', bolsa: 'londres', moneda: 'GBP' },
@@ -105,7 +100,12 @@ const CATALOGO = [
   { symbol: '^AXJO', nombre: 'ASX 200', pais: 'Australia', region: 'asia', bolsa: 'sidney', moneda: 'AUD' },
   // ── Cripto · FX · Materias primas ───────────────────────────────────
   { symbol: 'BTC-USD', nombre: 'Bitcoin', pais: 'BTC/USD', region: 'otros', bolsa: '24h', moneda: 'USD', tipo: 'precio', prefijo: '$' },
-  { symbol: 'MXN=X', nombre: 'USD/MXN', pais: 'peso', region: 'otros', bolsa: '24h', moneda: 'MXN', tipo: 'precio' },
+  // EL PESO TIENE UNA SOLA FUENTE DE VERDAD. Este cuadro salía de `MXN=X` de
+  // Yahoo y daba +2.19% 1D mientras la conversión a pesos, que usa el FIX de
+  // Banxico, daba +0.74%: dos números del mismo peso en la misma pantalla,
+  // porque a la serie de Yahoo le faltaba un día. El cuadro pasa a salir del
+  // MISMO FIX que convierte, con su fecha.
+  { symbol: 'MXN=X', nombre: 'USD/MXN', pais: 'FIX Banxico', region: 'otros', bolsa: '24h', moneda: 'MXN', tipo: 'precio', desde_fix: true },
   { symbol: 'GC=F', nombre: 'Oro', pais: 'USD/oz', region: 'otros', bolsa: '24h', moneda: 'USD', tipo: 'precio', prefijo: '$' },
   // ── Insumos del rendimiento en pesos: NO ocupan cuadro ──────────────
   { symbol: 'GBPUSD=X', nombre: 'GBP/USD', region: null, bolsa: '24h', moneda: 'USD', solo_insumo: true },
@@ -115,7 +115,6 @@ const CATALOGO = [
   { symbol: 'HKD=X', nombre: 'USD/HKD', region: null, bolsa: '24h', moneda: 'HKD', solo_insumo: true },
   { symbol: 'BRL=X', nombre: 'USD/BRL', region: null, bolsa: '24h', moneda: 'BRL', solo_insumo: true },
   { symbol: 'CAD=X', nombre: 'USD/CAD', region: null, bolsa: '24h', moneda: 'CAD', solo_insumo: true },
-  { symbol: 'COP=X', nombre: 'USD/COP', region: null, bolsa: '24h', moneda: 'COP', solo_insumo: true },
   { symbol: 'CNY=X', nombre: 'USD/CNY', region: null, bolsa: '24h', moneda: 'CNY', solo_insumo: true },
   { symbol: 'INR=X', nombre: 'USD/INR', region: null, bolsa: '24h', moneda: 'INR', solo_insumo: true },
   { symbol: 'AUD=X', nombre: 'USD/AUD', region: null, bolsa: '24h', moneda: 'AUD', solo_insumo: true },
@@ -146,6 +145,55 @@ function ultimoDiaDeSerie(serie = []) {
   return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null;
 }
 
+/** El día UTC de un timestamp en segundos, o null. */
+function diaDe(t) {
+  const n = numMundo(t);
+  if (n == null) return null;
+  const d = new Date(n * 1000);
+  return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+}
+
+/**
+ * EL PRECIO Y EL % TIENEN QUE SER DEL MISMO DÍA.
+ *
+ * `price` es el último precio de mercado y la serie diaria termina en el
+ * último CIERRE. Cuando la sesión de hoy ya corrió pero su cierre todavía no
+ * entró a la serie, son de días distintos — y el cuadro mostraba el precio de
+ * HOY con el % de AYER. El KOSPI: 6,870.81 de hoy con −2.70%, que era el 1D del
+ * lunes (6,889.74 contra 7,080.92); el de hoy era −0.27%.
+ *
+ * La regla de Lety, 2026-09-29:
+ *
+ *   · si `price` es MÁS NUEVO que el último punto → entra como el punto de hoy
+ *     antes de calcular, y el % pasa a ser el de hoy;
+ *   · si no → el precio que se muestra es el del último punto, y la etiqueta
+ *     dice de qué fecha es.
+ *
+ * Sin `precio_t` no se adivina: se usa el último cierre y se dice su fecha,
+ * que es la mitad segura de la regla.
+ */
+function serieConPrecio(serie = [], precio, precioT) {
+  const ultimo = serie.length ? serie[serie.length - 1] : null;
+  const diaUltimo = ultimo ? diaDe(ultimo.t) : null;
+  const diaPrecio = diaDe(precioT);
+  const px = numMundo(precio);
+
+  if (px != null && diaPrecio && diaUltimo && diaPrecio > diaUltimo) {
+    return {
+      serie: serie.concat([{ t: numMundo(precioT), c: px }]),
+      precio: px, precio_fecha: diaPrecio, precio_es_de_hoy: true,
+    };
+  }
+  // El precio que se muestra es el del último cierre: mostrar el de mercado
+  // junto a un % que no lo incluye es pintar dos días como si fueran uno.
+  return {
+    serie,
+    precio: ultimo ? ultimo.c : px,
+    precio_fecha: diaUltimo,
+    precio_es_de_hoy: false,
+  };
+}
+
 /**
  * La rejilla de Mundo a partir de la respuesta de `/api/macro-markets`.
  *
@@ -154,18 +202,34 @@ function ultimoDiaDeSerie(serie = []) {
  * que es la regla 2: un símbolo que el endpoint no devolvió no es un cuadro
  * ausente, es un cuadro que dice por qué no está.
  */
-function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {}) {
+function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES, fix = null, omitidos = {} } = {}) {
   const faltantes = [];
   const porRegion = new Map(regiones.map((r) => [r.clave, []]));
 
   for (const c of catalogo) {
     if (c.solo_insumo || !c.region) continue;
-    const d = data[c.symbol];
+    // El cuadro del peso NO sale de Yahoo: sale del MISMO FIX que convierte a
+    // pesos. Dos fuentes para el peso en la misma pantalla es dos verdades.
+    const d = c.desde_fix
+      ? (fix && Array.isArray(fix.serie) && fix.serie.length >= 2
+        ? { price: fix.valor, precio_t: null, currency: 'MXN', series: fix.serie, fuente: 'banxico:SF43718', fecha_fix: fix.fecha }
+        : null)
+      : data[c.symbol];
     const serie = (d && Array.isArray(d.series)) ? d.series : [];
     const precio = numMundo(d && d.price);
 
     if (!d) {
-      faltantes.push({ symbol: c.symbol, nombre: c.nombre, motivo: 'el endpoint no devolvió este símbolo' });
+      if (c.desde_fix) {
+        faltantes.push({ symbol: c.symbol, nombre: c.nombre, motivo: (fix && fix.motivo) || 'no llegó el FIX de Banxico' });
+        continue;
+      }
+      // La razón la da el endpoint cuando la tiene: "Yahoo respondió HTTP 404"
+      // se arregla cambiando el ticker, y "no se pudo consultar" no. Sin razón
+      // declarada, se dice eso y no una inventada.
+      faltantes.push({
+        symbol: c.symbol, nombre: c.nombre,
+        motivo: omitidos[c.symbol] || 'el endpoint no devolvió este símbolo ni dijo por qué',
+      });
       continue;
     }
     if (precio == null) {
@@ -181,6 +245,7 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {})
     }
 
     const monedaReal = d.currency ? String(d.currency).toUpperCase() : null;
+    const px = serieConPrecio(serie, precio, d.precio_t);
     porRegion.get(c.region).push({
       symbol: c.symbol,
       nombre: c.nombre,
@@ -191,16 +256,28 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {})
       prefijo: c.prefijo || '',
       bolsa: c.bolsa,
       es24h: c.bolsa === '24h',
-      precio,
+      precio: px.precio,
+      precio_fecha: px.precio_fecha,
+      precio_es_de_hoy: px.precio_es_de_hoy,
+      // LA FECHA DEL DATO QUE SE ESTÁ MOSTRANDO, que no siempre es la del
+      // último cierre: cuando el precio de hoy entró a la serie, el número que
+      // se ve es de hoy. El encabezado de la región decía "cierre del lunes"
+      // mientras los cuadros mostraban martes, porque miraba `ultimo_cierre` y
+      // los cuadros miraban el precio. El estado sale de la MISMA fecha que el
+      // número.
+      fecha_dato: px.precio_fecha || ultimoDiaDeSerie(serie),
       // La moneda que manda es la que declaró la fuente. La esperada viaja al
       // lado para poder decirlo cuando no coinciden, en vez de elegir una.
       moneda: monedaReal,
       moneda_esperada: c.moneda,
       moneda_discrepa: monedaReal != null && monedaReal !== c.moneda,
-      serie,
-      puntos: serie.length,
+      // La serie con la que se calcula el %: lleva el precio de hoy pegado
+      // cuando es más nuevo que el último cierre.
+      serie: px.serie,
+      puntos: px.serie.length,
       ultimo_cierre: ultimoDiaDeSerie(serie),
-      fuente: 'yahoo:v8/chart',
+      fuente: d.fuente || 'yahoo:v8/chart',
+      fecha_fix: d.fecha_fix || null,
     });
   }
 
@@ -208,9 +285,9 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {})
     regiones: regiones.map((r) => ({
       ...r,
       cuadros: porRegion.get(r.clave) || [],
-      // Cripto todavía no tiene ni un símbolo en el endpoint. Se dice en la
-      // región, no se deja el hueco mudo.
-      aviso: r.clave === 'otros' ? 'cripto todavía no: no hay ni un símbolo de cripto en la fuente' : null,
+      // El aviso de "cripto todavía no" se fue con Bitcoin: ya está en la
+      // rejilla, así que decirlo sería falso.
+      aviso: null,
     })),
     faltantes,
     solo_insumo: SOLO_INSUMO,
@@ -219,5 +296,6 @@ function armaMundo({ data = {}, catalogo = CATALOGO, regiones = REGIONES } = {})
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { REGIONES, CATALOGO, MONEDAS, TIRA, SOLO_INSUMO, ultimoDiaDeSerie, armaMundo };
+  module.exports = { REGIONES, CATALOGO, MONEDAS, TIRA, SOLO_INSUMO,
+    ultimoDiaDeSerie, diaDe, serieConPrecio, armaMundo };
 }

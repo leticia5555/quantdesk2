@@ -43,7 +43,7 @@ export const MACRO_SYMBOLS = [
   // moneda, el S&P/TSX, el COLCAP, Shanghái, el Nifty y el ASX no pueden
   // convertirse a pesos y su cuadro diría "—" con causa. Todos en la forma
   // "unidades por dólar", igual que JPY=X.
-  'CAD=X', 'COP=X', 'CNY=X', 'INR=X', 'AUD=X',
+  'CAD=X', 'CNY=X', 'INR=X', 'AUD=X',
   'CL=F', 'BZ=F',               // commodities: WTI, Brent
   '^N225', '^KS11', '^HSI',     // Asia
   '^GDAXI', '^FTSE',            // Europa
@@ -58,10 +58,11 @@ export const MACRO_SYMBOLS = [
   '000001.SS',                  // China — Shanghai Composite
   '^NSEI',                      // India — Nifty 50
   '^AXJO',                      // Australia — ASX 200
-  // COLCAP va aparte: no pude verificar su ticker desde este contenedor (sin
-  // salida a Yahoo). Si `^COLCAP` no existe, el cuadro sale "sin dato" con su
-  // causa en vez de desaparecer, y se corrige con un renglón.
-  '^COLCAP',
+  // SUDAMÉRICA SE QUEDA EN BRASIL. `^COLCAP` no existe en Yahoo, y `^IPSA`
+  // tampoco: los dos devolvieron 404, comprobados por Lety contra producción
+  // (2026-09-29 y 2026-10-02). Se fueron el índice y su cruce `CLP=X`, que ya
+  // no convierte nada. No se sustituyen por un ticker parecido: un índice que
+  // no se pudo comprobar no entra al mapa.
   // Cripto, FX y materias primas de la última región del mockup.
   'BTC-USD',                    // Bitcoin — Lety confirmó que Yahoo lo tiene
   'MXN=X',                      // USD/MXN de mercado, para el CUADRO. La
@@ -122,9 +123,19 @@ export function extractMacro(chartJson) {
 
   return {
     price: sig6(price),
+    // ── LA FECHA DEL PRECIO, QUE FALTABA ────────────────────────────────
+    // `price` es el último precio de mercado y la serie diaria termina en el
+    // último CIERRE: cuando la sesión de hoy ya corrió pero el cierre todavía
+    // no entró a la serie, son de días distintos. Sin este timestamp no hay
+    // manera de saberlo, y el cliente terminaba mostrando el precio de hoy con
+    // el % de ayer — el KOSPI en 6,870.81 con el −2.70% del lunes.
+    precio_t: Number.isFinite(meta.regularMarketTime) ? meta.regularMarketTime : null,
     currency: meta.currency || null,
-    // ~3 meses de diario (~66 sesiones) alcanza para 1S/1M/3M holgado.
-    series: series.slice(-70),
+    // Un AÑO de diario, no ~3 meses. Esto estaba en `slice(-70)` y dejaba sin
+    // efecto el `range=1y`: el fetch pedía un año y el recorte devolvía 70
+    // puntos, con los que el ancla de fin de año no existe y YTD sale "—".
+    // 280 = las ~252 sesiones de un año más margen.
+    series: series.slice(-280),
   };
 }
 
@@ -135,19 +146,33 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const data = {};
+  // POR QUÉ FALTA UN SÍMBOLO. Antes se omitía en silencio, y desde el cliente
+  // "no llegó" tenía tres causas indistinguibles: el ticker no existe, Yahoo
+  // falló, o la respuesta vino sin serie utilizable. Con `^IPSA` costó una
+  // ronda entera no poder decidir entre "ticker malo" y "caché vieja". Ahora
+  // cada omisión viaja con su razón, y el cuadro gris puede decirla.
+  const omitidos = {};
   await Promise.all(MACRO_SYMBOLS.map(async (sym) => {
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=${RANGO}&interval=1d`;
       const r = await fetch(url, { headers: UA });
-      if (!r.ok) return;
+      if (!r.ok) {
+        // 404 = el ticker no existe en Yahoo. 429 = nos frenaron. Son cosas
+        // distintas y se arreglan distinto.
+        omitidos[sym] = `Yahoo respondió HTTP ${r.status}`;
+        return;
+      }
       const m = extractMacro(await r.json());
       if (m) data[sym] = m;
-    } catch (e) { /* símbolo omitido → el cliente conserva/omite la tarjeta */ }
+      else omitidos[sym] = 'Yahoo contestó 200 pero sin precio o con menos de 2 cierres';
+    } catch (e) {
+      omitidos[sym] = `no se pudo consultar: ${String((e && e.message) || e)}`;
+    }
   }));
 
   // Caché CDN compartida: 1 request por ventana para toda la base de
   // usuarios. TTL corto — es un dashboard, no un motor de fills.
   res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=300');
   // Siempre 200: un símbolo ausente es "sin dato", no un error global.
-  return res.status(200).json({ data, generated_at: new Date().toISOString() });
+  return res.status(200).json({ data, omitidos, generated_at: new Date().toISOString() });
 }

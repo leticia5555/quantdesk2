@@ -31,8 +31,8 @@ test('las bolsas del mapa están, con zona IANA y horario', () => {
   // una sea una decisión y no un efecto secundario.
   assert.deepEqual(
     Object.keys(BOLSAS).sort(),
-    ['bmv', 'bogota', 'francfort', 'hongkong', 'londres', 'mumbai', 'nyse',
-      'paris', 'saopaulo', 'seul', 'shanghai', 'sidney', 'tokio', 'toronto'],
+    ['bmv', 'francfort', 'hongkong', 'londres', 'mumbai', 'nyse', 'paris',
+      'santiago', 'saopaulo', 'seul', 'shanghai', 'sidney', 'tokio', 'toronto'],
   );
   for (const [k, b] of Object.entries(BOLSAS)) {
     assert.match(b.zona, /^[A-Za-z]+\/[A-Za-z_]+$/, `${k}: zona IANA`);
