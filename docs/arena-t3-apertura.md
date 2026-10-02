@@ -9,6 +9,31 @@ aprieta el MISMO día de la recarga.**
 
 > ## LA PUERTA DEL HUMO, POR ESCRITO Y ANTES
 >
+> ### LO QUE EL HUMO **NO** PRUEBA — un hueco declarado
+>
+> `/api/arena-smoke` corre con `"portfolio": "stand_in"`: **$100k en efectivo,
+> cero posiciones, sin leer Alpaca.** Es el caso LIGERO, no el pesado.
+>
+> Yo había dicho que correría con los libros de la T2 cargados. Era al revés.
+>
+> **No lo invalida, y por una razón concreta:** después del reset, el día 1 ES
+> una cartera vacía. El humo representa el día 1 exacto.
+>
+> **Pero no representa el día 10 con 26 posiciones**, que es un prompt bastante
+> más pesado: el libro entra en el contexto, y el contexto es lo que hace
+> lentas a las llamadas. Si un agente va a morir por tamaño de prompt, el humo
+> no lo va a ver.
+>
+> **Criterio de apertura, con el hueco adentro:** *verificado para el día 1; la
+> carga de un libro lleno NO está probada.* Lo que sí hay para cuando llegue
+> ese día: `vueltas_medidas` journalea el tiempo de lectura de cada vuelta en
+> cada corrida viva, así que la degradación se ve venir en vez de aparecer como
+> un aborto.
+>
+> *(La corrida de SOMBRA, `/api/arena-shadow`, sí lee el libro real — pero
+> después del reset ese libro está vacío, así que tampoco cubre el caso
+> pesado.)*
+
 > **El humo NO necesita que se levante el halt.** Verificado en el código y
 fijado en `tests/arena-halt-sombra.test.mjs`: el chequeo vive dentro de
 `runAgenteObjetivo` pero **atado a `vivo`**, y `/api/arena-shadow` fuerza

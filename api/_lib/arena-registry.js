@@ -139,10 +139,6 @@ export const ANTHROPIC_CACHE_MIN_TOKENS = (() => {
 // Anthropic. Los 180s eran directamente imposibles de honrar — triplicaban el
 // cap real de 60s que vercel.json imponía, así que el fetch nunca llegaba a
 // abortar por su cuenta: lo mataba la función antes, sin dejar rastro.
-export const ARENA_LLM_TIMEOUT_MS = (() => {
-  const n = Number(process.env.ARENA_LLM_TIMEOUT_MS);
-  return Number.isFinite(n) && n >= 5000 && n <= 280000 ? Math.floor(n) : 90000;
-})();
 
 // ── DE DÓNDE SALIÓ EL TECHO ──────────────────────────────────────────
 // Un timeout journaleado como "se pasó de 15s" no dice CUÁL reloj puso ese 15.
@@ -152,13 +148,6 @@ export const ARENA_LLM_TIMEOUT_MS = (() => {
 //
 // Sin esta línea, las dos se ven idénticas en el journal — y la primera vez que
 // pasó costó una ronda viva averiguarlo a mano.
-export const ARENA_LLM_TIMEOUT_ORIGEN = (() => {
-  const crudo = process.env.ARENA_LLM_TIMEOUT_MS;
-  const n = Number(crudo);
-  if (crudo == null || crudo === '') return 'default del código (90s)';
-  if (Number.isFinite(n) && n >= 5000 && n <= 280000) return `env ARENA_LLM_TIMEOUT_MS=${crudo}`;
-  return `env ARENA_LLM_TIMEOUT_MS=${crudo} IGNORADA (fuera del rango 5s-280s) → default del código (90s)`;
-})();
 
 // ── Y SI ESE TECHO ES DEMASIADO CHICO PARA PENSAR ────────────────────
 // El piso no es una opinión de estilo: una llamada del DIVE con razonamiento
@@ -245,7 +234,68 @@ const slug = (id, fallback) => process.env['ARENA_MODEL_' + id] || fallback;
 // fases (SCAN → DEEP DIVE); v1, un solo LLM call sobre el buffet. El bump
 // permite cortar el post-mortem por temporada: las métricas de T1, T2 y T3 NO
 // son comparables porque cambió el reglamento.
-export const PROMPT_VERSION = 'arena-pm-v3-t2';
+
+// ── ORDEN DEL ARCHIVO: ESTO VA DESPUÉS DEL DEADLINE ─────────────────
+// Se escribió arriba primero y reventó con
+// `Cannot access 'ARENA_AGENT_DEADLINE_MS' before initialization` — un `const`
+// leído antes de su línea, que es exactamente lo de B49 pero dentro de UN
+// archivo en vez de entre dos. Acá abajo el orden es correcto y la prueba de
+// relojes verifica la derivación.
+
+// ── DE DÓNDE SALE EL TECHO POR LLAMADA (2026-10-01) ─────────────────
+// Antes era `90000` escrito a mano, justificado contra el `maxDuration` de la
+// función: "con 300s y agentes en paralelo, 90s deja aire de sobra". Ése era
+// el límite que apretaba cuando se eligió, y ya no lo es.
+//
+// Hoy el que aprieta es el PRESUPUESTO DEL LOOP, y la pregunta correcta es
+// cuántas vueltas tiene que poder dar un agente. Un techo por llamada que se
+// come el loop entero no es un techo: es el loop.
+//
+//   presupuesto del loop (sin scan) = deadline − cierre − margen = 185s
+//   techo = 185s / VUELTAS_MINIMAS
+//
+// VUELTAS_MINIMAS = 2 → 92.5s, que es de donde salía el 90 por casualidad.
+// Se deja en 2 Y NO EN 3 por una razón, no por inercia: con 3 el techo baja a
+// ~61s, y DeepSeek tuvo lecturas observadas de 57s. Un techo a 61s lo deja a
+// cuatro segundos de morir sistemáticamente, con una muestra de tres puntos.
+//
+// **Y el techo NO limita el número de vueltas.** El loop sigue dando vueltas
+// hasta que se acaba el reloj: con vueltas de 25s entran cinco o seis, con
+// techo de 90s o sin él. Lo único que el techo hace es truncar una llamada
+// patológica. Por eso subir VUELTAS_MINIMAS no compra más investigación en el
+// caso normal — compra que una llamada colgada no se coma el presupuesto.
+//
+// LO QUE MOVERÍA ESTE NÚMERO: la tabla de lecturas de la corrida de humo. Si
+// el máximo de los siete queda holgadamente bajo 60s, VUELTAS_MINIMAS sube a
+// 3 y el techo baja. Si DeepSeek vuelve a dar 57s, se queda en 2.
+export const VUELTAS_MINIMAS = (() => {
+  const n = Number(process.env.ARENA_VUELTAS_MINIMAS);
+  return Number.isFinite(n) && n >= 1 && n <= 10 ? Math.floor(n) : 2;
+})();
+
+// El presupuesto del loop del contrato OBJETIVO, que es el único que corre.
+// Se calcula acá y no se importa de `_lib/arena-tool-loop.js` porque ese
+// módulo importa de éste: la resta es la misma y vive en `relojDisponible`,
+// que la verifica contra este valor en `tests/arena-reparto-reloj.test.mjs`.
+export const ARENA_LOOP_OBJETIVO_MS = ARENA_AGENT_DEADLINE_MS - 70000 - 15000;
+
+export const ARENA_LLM_TIMEOUT_MS = (() => {
+  const n = Number(process.env.ARENA_LLM_TIMEOUT_MS);
+  if (Number.isFinite(n) && n >= 5000 && n <= 280000) return Math.floor(n);
+  return Math.floor(ARENA_LOOP_OBJETIVO_MS / VUELTAS_MINIMAS);
+})();
+
+export const ARENA_LLM_TIMEOUT_ORIGEN = (() => {
+  const crudo = process.env.ARENA_LLM_TIMEOUT_MS;
+  const n = Number(crudo);
+  // El texto dice la DERIVACIÓN, no un número pegado: decía "default del
+  // código (90s)" cuando el valor ya se derivaba, y un origen que miente es
+  // peor que no tenerlo — es el campo que existe para diagnosticar.
+  const derivado = `derivado: loop ${Math.round(ARENA_LOOP_OBJETIVO_MS / 1000)}s ÷ ${VUELTAS_MINIMAS} vueltas mínimas`;
+  if (crudo == null || crudo === '') return derivado;
+  if (Number.isFinite(n) && n >= 5000 && n <= 280000) return `env ARENA_LLM_TIMEOUT_MS=${crudo}`;
+  return `env ARENA_LLM_TIMEOUT_MS=${crudo} IGNORADA (fuera del rango 5s-280s) → ${derivado}`;
+})();
 
 export const FLAGSHIP_AGENT_ID = 'claude';
 
@@ -590,6 +640,19 @@ export function temporadaEfectiva(inicioReal = null, season = ARENA_SEASON) {
       : 0,
   };
 }
+
+// ── LA VERSIÓN LLEVA LA TEMPORADA, Y SE DERIVA ──────────────────────
+// Decía `arena-pm-v3-t2` con la T3 corriendo. Es cosmético hasta el día que
+// alguien audite: el hash de narración y el post-mortem cortan por esta
+// cadena, así que las corridas de la T3 habrían quedado firmadas como T2 y el
+// corte entre temporadas habría salido en el lugar equivocado.
+//
+// Se DERIVA de `ARENA_SEASON.id` en minúsculas: una temporada nueva ya no
+// puede olvidarse de bumpearla. El `v3` sí es manual — marca el flujo (tres
+// rondas fijas + matutina por evento) y cambia cuando cambia el flujo, no
+// cuando cambia la temporada.
+export const PROMPT_FLUJO = 'arena-pm-v3';
+export const PROMPT_VERSION = `${PROMPT_FLUJO}-${ARENA_SEASON.id.toLowerCase()}`;
 
 export function seasonStatus(now = new Date(), season = ARENA_SEASON) {
   const today = easternToday(now);

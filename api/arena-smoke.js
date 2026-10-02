@@ -85,9 +85,9 @@ import {
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
   ANTHROPIC_CACHE_MIN_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ARENA_AGENT_DEADLINE_MS,
-  techoLlmSospechoso,
+  techoLlmSospechoso, VUELTAS_MINIMAS,
 } from './_lib/arena-registry.js';
-import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS } from './_lib/arena-tool-loop.js';
+import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS, relojDisponible } from './_lib/arena-tool-loop.js';
 
 // ── LOS RELOJES, EN UN SOLO LUGAR Y CON SU ORIGEN ────────────────────
 // Cuatro techos distintos gobiernan una corrida y viven en tres archivos:
@@ -101,18 +101,46 @@ import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS } from './_lib/arena-tool-
 // ronda viva, y ahí se lee como "el proveedor se cayó".
 export function relojesEfectivos() {
   const aviso = techoLlmSospechoso();
+  // ── REPORTAR EL CAMINO QUE CORRE, NO EL RETIRADO (2026-10-01) ─────
+  // Esto reportaba `LOOP_BUDGET_MS` = 95s, que es el presupuesto del contrato
+  // de ACCIONES: `relojDisponible({ scanMs: ARENA_LLM_TIMEOUT_MS })`, o sea
+  // descontando una fase de SCAN de 90s. **El contrato objetivo no tiene
+  // scan** y corre con `relojDisponible({ scanMs: 0 })` = 185s.
+  //
+  // Leído desde afuera, el catálogo decía "una llamada de 90s dentro de un
+  // loop de 95s" — un techo que es el 95% del loop, que es absurdo y motivó
+  // (con razón) frenar la corrida de humo. El sistema no estaba así: el
+  // número era de un contrato que no corre desde hace semanas.
+  //
+  // Se publican LOS DOS, etiquetados. El del camino vivo primero.
+  const loopVivo = relojDisponible({ scanMs: 0 });
   return {
     una_llamada_ms: ARENA_LLM_TIMEOUT_MS,
     una_llamada_origen: ARENA_LLM_TIMEOUT_ORIGEN,
-    loop_herramientas_ms: LOOP_BUDGET_MS,
+    // EL QUE CORRE.
+    loop_herramientas_ms: loopVivo,
+    loop_contrato: 'objetivo (sin fase de scan)',
+    // El del contrato retirado, para que un número viejo en una captura de
+    // pantalla se pueda identificar en vez de confundir.
+    loop_contrato_acciones_ms: LOOP_BUDGET_MS,
     reserva_cierre_ms: RESERVA_CIERRE_MS,
     margen_ms: MARGEN_MS,
     deadline_agente_ms: ARENA_AGENT_DEADLINE_MS,
     funcion_max_duration_s: 300,
-    // La cuenta que tiene que cerrar, escrita: si no cierra, el agente muere
-    // sin journalear y eso es indistinguible de una corrida que nunca ocurrió.
-    cuenta: `loop ${Math.round(LOOP_BUDGET_MS / 1000)}s + cierre ${Math.round(RESERVA_CIERRE_MS / 1000)}s + margen ${Math.round(MARGEN_MS / 1000)}s = ${Math.round((LOOP_BUDGET_MS + RESERVA_CIERRE_MS + MARGEN_MS) / 1000)}s contra un deadline de ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s`,
-    cuenta_ok: LOOP_BUDGET_MS + RESERVA_CIERRE_MS + MARGEN_MS <= ARENA_AGENT_DEADLINE_MS,
+    // ── LAS TRES CUENTAS QUE TIENEN QUE CERRAR ──────────────────────
+    cuenta: `loop ${Math.round(loopVivo / 1000)}s + cierre ${Math.round(RESERVA_CIERRE_MS / 1000)}s + margen ${Math.round(MARGEN_MS / 1000)}s = ${Math.round((loopVivo + RESERVA_CIERRE_MS + MARGEN_MS) / 1000)}s contra un deadline de ${Math.round(ARENA_AGENT_DEADLINE_MS / 1000)}s`,
+    // IGUALDAD, no `<=`. El `<=` verifica que el presupuesto QUEPA, que es la
+    // propiedad débil: encogerlo a la mitad también pasa. Si sobra tiempo del
+    // deadline, es tiempo de investigación que nadie está usando — un bug, no
+    // holgura.
+    cuenta_ok: loopVivo + RESERVA_CIERRE_MS + MARGEN_MS === ARENA_AGENT_DEADLINE_MS,
+    sobrante_ms: ARENA_AGENT_DEADLINE_MS - (loopVivo + RESERVA_CIERRE_MS + MARGEN_MS),
+    // Y LA RELACIÓN QUE FALTABA: el techo por llamada tiene que caber VARIAS
+    // veces en el loop. Un techo que es el loop no es un techo.
+    vueltas_minimas: VUELTAS_MINIMAS,
+    techo_cabe_veces: +(loopVivo / ARENA_LLM_TIMEOUT_MS).toFixed(2),
+    techo_ok: ARENA_LLM_TIMEOUT_MS * VUELTAS_MINIMAS <= loopVivo,
+    nota_techo: `el techo por llamada se DERIVA: ${Math.round(loopVivo / 1000)}s de loop ÷ ${VUELTAS_MINIMAS} vueltas mínimas = ${Math.round(ARENA_LLM_TIMEOUT_MS / 1000)}s. No limita cuántas vueltas se dan —el loop sigue hasta que se acaba el reloj— solo trunca una llamada patológica.`,
     ...(aviso ? { aviso } : {}),
   };
 }

@@ -94,6 +94,52 @@ export function comparteEnfoqueCon(agentId) {
   return ENFOQUE_HEREDADO[String(agentId || '').toLowerCase()] || null;
 }
 
+// ── LA REJILLA COMPLETA DE LA TEMPORADA, CALCULABLE DE ANTEMANO ─────
+// La rotación es determinista: `enfoqueDelDia` solo depende del agente y del
+// día en hora de NUEVA YORK. Así que una vez que el reset escribe el inicio,
+// la asignación entera de los N días × 7 agentes se puede calcular ANTES de
+// que corra la primera ronda.
+//
+// Publicarla en el anuncio de apertura cierra una discusión antes de que
+// exista: nadie puede alegar después que el calendario favoreció a alguien,
+// porque estaba público desde el día 1.
+//
+// Y el CONTEO es la parte que importa. Con 22 sesiones y 4 enfoques,
+// 22 % 4 = 2: dos enfoques salen 6 veces y dos salen 5, **se ancle donde se
+// ancle**. Mover el inicio cambia CUÁLES, no que exista el desbalance. Por
+// eso no se "arregla" anclando al día 1 —sería un cambio que parece arreglo y
+// no lo es— y en cambio se cuantifica y se publica.
+//
+// Solo días hábiles: un sábado no tiene corrida, y contarlo inflaría el
+// reparto con días que no existen.
+export function rejillaDeEnfoques(start, end, agentes) {
+  const dias = [];
+  for (let t = Date.parse(start + 'T12:00:00Z'); t <= Date.parse(end + 'T12:00:00Z'); t += 86400000) {
+    const d = new Date(t);
+    const dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    dias.push(d.toISOString().slice(0, 10));
+  }
+  const porDia = dias.map((dia) => ({
+    dia,
+    enfoques: Object.fromEntries(agentes.map((a) => [a, enfoqueDelDia(a, new Date(dia + 'T18:00:00Z')).id])),
+  }));
+  const conteo = {};
+  for (const a of agentes) {
+    conteo[a] = {};
+    for (const e of ENFOQUES) conteo[a][e.id] = 0;
+    for (const f of porDia) conteo[a][f.enfoques[a]]++;
+  }
+  // El desbalance, cuantificado: cuántas veces más sale el enfoque más
+  // frecuente que el menos frecuente, por agente.
+  const desbalance = Object.fromEntries(agentes.map((a) => {
+    const v = Object.values(conteo[a]);
+    return [a, { max: Math.max(...v), min: Math.min(...v), brecha: Math.max(...v) - Math.min(...v) }];
+  }));
+  return { sesiones: dias.length, enfoques: ENFOQUES.map((e) => e.id), por_dia: porDia, conteo, desbalance,
+    nota: `${dias.length} sesiones ÷ ${ENFOQUES.length} enfoques deja resto ${dias.length % ENFOQUES.length}: el reparto NO puede ser parejo, se ancle donde se ancle. Se publica contado en vez de mencionado.` };
+}
+
 // ── LA COLA ALEATORIZADA ─────────────────────────────────────────────
 // Fisher-Yates con un PRNG sembrado. La semilla es `agent_id + run_id`: cambia
 // por agente (que es el punto) y por corrida (para que un agente no vea siempre

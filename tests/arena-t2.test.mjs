@@ -16,6 +16,7 @@
 
 import { readFileSync } from 'node:fs';
 import { flagRatioOutliers, RATIO_BOUNDS } from '../api/_lib/finnhub-dive.js';
+import { PROMPT_FLUJO, ARENA_SEASON } from '../api/_lib/arena-registry.js';
 import {
   sessionsAgo, hasReported, postEarningsTriggers,
   buildDiveSystemPrompt, buildDiveUserPrompt,
@@ -110,8 +111,18 @@ ok(/NO hay breaker por SMA200/.test(T2_RULES_TEXT),
 console.log('T2: el cambio de reglas se anuncia en el journal con fecha');
 ok(T2_RULES_VERSION === '2026-09-13' && T2_ANNOUNCEMENT_ID.includes(T2_RULES_VERSION),
   'el anuncio lleva la fecha del cambio y un id idempotente derivado de ella', T2_ANNOUNCEMENT_ID);
-ok(/^arena-pm-v3-t2$/.test(PROMPT_VERSION),
-  'PROMPT_VERSION sube de temporada: el post-mortem puede cortar T1 vs T2 sin adivinar', PROMPT_VERSION);
+// ── ACTUALIZADA EL 2026-10-01 ───────────────────────────────────────
+// Clavaba `-t2`, y con la T3 corriendo la cadena seguía diciendo t2: las
+// corridas de la T3 habrían quedado firmadas con la temporada anterior y el
+// corte del post-mortem habría salido en el lugar equivocado. Cosmético hasta
+// el día que alguien audite.
+//
+// Ahora se DERIVA de `ARENA_SEASON.id`, así que la propiedad que se verifica
+// es la correcta: que la versión lleve la temporada VIGENTE, sea cual sea.
+ok(PROMPT_VERSION === `${PROMPT_FLUJO}-${ARENA_SEASON.id.toLowerCase()}`,
+  'PROMPT_VERSION lleva la temporada VIGENTE: el post-mortem puede cortar entre temporadas sin adivinar', PROMPT_VERSION);
+ok(/^arena-pm-v\d+-t\d+$/.test(PROMPT_VERSION),
+  'y mantiene la forma `arena-pm-v<flujo>-t<temporada>`', PROMPT_VERSION);
 for (const n of ['1)', '2)', '3)', '4)', '5)', '6)', '7)', '8)', '9)']) {
   ok(T2_RULES_TEXT.includes(n), `el reglamento anunciado enumera la regla ${n}`);
 }

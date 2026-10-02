@@ -18,7 +18,7 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { withDeadline } from '../api/_lib/arena-model.js';
-import { ARENA_LLM_TIMEOUT_MS, ARENA_AGENT_DEADLINE_MS } from '../api/_lib/arena-registry.js';
+import { ARENA_LLM_TIMEOUT_MS, ARENA_AGENT_DEADLINE_MS, VUELTAS_MINIMAS } from '../api/_lib/arena-registry.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -146,7 +146,7 @@ for (const [f, etiqueta] of [['arena-run.js', 'la nocturna'], ['arena-watch.js',
 // ═══════════════════════════════════════════════════════════════
 console.log('\n── B12: una ronda fija con herramientas CABE en el reloj ──');
 {
-  const { LOOP_BUDGET_MS } = await import('../api/_lib/arena-tool-loop.js');
+  const { LOOP_BUDGET_MS, relojDisponible, RESERVA_CIERRE_MS, MARGEN_MS } = await import('../api/_lib/arena-tool-loop.js');
   const { ARENA_AGENT_DEADLINE_MS, ARENA_LLM_TIMEOUT_MS } = await import('../api/_lib/arena-registry.js');
   const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
   const fnCap = (vercel.functions['api/arena-run.js'] || {}).maxDuration * 1000;
@@ -166,8 +166,33 @@ console.log('\n── B12: una ronda fija con herramientas CABE en el reloj ─�
   ok(fnCap - ARENA_AGENT_DEADLINE_MS >= 15000,
     'con al menos 15s entre el deadline y el cap de la función para esa escritura',
     `${(fnCap - ARENA_AGENT_DEADLINE_MS) / 1000}s`);
-  ok(LOOP_BUDGET_MS > ARENA_LLM_TIMEOUT_MS,
-    'el presupuesto del loop da para más de UNA llamada (si no, no es un loop)',
+  // ── ACTUALIZADA EL 2026-10-01, CONTRA EL LOOP QUE CORRE ──────────
+  // Comparaba contra `LOOP_BUDGET_MS`, que es el presupuesto del contrato de
+  // ACCIONES (descuenta una fase de scan de 90s). Ese contrato está retirado:
+  // el objetivo corre con `relojDisponible({ scanMs: 0 })` = 185s.
+  //
+  // Y al derivar el techo del loop, `LOOP_BUDGET_MS` pasó a valer EXACTAMENTE
+  // lo mismo que el techo —se descuentan mutuamente— así que la aserción se
+  // puso roja sobre un camino que nadie corre. La propiedad es correcta; el
+  // denominador estaba mal.
+  //
+  // Y ahora es la relación FUERTE, no `>`: el techo tiene que caber
+  // VUELTAS_MINIMAS veces, no una vez y pico. Un techo que entra 1.1 veces
+  // pasaba el `>` y no es un loop.
+  const loopVivo = relojDisponible({ scanMs: 0 });
+  ok(ARENA_LLM_TIMEOUT_MS * VUELTAS_MINIMAS <= loopVivo,
+    `el techo por llamada cabe ${VUELTAS_MINIMAS}× en el loop del contrato que CORRE (no una vez y pico)`,
+    `${ARENA_LLM_TIMEOUT_MS / 1000}s × ${VUELTAS_MINIMAS} vs ${loopVivo / 1000}s`);
+
+  // LA IGUALDAD, que es lo que faltaba. `<=` verifica que el presupuesto
+  // QUEPA —la propiedad débil— y encogerlo a la mitad también pasa. Si sobra
+  // tiempo del deadline, es investigación que nadie usa: un bug, no holgura.
+  ok(loopVivo + RESERVA_CIERRE_MS + MARGEN_MS === ARENA_AGENT_DEADLINE_MS,
+    'loop + cierre + margen == deadline, CON IGUALDAD: el tiempo que sobra es un bug, no holgura',
+    `${(loopVivo + RESERVA_CIERRE_MS + MARGEN_MS) / 1000}s vs ${ARENA_AGENT_DEADLINE_MS / 1000}s`);
+
+  ok(LOOP_BUDGET_MS > 0,
+    'el presupuesto del contrato de ACCIONES sigue existiendo (retirado, pero el constante no se borró)',
     `${LOOP_BUDGET_MS / 1000}s vs ${ARENA_LLM_TIMEOUT_MS / 1000}s`);
 }
 
@@ -191,8 +216,11 @@ console.log('\n── un timeout dice de dónde salió su techo ──');
   const { ARENA_LLM_TIMEOUT_ORIGEN, techoLlmSospechoso, ARENA_LLM_TIMEOUT_PISO_SANO_MS } =
     await import('../api/_lib/arena-registry.js');
 
-  ok(/default del código|env ARENA_LLM_TIMEOUT_MS/.test(ARENA_LLM_TIMEOUT_ORIGEN),
-    'el techo de una llamada declara si lo puso el código o una env var', ARENA_LLM_TIMEOUT_ORIGEN);
+  // Decía `default del código (90s)` con el valor ya derivado en 92.5s: un
+  // campo de diagnóstico que miente es peor que no tenerlo. Ahora declara la
+  // DERIVACIÓN (loop ÷ vueltas) o la env var que lo pisó.
+  ok(/derivado: loop \d+s ÷ \d+ vueltas mínimas|env ARENA_LLM_TIMEOUT_MS/.test(ARENA_LLM_TIMEOUT_ORIGEN),
+    'el techo de una llamada declara su derivación, o la env var que la pisó', ARENA_LLM_TIMEOUT_ORIGEN);
 
   const modelo = readFileSync(new URL('../api/_lib/arena-model.js', import.meta.url), 'utf8');
   ok(/techo: \$\{origenTecho \|\| ARENA_LLM_TIMEOUT_ORIGEN\}/.test(modelo),

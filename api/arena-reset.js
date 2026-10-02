@@ -89,6 +89,7 @@ import {
   getAccount, getPositions, getOrders, cancelAllOrders, closeAllPositions, getClock,
 } from './_lib/alpaca.js';
 import { activeAgents, agentById, agentAlpacaCreds, ARENA_SEASON } from './_lib/arena-registry.js';
+import { rejillaDeEnfoques } from './_lib/arena-herding.js';
 import {
   RESET_BASELINE_USD, setBaseline, pauseWatch, resumeWatch, startingDrawdown, marcarInicioTemporada,
 } from './_lib/arena-baseline.js';
@@ -354,6 +355,32 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
       'Es el denominador del return Y el PISO del pico del breaker. Un $100k declarado le habría cobrado a cada agente el residuo de su propio aplanado como si fuera pérdida — para `claude` y `control`, que existen para medirse entre sí, ese sesgo era más grande que el piso de ruido que miden.'
     : `BASELINE de la temporada: $${Number(baselineUsd).toLocaleString('en-US')} por cuenta, DECLARADO. Es el denominador del return Y el PISO del pico del breaker — un libro recién aplanado NO arranca con el pico de antes del aplanado. Las cuentas cuyo equity real quedó por debajo arrancan con retorno negativo el primer día por el residuo de su aplanado, no por una pérdida.`;
 
+  // ── LA REJILLA DE ENFOQUES, PUBLICADA ANTES DE QUE CORRA NADA ──────
+  // La rotación es determinista, así que con el inicio ya escrito la
+  // asignación entera de la temporada se puede calcular ahora. Publicarla
+  // cierra una discusión antes de que exista: nadie puede alegar después que
+  // el calendario favoreció a alguien.
+  //
+  // Y se publica el CONTEO, no solo la rejilla: el desbalance es inevitable
+  // (las sesiones no son múltiplo de cuatro) y cuantificado se lee, mencionado
+  // se ignora.
+  const lineaEnfoques = (() => {
+    try {
+      const inicio = (now instanceof Date ? now : new Date()).toISOString().slice(0, 10);
+      const g = rejillaDeEnfoques(inicio, ARENA_SEASON.end, rows.map((r) => r.agent));
+      const conteos = Object.entries(g.conteo)
+        .map(([a, c]) => `${a}: ` + Object.entries(c).map(([e, n]) => `${e} ${n}`).join('/'))
+        .join(' · ');
+      return `ENFOQUE DEL DÍA — LA REJILLA COMPLETA, PUBLICADA ANTES DE LA PRIMERA RONDA. La rotación es determinista (agente + día en hora de Nueva York), así que el calendario entero de ${g.sesiones} sesiones ya está decidido y no puede ajustarse después. Reparto por agente — ${conteos}. ${g.nota} El enfoque es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ESE día, y por eso la comparación se lee sobre la temporada, no sobre una sesión.`;
+    } catch (e) {
+      // NO se traga el error: un `catch { return null }` acá escondió un
+      // import que no había entrado, y la línea simplemente no salía — sin
+      // nada que dijera por qué. Un bloque opcional que desaparece en
+      // silencio es indistinguible de uno que decidió no aplicar.
+      return `ENFOQUE DEL DÍA: no se pudo calcular la rejilla (${String((e && e.message) || e)}). La rotación sigue corriendo igual —es determinista— pero el calendario NO quedó publicado en este anuncio, así que no se puede alegar que estaba a la vista desde el día 1.`;
+    }
+  })();
+
   // La línea del benchmark entra en el MISMO anuncio, no en uno aparte: el
   // `season_started` del 16 tiene que decir contra qué se va a medir la
   // temporada, si no la comparación aparece inventada después.
@@ -364,6 +391,7 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
     `RESET DE LIBROS — ${resetId}. Las ${rows.length} cuentas de la liga se aplanaron: ${canceladas} órdenes abiertas canceladas y ${vendidas} posiciones vendidas a mercado. ${planas} de ${rows.length} quedaron confirmadas en cero.`,
     lineaBaseline,
     lineaCapital,
+    lineaEnfoques,
     'CORTE DE MEMORIA: el plan anterior, los fills, los compromisos abiertos y el pico de equity se cortan en este instante. Nada de antes del reset se le reinyecta al PM: un libro que ya no existe no puede ser recordado como propio.',
     lineaBench,
     'Las métricas de ANTES y DESPUÉS de este corte NO son comparables. El post-mortem tiene que partir acá.',
