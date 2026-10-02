@@ -60,6 +60,9 @@
     "api/grades-backtest.js": {
       "maxDuration": 300
     },
+    "api/reaccion-analyze.js": {
+      "maxDuration": 300
+    },
     "api/historia-harvest.js": {
       "maxDuration": 300
     },

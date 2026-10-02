@@ -44,7 +44,7 @@ function dayDiff(a, b) {
 function build8KIndex(recentLike) {
   const out = [];
   if (!recentLike || !Array.isArray(recentLike.form)) return out;
-  const { form, items, acceptanceDateTime, filingDate, accessionNumber } = recentLike;
+  const { form, items, acceptanceDateTime, filingDate, accessionNumber, primaryDocument } = recentLike;
   for (let i = 0; i < form.length; i++) {
     if ((form[i] || '').toUpperCase() !== '8-K') continue;
     const itemStr = (items && items[i]) || '';
@@ -53,6 +53,10 @@ function build8KIndex(recentLike) {
       filingDate: filingDate ? filingDate[i] : null,
       acceptanceDateTime: acceptanceDateTime ? acceptanceDateTime[i] : null,
       accession: accessionNumber ? accessionNumber[i] : null,
+      // Aditivo (lo agregó el experimento "reaccion"): el documento primario,
+      // para poder distinguirlo del Exhibit 99.1 al buscar la guía. Los que ya
+      // usaban este índice no lo leen, así que no les cambia nada.
+      primaryDocument: primaryDocument ? primaryDocument[i] : null,
     });
   }
   return out;

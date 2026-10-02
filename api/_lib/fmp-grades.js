@@ -66,7 +66,23 @@ function mencionaParametro(texto) {
   if (!t) return { menciona: false, parametro: null, rango: null };
   // "Invalid API key" nombra una credencial, no un parámetro de consulta.
   if (/\bapi\s*-?\s?keys?\b/i.test(t)) return { menciona: false, parametro: null, rango: null };
-  const encontrado = PARAMETROS_CONOCIDOS.find((k) => new RegExp('\\b' + k + '\\b', 'i').test(t));
+  // EL NOMBRE SOLO NO ALCANZA. `to`, `from`, `page` y `period` son palabras
+  // comunes del inglés, y el mensaje real de plan de FMP termina en "…please
+  // visit our subscription PAGE TO upgrade your plan". La primera versión de
+  // esta función buscaba la palabra suelta y clasificaba ESE mensaje como
+  // "parámetro `to` fuera de rango, NO es un problema de plan" — el espejo del
+  // diagnóstico falso que esta misma función vino a corregir.
+  //
+  // Ahora el nombre tiene que aparecer EN CONTEXTO DE PARÁMETRO: entre
+  // comillas ('period'), con `=`, o pegado a una frase que solo se usa para
+  // parámetros. Gana el que aparece entre comillas, que es como FMP los nombra.
+  const alt = PARAMETROS_CONOCIDOS.join('|');
+  const entreComillas = t.match(new RegExp(`['"\`](${alt})['"\`]`, 'i'));
+  const enContexto = entreComillas
+    || t.match(new RegExp(`\\b(${alt})\\s*=`, 'i'))
+    || t.match(new RegExp(`\\b(?:invalid|parameter|param)\\s+(${alt})\\b`, 'i'))
+    || t.match(new RegExp(`\\b(${alt})\\s+(?:must|is required|is invalid|parameter|out of range|should)\\b`, 'i'));
+  const encontrado = enContexto ? enContexto[1].toLowerCase() : null;
   if (!encontrado) return { menciona: false, parametro: null, rango: null };
   // El rango, si el mensaje lo trae ("between 0 and 10", "0 to 10", "max 10").
   let rango = null;
@@ -154,11 +170,21 @@ async function gradesHistorical(symbol, {
     // dice que no alcanza en vez de elegir una de las dos.
     if (r.status === 402) {
       const p = mencionaParametro(muestra);
+      // `symbol` NO es "un valor fuera de rango": es una empresa que el plan no
+      // cubre. La versión anterior lo metía en `parametro_fuera_de_rango` con el
+      // texto "NO es un problema de plan" — falso justo en este caso, que es el
+      // que apareció en el censo de 35 de 75. Tres salidas, cada una con un texto
+      // que el dato sostiene:
+      if (p.menciona && p.parametro === 'symbol') {
+        return { ok: false, symbol: sym, url_sin_key: url, status: 402, ms, ...cuerpo,
+          motivo: 'sin_acceso_al_simbolo', parametro: 'symbol', rango: null,
+          detalle: `HTTP 402 y el cuerpo nombra \`symbol\`: el plan NO cubre a ${sym}. Es una restricción del plan sobre ESTA empresa — un artefacto, no un dato sobre la serie. No es la key y no es el limit.` };
+      }
       return { ok: false, symbol: sym, url_sin_key: url, status: 402, ms, ...cuerpo,
         motivo: p.menciona ? 'parametro_fuera_de_rango' : 'pago_requerido',
         parametro: p.parametro, rango: p.rango,
         detalle: p.menciona
-          ? `HTTP 402, pero el cuerpo nombra el parámetro \`${p.parametro}\`${p.rango ? ` y su rango aceptado (${p.rango.min}..${p.rango.max})` : ''}: es un VALOR fuera de rango, NO un problema de plan. No se toca la key.`
+          ? `HTTP 402, pero el cuerpo nombra el parámetro \`${p.parametro}\`${p.rango ? ` y su rango aceptado (${p.rango.min}..${p.rango.max})` : ''}: ese VALOR del parámetro no está en el plan. Se arregla cambiando el valor, no la key.`
           : 'HTTP 402 y el cuerpo no nombra ningún parámetro. Puede ser el plan, pero NO se afirma: el cuerpo va completo arriba y lo lee una persona.' };
     }
     if (!r.ok) {
@@ -261,6 +287,15 @@ function interpretaSmoke(variantes, { key = null } = {}) {
     return { causa: 'limit_fuera_de_rango',
       lectura: `\`limit=${limitChicoAnda[0].limit}\` trae filas y \`limit=${fallanConLimit.map((x) => x.limit).join('/')}\` falla con HTTP ${[...new Set(fallanConLimit.map((x) => x.status))].join('/')}. El límite tiene un techo: hay que bajarlo y DECLARAR que la historia puede estar cortada por el límite.` };
   }
+  // EL SÍMBOLO DEL SMOKE FUERA DEL PLAN. Tres variantes que fallan igual por
+  // `symbol` no dicen nada del `limit` ni de la key: dicen que se eligió una
+  // empresa que el plan no cubre. La versión anterior caía en
+  // `http_error_uniforme` y escribía "No es el limit ni el símbolo" — y era
+  // exactamente el símbolo.
+  if (todas((x) => x.motivo === 'sin_acceso_al_simbolo')) {
+    return { causa: 'sin_acceso_al_simbolo',
+      lectura: 'Las tres variantes fallan con HTTP 402 nombrando `symbol`: el plan NO cubre la empresa elegida para el smoke. No es la key ni el limit. Repetir el smoke con un símbolo que el censo liste con acceso.' };
+  }
   // HTTP 200 con `Error Message` en TODAS: FMP contestó y dijo por qué. No es
   // un "http_error uniforme" — llamarlo así escondería el mensaje que ya está.
   if (todas((x) => x.motivo === 'fmp_error_message')) {
@@ -270,7 +305,9 @@ function interpretaSmoke(variantes, { key = null } = {}) {
   }
   if (todas((x) => !x.ok) && new Set(v.map((x) => x.status)).size === 1) {
     return { causa: 'http_error_uniforme',
-      lectura: `Todas las variantes fallan con el MISMO HTTP ${v[0].status}. No es el \`limit\` ni el símbolo. El cuerpo de la respuesta va abajo completo: ahí está la causa, y no se adivina desde acá.` };
+      // "No es el limit" está probado (falla igual con y sin él). "Ni el símbolo"
+      // NO lo está: se probó UNO. La versión anterior lo afirmaba igual.
+      lectura: `Todas las variantes fallan con el MISMO HTTP ${v[0].status}, con y sin \`limit\`: no es el limit. Con un solo símbolo probado no se puede descartar el símbolo. El cuerpo de la respuesta va abajo completo: ahí está la causa, y no se adivina desde acá.` };
   }
   return { causa: 'no_concluyente',
     lectura: 'El patrón no encaja en ningún caso conocido. Los status y los cuerpos de cada variante van abajo sin interpretar: eso lo lee una persona.' };
