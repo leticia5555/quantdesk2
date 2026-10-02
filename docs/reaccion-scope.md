@@ -354,17 +354,43 @@ regresión con el mensaje real de plan y con *"from 2019 to 2026"*.
    causa (`sin_acceso_al_simbolo`), y el texto del caso uniforme afirma solo lo
    probado: el limit sí (falla igual con y sin él), el símbolo no (se probó uno).
 
-### Lo que los tests cubren, y lo que no
+### Los fixtures REALES, y la etiqueta de FMP
 
-Los tests cubren **los dos mensajes**: el de PLAN y el de PARÁMETRO, **con y sin**
-la cola *"…subscription page to upgrade your plan"* — que es el caso donde los dos
-bugs se tocan, porque un mensaje de parámetro con esa cola tiene `page` y `to`
-además del nombre entre comillas. Para `limit`, `period` y `symbol`.
+Las tres respuestas 402 de FMP están ahora **verbatim** en
+`tests/fixtures/fmp-402-reales.mjs`, con su procedencia (el smoke de NKE con
+`limit=1000`, el primer fallo del censo —ABNB— y una corrida a mano con
+`period=quarter`). Se copian tal cual, con sus rarezas: comillas desbalanceadas
+(`'Special Parameters : The values for 'limit'…`) y el de `symbol` cortado en
+`https://financialmo`, que es como lo corta el `body_sample`.
 
-**Pero esos textos reproducen el formato de FMP, no son copias literales** de lo
-que contestó en producción. Las respuestas verbatim están en el `body_sample` de
-los smokes que ya corrió quien lee esto; pegadas como fixtures, el test queda
-anclado a lo que FMP dice de verdad y no a mi reconstrucción.
+**La pista que trajeron:** FMP antepone una ETIQUETA, y la etiqueta dice el
+**tipo** de restricción:
+
+| Respuesta real | Etiqueta | Tipo | Motivo |
+|---|---|---|---|
+| `limit` | **Special Parameters** | el valor está fuera del RANGO del plan (0..10) | `parametro_fuera_de_rango` |
+| `symbol` | **Special Endpoint** | ese valor no está en el plan — esa empresa | `sin_acceso_al_simbolo` |
+| `period` | **Special Endpoint** | ese valor no está en el plan — función de pago | `parametro_de_pago` |
+
+La etiqueta sola **no alcanza**: `symbol` y `period` comparten "Special Endpoint"
+y se leen distinto (una empresa fuera del plan es un artefacto por empresa;
+`period=quarter` es una función de pago). La regla usa la **etiqueta para el
+tipo y el nombre entre comillas para el cuál**.
+
+**Lo que destapó anclar los fixtures:** había DOS clasificadores de 402 (uno en
+la frontera de grades, otro en la de reaccion) y con la respuesta real por
+`limit` **decían cosas distintas** — `parametro_fuera_de_rango` en uno,
+`parametro_de_pago` en el otro. Ahora hay uno solo, `clasifica402Fmp`
+(`api/_lib/fmp-grades.js`), y un test verifica que las dos fronteras dan el mismo
+motivo para cada respuesta real. Y los mocks de los tests end-to-end usaban mis
+reconstrucciones, a las que les faltaba la etiqueta: con la regla nueva, una
+reconstrucción sin etiqueta ya no pasaba por real. Ahora los mocks usan el texto
+verbatim.
+
+Lo que sigue SIN respuesta real anclada se dice: el 402 de "endpoint entero no
+disponible" (`endpoint_de_pago`) y los casos sin etiqueta son **sintéticos**, y
+una etiqueta desconocida se conserva tal cual y se declara como desconocida en
+vez de forzarse a una de las tres.
 
 ---
 

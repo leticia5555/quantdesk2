@@ -45,6 +45,7 @@ process.env.SEC_REQ_POR_SEGUNDO = '10';   // el techo de la SEC: el test no tien
 process.env.REACCION_FINNHUB_PAUSA_MS = '0';  // la red es simulada: la pausa de 60/min no aplica
 
 const { default: handler } = await import('../api/reaccion-analyze.js');
+const { FMP_402_PERIOD, FMP_402_SYMBOL } = await import('./fixtures/fmp-402-reales.mjs');
 
 // ═══════════════════ fixture ═══════════════════
 // 6 empresas × 20 reportes trimestrales = 120 reportes. NKE va adentro porque
@@ -147,13 +148,13 @@ function mockFetch(opciones = {}) {
       return resp(200, chart(sym));
     }
     if (u.includes('financialmodelingprep.com/stable/analyst-estimates')) {
-      // El 402 REAL de FMP por un parámetro de pago: nombra `period` entre comillas.
-      return resp(402, "Premium Query Parameter: This value set for 'period' is not available under your current subscription please visit our subscription page to upgrade your plan");
+      // El 402 REAL de FMP por `period=quarter` (fixture verbatim): "Special Endpoint".
+      return resp(402, FMP_402_PERIOD);   // la respuesta REAL, verbatim
     }
     if (u.includes('financialmodelingprep.com/stable/earnings')) {
       const sym = decodeURIComponent((u.match(/symbol=([^&]+)/) || [])[1]);
       if ((opciones.fmpBloqueados || ['KO', 'PEP', 'XOM']).includes(sym)) {
-        return resp(402, "Premium Query Parameter: This value set for 'symbol' is not available under your current subscription");
+        return resp(402, FMP_402_SYMBOL);   // la respuesta REAL, verbatim (cortada como la corta el body_sample)
       }
       return resp(200, REPORTES.filter((x) => x.symbol === sym).map((x) => ({
         symbol: sym, date: x.report_date, epsActual: x.reported_eps, epsEstimated: x.estimated_eps,
@@ -283,6 +284,10 @@ let censoI;
     'FMP analyst-estimates period=quarter: 402 por el PARÁMETRO `period`, confirmado — no asumido', JSON.stringify(ae && { s: ae.status, m: ae.motivo, p: ae.parametro }));
   ok(!/auth/.test(ae.motivo) && !/rotar/.test(ae.detalle || ''), 'y NO se dice auth ni se manda a tocar la key');
   ok(/No es la key/.test(ae.detalle), 'se dice explícitamente que no es la key', ae.detalle);
+  // Con la respuesta REAL: FMP lo etiqueta "Special Endpoint" — un valor de pago,
+  // no un rango. Es lo que separa `period` de `limit` ("Special Parameters").
+  ok(/Special Endpoint/.test(ae.detalle) && /función de pago/.test(ae.detalle),
+    'y con la respuesta real, el detalle cita la etiqueta de FMP: es un valor de pago, no un rango', ae.detalle);
 
   // AV: UNA llamada, y la trampa del 200 con Note detectada.
   const av = sondas.find((s) => /Alpha Vantage/.test(s.fuente));
