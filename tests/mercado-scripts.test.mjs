@@ -64,6 +64,7 @@ test('lo que la página USA de cada script está exportado', () => {
   const require = createRequire(import.meta.url);
   const usados = {
     'qd-mundo.js': ['armaMundo', 'REGIONES', 'CATALOGO'],
+    'qd-tablas.js': ['tablasDeMercado', 'faltanteDeTabla', 'FILAS_TABLA'],
     'qd-mercados.js': ['estadoDeBolsa', 'estado24h', 'qdEstadoMercado'],
     'qd-treemap.js': ['squarify', 'colorDe', 'etiquetaCuadro', 'agrupaPorSector'],
     'qd-periods.js': ['qdPeriodChange', 'qdPctTag', 'qdCap', 'fmtPrice'],

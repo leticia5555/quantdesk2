@@ -13,17 +13,21 @@ import {
 
 const T = (iso) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 1000);
 
-const chart = (ts, closes, adj) => ({
+const chart = (ts, closes, adj, vol) => ({
   chart: {
     result: [{
       timestamp: ts,
       indicators: {
-        quote: [{ close: closes }],
+        quote: [{ close: closes, ...(vol ? { volume: vol } : {}) }],
         ...(adj ? { adjclose: [{ adjclose: adj }] } : {}),
       },
     }],
   },
 });
+
+/** Dos días con cierre, y el volumen que se le pase (o ninguno). */
+const chartVol = ({ volume } = {}) =>
+  chart([T('2026-09-17'), T('2026-09-18')], [10, 11], null, volume);
 
 test('aplana el chart de Yahoo a filas FECHADAS, con cierre y ajustado', () => {
   const r = aplanarChartYahoo(chart(
@@ -88,6 +92,7 @@ test('plan: sin serie se siembra entera; con serie corta también', () => {
     simbolos: ['AAPL', 'MSFT', 'NVDA'],
     yaTengo: new Map([['MSFT', '2026-09-18'], ['NVDA', '2026-09-18']]),
     cuenta: new Map([['MSFT', 250], ['NVDA', 5]]),
+    conVolumen: new Map([['MSFT', '2026-09-18'], ['NVDA', '2026-09-18']]),
     hasta: '2026-09-18',
   });
   assert.deepEqual(p.siembra.map((x) => x.symbol), ['AAPL', 'NVDA']);
@@ -111,10 +116,90 @@ test('plan: con serie completa y atrasada, cola corta desde su última fecha', (
 test('plan: correrlo dos veces el mismo día no pide nada la segunda', () => {
   const args = {
     simbolos: ['AAPL'], yaTengo: new Map([['AAPL', '2026-09-18']]),
-    cuenta: new Map([['AAPL', 250]]), hasta: '2026-09-18',
+    cuenta: new Map([['AAPL', 250]]),
+    conVolumen: new Map([['AAPL', '2026-09-18']]),
+    hasta: '2026-09-18',
   };
   assert.equal(planPreciosUs(args).cola.length, 0);
   assert.equal(planPreciosUs(args).al_dia, 1);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL VOLUMEN, PARA "MÁS OPERADAS"
+//
+// La columna nació después que la tabla: un símbolo con un año de cierres no
+// tiene ni un día de volumen y, por el criterio de "al día", nunca se volvería
+// a pedir — se quedaría fuera de la tabla para siempre. El relleno no cuesta
+// una petición nueva: el mismo `range=1mo` de la cola ya trae el volumen.
+// ═══════════════════════════════════════════════════════════════════════
+test('plan: al día en cierres pero SIN volumen entra a la cola igual', () => {
+  const p = planPreciosUs({
+    simbolos: ['AAPL'],
+    yaTengo: new Map([['AAPL', '2026-09-18']]),
+    cuenta: new Map([['AAPL', 250]]),
+    conVolumen: new Map(),                      // la columna recién nace
+    hasta: '2026-09-18',
+  });
+  assert.equal(p.al_dia, 0);
+  assert.equal(p.cola.length, 1);
+  assert.equal(p.cola[0].symbol, 'AAPL');
+  assert.match(p.cola[0].motivo, /sin volumen/);
+});
+
+test('plan: con el volumen a medio llenar, se pide desde donde se quedó', () => {
+  const p = planPreciosUs({
+    simbolos: ['AAPL'],
+    yaTengo: new Map([['AAPL', '2026-09-18']]),
+    cuenta: new Map([['AAPL', 250]]),
+    conVolumen: new Map([['AAPL', '2026-07-01']]),   // más de 30 días atrás
+    hasta: '2026-09-18',
+  });
+  assert.equal(p.cola.length, 1);
+  assert.equal(p.cola[0].desde, '2026-07-01');
+  assert.match(p.cola[0].motivo, /volumen sólo hasta 2026-07-01/);
+});
+
+test('plan: con la ventana de volumen cubierta, se apaga solo', () => {
+  // El relleno NO es permanente: en cuanto los últimos 30 días tienen volumen,
+  // el símbolo vuelve a "al día" y deja de pedir. Si no, cada corrida pediría
+  // los 300 nombres completos para siempre.
+  const p = planPreciosUs({
+    simbolos: ['AAPL'],
+    yaTengo: new Map([['AAPL', '2026-09-18']]),
+    cuenta: new Map([['AAPL', 250]]),
+    conVolumen: new Map([['AAPL', '2026-09-18']]),
+    hasta: '2026-09-18',
+  });
+  assert.equal(p.cola.length, 0);
+  assert.equal(p.al_dia, 1);
+
+  // Y un hueco DENTRO de la ventana que ya se cerró tampoco la reabre: lo que
+  // manda es hasta dónde llega el volumen, no cuántos días traiga.
+  const casi = planPreciosUs({
+    simbolos: ['AAPL'],
+    yaTengo: new Map([['AAPL', '2026-09-18']]),
+    cuenta: new Map([['AAPL', 250]]),
+    conVolumen: new Map([['AAPL', '2026-09-17']]),
+    hasta: '2026-09-18',
+  });
+  assert.equal(casi.cola.length, 0, 'un día de rezago no vuelve a pedir un mes');
+});
+
+test('el volumen viaja en las filas, y su ausencia NO descarta el cierre', () => {
+  const con = aplanarChartYahoo(chartVol({ volume: [1_000_000, 2_500_000] }));
+  assert.deepEqual(con.filas.map((f) => f.volumen), [1_000_000, 2_500_000]);
+  assert.equal(con.sin_volumen, false);
+
+  // Yahoo sin `volume`: los cierres siguen sirviendo, que es para lo que nació
+  // la tabla. La causa viaja para que el cuadro pueda decirla.
+  const sin = aplanarChartYahoo(chartVol());
+  assert.equal(sin.filas.length, 2);
+  assert.deepEqual(sin.filas.map((f) => f.volumen), [null, null]);
+  assert.equal(sin.sin_volumen, true);
+
+  // Un 0 es un DATO (día sin operaciones), no un hueco.
+  const cero = aplanarChartYahoo(chartVol({ volume: [0, 5] }));
+  assert.deepEqual(cero.filas.map((f) => f.volumen), [0, 5]);
 });
 
 test('cubreYtd: dice SÍ con la fecha del ancla, y NO con el porqué', () => {

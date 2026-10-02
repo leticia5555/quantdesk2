@@ -77,6 +77,10 @@ function cuadrosUs() {
         serie: serie(base, 21, drift),
         ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: base * 0.9 },
         ytd_motivo: null, puntos: 180, precio: base * (1 + drift), fecha_precio: '2026-09-18',
+        // Lo operado, para "más operadas". Baja con el rango igual que la cap,
+        // porque en la bolsa de verdad las grandes también operan más.
+        importe: Math.round(8e10 / Math.pow(rango + 1, 1.2)),
+        importe_fecha: '2026-09-18', importe_motivo: null,
       });
     }
   }
@@ -114,6 +118,12 @@ function cuadrosUs() {
     motivo: 'sin moneda declarada por Finnhub (la cap viene de neon:arena_market_cap)',
     serie: serie(11, 21, 0.03), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 9 },
     ytd_motivo: null, puntos: 180, precio: 11.4, fecha_precio: '2026-09-18' });
+  // Uno con % pero SIN lo operado: tiene que salir en suben/bajan y NO en
+  // "más operadas". Es el símbolo al que Yahoo no le manda volumen.
+  cs.push({ symbol: 'SINVOL', nombre: 'Sin volumen', sector: 'XLE', cap: 7e9,
+    cap_fuente: 'finnhub:metric', serie: serie(44, 21, 0.045), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 30 },
+    ytd_motivo: null, puntos: 180, precio: 46, fecha_precio: '2026-09-18',
+    importe: null, importe_fecha: null, importe_motivo: 'la fuente no trae volumen para este símbolo' });
   cs.push({ symbol: 'SINYTD', nombre: 'Sin ancla', sector: 'XLF', cap: 4e9,
     cap_fuente: 'finnhub:metric', serie: serie(30, 21, 0.02), ytd: null,
     ytd_motivo: 'la serie empieza en 2026-07-01 y no llega al año anterior: no hay cierre de fin de año contra el cual anclar',
@@ -276,6 +286,33 @@ const server = createServer(async (req, res) => {
       points: pts, latest: pts[pts.length - 1], fetched_at: '2026-09-21T20:00:00.000Z',
     }));
   }
+  if (url.pathname === '/api/mercado-paneles') {
+    pedidosApi++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    // Con una fuente CAÍDA a propósito: lo que la pantalla tiene que hacer con
+    // eso es decirlo, no enseñar una lista vacía.
+    return res.end(JSON.stringify({
+      esta_semana: {
+        ventana: { desde: '2026-09-21', hasta: '2026-09-28', dias: 7 },
+        eventos: [
+          { tipo: 'macro', fecha: '2026-09-23', titulo: 'Decisión de Banxico', detalle: 'tasa de referencia', importancia: 'high', fuente: 'neon:macro_events' },
+          { tipo: 'reporte', fecha: '2026-09-24', titulo: 'NVDA', detalle: 'Nvidia', cuando: 'AMC', eps_estimado: 1.2, fuente: 'finnhub:earnings-calendar' },
+        ],
+        fuentes: {
+          macro: { fuente: 'neon:macro_events', ok: true, motivo: null, filas: 1 },
+          reportes: { fuente: 'finnhub:earnings-calendar', ok: false, motivo: 'HTTP 429', filas: 0 },
+        },
+      },
+      arena: {
+        agentes: [
+          { id: 'claude', nombre: 'Claude', modelo: 'opus', pct: 12.4, pct_motivo: null },
+          { id: 'mudo', nombre: 'Sin número', modelo: 'x', pct: null, pct_motivo: 'el leaderboard no trajo el rendimiento de este agente' },
+        ],
+        motivo: null, fuente: 'api:leaderboard',
+      },
+      generado_en: '2026-09-21T22:00:00.000Z',
+    }));
+  }
   if (url.pathname === '/api/macro-markets') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -418,8 +455,10 @@ try {
       k: window.QD_MAPA,
     };
   });
-  chequeo('el mapa cabe en UNA pantalla: el lienzo es el alto que deja <main>, y no hay scroll',
-    !scroll.v && alto.lienzo === alto.main && alto.lienzo > 0 && alto.lienzo < alto.pantalla,
+  // El scroll vertical de la PÁGINA ahora es esperado: debajo del mapa están
+  // las tablas de R3. Lo que no puede pasar es que el mapa se estire.
+  chequeo('el mapa cabe en UNA pantalla: el lienzo es el alto que deja <main>',
+    alto.lienzo === alto.main && alto.lienzo > 0 && alto.lienzo < alto.pantalla,
     JSON.stringify(alto));
   chequeo('ya no existe el mapa largo: ninguna constante de factor de alto',
     alto.k.FACTOR_ALTO_MOVIL === undefined && alto.k.ALTO_MIN_MOVIL === undefined,
@@ -1143,6 +1182,115 @@ try {
     ytd.filter((t) => /YTD/.test(t) && /%/.test(t)).length >= 10,
     `${ytd.filter((t) => /%/.test(t)).length} con número de ${ytd.length}: ${ytd.slice(0, 3).join(' ')}`);
 
+  // ═══════════════════════════════════════════════════════════════════
+  // R3 · LAS TABLAS DEBAJO DEL MAPA
+  //
+  // Lo que se comprueba: que el mapa SIGA ocupando una pantalla exacta —las
+  // tablas no se lo pueden comer—, que se llegue a ellas recorriendo, que el
+  // orden sea el que dicen los títulos, y que una fuente caída se diga.
+  // ═══════════════════════════════════════════════════════════════════
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#paneles .tabla');
+
+  const geo = await p.evaluate(() => {
+    const pan = document.querySelector('.pantalla').getBoundingClientRect();
+    const pa = document.getElementById('paneles').getBoundingClientRect();
+    return {
+      pantalla: Math.round(pan.height), ventana: window.innerHeight,
+      panelesArriba: Math.round(pa.top),
+      scroll: document.documentElement.scrollHeight > window.innerHeight + 1,
+      lienzo: Math.round(document.getElementById('lienzo').getBoundingClientRect().height),
+    };
+  });
+  chequeo('el mapa sigue midiendo UNA pantalla: las tablas no se lo comen',
+    geo.pantalla === geo.ventana && geo.lienzo > 0 && geo.lienzo < geo.ventana,
+    JSON.stringify(geo));
+  chequeo('y las tablas empiezan DEBAJO, al recorrer',
+    geo.scroll && geo.panelesArriba >= geo.ventana - 1, JSON.stringify(geo));
+
+  const tablas = await p.evaluate(() => {
+    const out = [];
+    for (const h of document.querySelectorAll('#paneles h2')) {
+      const t = h.nextElementSibling && h.nextElementSibling.classList.contains('nota')
+        ? h.nextElementSibling.nextElementSibling : h.nextElementSibling;
+      out.push({
+        titulo: h.textContent.trim(),
+        nota: (h.nextElementSibling && h.nextElementSibling.classList.contains('nota'))
+          ? h.nextElementSibling.textContent.trim() : null,
+        filas: [...(t ? t.querySelectorAll('.fila') : [])].map((f) => ({
+          sym: f.dataset.sym,
+          val: (f.querySelector('.val') || {}).textContent || '',
+        })),
+        vacio: (t && t.querySelector('.vacio') || {}).textContent || null,
+        eventos: [...(t ? t.querySelectorAll('.evento') : [])].map((e) => e.textContent.replace(/\s+/g, ' ').trim()),
+      });
+    }
+    return out;
+  });
+  const porTitulo = Object.fromEntries(tablas.map((t) => [t.titulo, t]));
+  chequeo('están los cinco bloques del encargo',
+    ['Más suben', 'Más bajan', 'Más operadas', 'Esta semana', 'Arena'].every((k) => porTitulo[k]),
+    tablas.map((t) => t.titulo).join(' · '));
+
+  const pctDe = (s) => parseFloat(String(s).replace(/[^\-0-9.]/g, ''));
+  const suben = porTitulo['Más suben'].filas.map((f) => pctDe(f.val));
+  const bajan = porTitulo['Más bajan'].filas.map((f) => pctDe(f.val));
+  chequeo('"más suben" trae 8, todas positivas y de mayor a menor',
+    suben.length === 8 && suben.every((v) => v > 0)
+      && suben.every((v, i) => i === 0 || v <= suben[i - 1]), JSON.stringify(suben));
+  chequeo('"más bajan" trae 8, todas negativas y de la peor hacia arriba',
+    bajan.length === 8 && bajan.every((v) => v < 0)
+      && bajan.every((v, i) => i === 0 || v >= bajan[i - 1]), JSON.stringify(bajan));
+
+  // EL SÍMBOLO SIN VOLUMEN: entra donde se le pudo medir y no donde no.
+  const enSuben = porTitulo['Más suben'].filas.some((f) => f.sym === 'SINVOL');
+  const enOperadas = porTitulo['Más operadas'].filas.some((f) => f.sym === 'SINVOL');
+  chequeo('el símbolo sin volumen entra a "más suben" y NO a "más operadas"',
+    enSuben && !enOperadas, `suben=${enSuben} operadas=${enOperadas}`);
+  chequeo('"más operadas" ordena por dinero, de mayor a menor, en escala larga',
+    porTitulo['Más operadas'].filas.length === 8
+      && /mil millones|billones|millones/.test(porTitulo['Más operadas'].filas[0].val),
+    porTitulo['Más operadas'].filas.map((f) => `${f.sym} ${f.val}`).join(' · '));
+
+  // UNA FUENTE CAÍDA SE DICE. El fixture tumba el calendario de reportes a
+  // propósito: lo que NO puede pasar es que la pantalla enseñe la lista corta
+  // sin explicar que falta media.
+  chequeo('"esta semana" dice qué fuente no respondió, en vez de enseñar media lista',
+    /no respondió/.test(porTitulo['Esta semana'].nota || '')
+      && /429/.test(porTitulo['Esta semana'].nota || ''),
+    porTitulo['Esta semana'].nota);
+  chequeo('y lo que SÍ llegó se pinta igual',
+    porTitulo['Esta semana'].eventos.some((e) => /Banxico/.test(e)),
+    porTitulo['Esta semana'].eventos.join(' | '));
+  chequeo('Arena pinta el % que trae el leaderboard, y el que no lo trae sale "—"',
+    /12\.40%/.test(porTitulo.Arena.eventos.join(' '))
+      && /—/.test(porTitulo.Arena.eventos.join(' ')),
+    porTitulo.Arena.eventos.join(' | '));
+
+  // TAP EN UNA FILA → LA MISMA HOJA QUE EL CUADRO.
+  const simTabla = porTitulo['Más suben'].filas[0].sym;
+  await p.locator(`#paneles .fila[data-sym="${simTabla}"]`).tap();
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaTabla = await p.locator('#hojaCuerpo').innerText();
+  chequeo('tocar una fila de la tabla abre la hoja de ese ticker',
+    new RegExp(simTabla).test(hojaTabla), hojaTabla.slice(0, 120).replace(/\n/g, ' '));
+  await p.locator('#cerrar').tap();
+
+  await p.evaluate(() => window.scrollTo(0, document.getElementById('paneles').getBoundingClientRect().top + window.scrollY));
+  await p.waitForTimeout(120);
+  await p.screenshot({ path: join(OUT, 'mercado-390-tablas.png') });
+  console.log(`     → ${join(OUT, 'mercado-390-tablas.png')}`);
+  await p.evaluate(() => window.scrollTo(0, 0));
+
+  // EN MUNDO NO HAY TABLAS DE EMISORAS. Un índice no tiene volumen y "más
+  // operadas" no significa nada sobre el Nikkei.
+  await p.goto(`${BASE}/mercado?mapa=mundo`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#paneles .tabla');
+  const titMundo = await p.evaluate(() => [...document.querySelectorAll('#paneles h2')].map((h) => h.textContent.trim()));
+  chequeo('en Mundo no se ofrecen las tablas de emisoras, pero sí el calendario y Arena',
+    !titMundo.includes('Más operadas') && titMundo.includes('Esta semana') && titMundo.includes('Arena'),
+    titMundo.join(' · '));
+
   // ── EL TOGGLE MXN TAMBIÉN EN EL MAPA DE EE.UU. ─────────────────────
   // En el iPhone NVDA decía +1.7% en Local y +1.7% en MXN: el toggle se
   // pintaba y no hacía nada. La causa era que el FIX sólo se pedía en la rama
@@ -1373,8 +1521,16 @@ try {
   await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.cuadro');
 
-  const scrollD = await d.evaluate(() => document.documentElement.scrollHeight > document.documentElement.clientHeight + 1);
-  chequeo('escritorio sin scroll: el mapa cabe en 1440×900', !scrollD);
+  // EL MAPA sigue cabiendo en una pantalla; lo que ahora se recorre son las
+  // TABLAS de R3, que van debajo a propósito. La regla del encargo es que el
+  // mapa quepa sin scroll, no que la página entera mida una pantalla.
+  const escD = await d.evaluate(() => ({
+    pantalla: Math.round(document.querySelector('.pantalla').getBoundingClientRect().height),
+    ventana: window.innerHeight,
+    horizontal: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  }));
+  chequeo('escritorio: el mapa cabe en 1440×900 sin scroll, y las tablas van debajo',
+    escD.pantalla === escD.ventana && !escD.horizontal, JSON.stringify(escD));
 
   await d.locator('.cuadro').first().hover();
   await d.waitForTimeout(120);

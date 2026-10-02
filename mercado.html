@@ -44,7 +44,10 @@
   html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     -webkit-text-size-adjust:100%}
-  body{display:flex;flex-direction:column;min-height:100vh;min-height:100dvh;overflow:hidden}
+  /* La página vuelve a recorrerse: debajo del mapa están las tablas de R3. El
+     MAPA no se estira — eso vive en `.pantalla`, que mide una pantalla exacta. */
+  body{margin:0}
+  .pantalla{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
   header{display:flex;align-items:center;gap:10px;padding:10px 16px 8px;
     padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
   .marca{font-family:var(--mono);font-size:15px;letter-spacing:.5px}
@@ -78,7 +81,47 @@
      `touch-action:none` NO es cosmético: sin él el navegador se queda el
      pellizco y el arrastre para su propio zoom de página y el mapa no ve
      nada. Va sólo en celular, que es donde hay gestos. */
-  @media (max-width:599px){ #lienzo{touch-action:none} }
+  /* `pan-y` a 1× y `none` ampliado. A 1× no hay a dónde moverse dentro del
+     mapa, así que arrastrar hacia abajo tiene que recorrer la PÁGINA y llegar a
+     las tablas; con `touch-action:none` el mapa se comía ese gesto y las tablas
+     quedaban inalcanzables desde el mapa. Ampliado es al revés: el arrastre es
+     del mapa y la página no se puede mover bajo el dedo.
+     El pellizco sigue siendo nuestro en los dos casos: `pan-y` permite recorrer
+     en vertical pero NO el zoom de página, así que los dos dedos llegan acá. */
+  @media (max-width:599px){
+    #lienzo{touch-action:pan-y}
+    main[data-zoom="1"] #lienzo{touch-action:none}
+  }
+
+  /* ── R3: LAS TABLAS DENSAS ──────────────────────────────────────────
+     Una línea por fila, como pide el encargo: ticker, nombre, número. El
+     nombre se recorta con elipsis y el número nunca, porque el número es el
+     dato y el nombre es el adorno. */
+  #paneles{padding:0 16px 24px;max-width:900px}
+  #paneles h2{margin:18px 0 6px;font:600 13px var(--mono);letter-spacing:.04em;
+    color:#9aa5b1;text-transform:uppercase}
+  #paneles .nota{margin:0 0 6px;font-size:11px;color:var(--tenue);line-height:1.4}
+  .tabla{border:1px solid var(--linea);border-radius:8px;overflow:hidden;background:var(--panel)}
+  .tabla .fila{display:flex;align-items:center;gap:8px;min-height:var(--tap);
+    padding:0 10px;border-top:1px solid var(--linea);cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .tabla .fila:first-child{border-top:0}
+  .tabla .tk{flex:0 0 auto;font:600 12px var(--mono);color:var(--texto);min-width:52px}
+  .tabla .nom{flex:1 1 auto;font-size:12px;color:var(--tenue);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tabla .val{flex:0 0 auto;font:600 12px var(--mono);text-align:right;white-space:nowrap}
+  @media (pointer:fine){ .tabla .fila:hover{background:#171717} }
+  .vacio{padding:12px 10px;font-size:12px;color:var(--tenue);line-height:1.5}
+  /* "Esta semana" y Arena: listas de dos líneas, no tablas de números. */
+  .evento{display:flex;gap:10px;align-items:baseline;min-height:36px;
+    padding:7px 10px;border-top:1px solid var(--linea)}
+  .evento:first-child{border-top:0}
+  .evento .dia{flex:0 0 58px;font:600 11px var(--mono);color:var(--tenue)}
+  .evento .que{flex:1 1 auto;font-size:12px;line-height:1.35}
+  .evento .que b{font-weight:600}
+  .evento .que small{display:block;color:var(--tenue);font-size:11px}
+  .evento .cuando{flex:0 0 auto;font:11px var(--mono);color:var(--tenue)}
+  .evento.reporte .dia{color:#6b7785}
   /* Volver a 1×. Flota sobre el mapa porque pertenece al mapa, y mide 44px
      como todo lo que se toca (regla 8). Sólo aparece cuando hay a qué
      volver: un botón que no hace nada es ruido. */
@@ -193,6 +236,12 @@
 </style>
 </head>
 <body>
+<!-- LA PRIMERA PANTALLA. Envuelve el mapa y su cromo para que <main> siga
+     midiendo "lo que queda de la pantalla" ahora que la página vuelve a
+     recorrerse: sin esto, el `flex:1` repartiría el alto entre el mapa y las
+     tablas y el mapa dejaría de caber en una pantalla, que es la decisión del
+     2026-10-02. -->
+<div class="pantalla">
 <header>
   <div class="marca">/<b>mercado</b></div>
   <div class="chip" id="chip">—</div>
@@ -212,6 +261,11 @@
 <div id="aviso"></div>
 <div id="mas"></div>
 <footer id="pie">cargando…</footer>
+</div><!-- /.pantalla -->
+
+<!-- R3: lo que va DEBAJO del mapa. Fuera de `.pantalla` a propósito: el mapa
+     sigue ocupando una pantalla exacta y esto aparece al recorrer. -->
+<section id="paneles" hidden></section>
 
 <aside class="hoja" id="hoja" aria-hidden="true">
   <button class="cerrar" id="cerrar" aria-label="Cerrar">×</button>
@@ -224,6 +278,7 @@
 <script src="/qd-mercados.js"></script>
 <script src="/qd-pesos.js"></script>
 <script src="/qd-mundo.js"></script>
+<script src="/qd-tablas.js"></script>
 <script>
 (function(){
   'use strict';
@@ -342,6 +397,7 @@
       document.getElementById('ruta').innerHTML = '';
       document.getElementById('mas').innerHTML = '';
       pintarMundo(d);
+      pintarPaneles(d);
       if(estado.symbol) abrirHojaMundo(d, estado.symbol); else cerrarHoja(true);
       return;
     }
@@ -354,6 +410,7 @@
     pintarPie(d);
     pintarRuta();
     pintarMapa(d);
+    pintarPaneles(d);
     if(estado.symbol) abrirHoja(d, estado.symbol); else cerrarHoja(true);
   }
 
@@ -1273,6 +1330,163 @@
         return { motivo: 'no llegó el FIX de Banxico' + (b.error ? ' (' + b.error + ')' : '') };
       });
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // R3 · LAS TABLAS DENSAS Y LOS PANELES DE DEBAJO DEL MAPA
+  //
+  // LAS TRES TABLAS NO PIDEN NADA. Salen del MISMO payload que el mapa ya
+  // trajo: `cuadros` viene con la serie de cada emisora y con lo operado, así
+  // que ordenar es ordenar lo que ya está en pantalla. Cero peticiones nuevas
+  // (regla 7), cero segunda definición del % (regla 1: el número lo da
+  // `cambio()`, el mismo que pinta el cuadro) y, de paso, la tabla y el mapa
+  // nunca pueden discrepar — son la misma lista mirada de otra forma.
+  //
+  // Eso incluye el toggle de moneda: en EE.UU. con MXN, la tabla ordena por el
+  // rendimiento EN PESOS, porque es el que el mapa está pintando.
+  //
+  // "Esta semana" y Arena sí vienen de fuera, y por eso van en UN batch
+  // (`/api/mercado-paneles`) en vez de tres fetches del navegador.
+  // ═══════════════════════════════════════════════════════════════════
+  var paneles = null;          // lo que devolvió /api/mercado-paneles
+  var panelesPedido = false;
+
+  function filasDeTablas(d){
+    return (d.cuadros || []).map(function(c){
+      var x = cambio(c);
+      return {
+        symbol: c.symbol, nombre: c.nombre || c.symbol,
+        pct: x.pct, motivo: x.motivo,
+        precio: c.precio,
+        importe: c.importe, importe_motivo: c.importe_motivo || null,
+      };
+    });
+  }
+
+  function fmtImporte(v){
+    if(!Number.isFinite(v)) return '—';
+    // La escala larga del español: 1 billón son 10¹². `qdCap` ya la sabe y es
+    // la misma que usa la hoja, así que acá no se estrena otra.
+    return qdCap(v, estado.mapa === 'mx' ? 'MXN' : 'USD');
+  }
+
+  function filaHtml(f, columna){
+    var der = columna === 'importe'
+      ? '<span class="val">' + esc(fmtImporte(f.importe)) + '</span>'
+      : '<span class="val">' + qdPctTag(f.pct, estado.periodo, { motivo: f.motivo }) + '</span>';
+    return '<div class="fila" data-sym="' + esc(f.symbol) + '" role="button" tabindex="0">'
+      + '<span class="tk">' + esc(f.symbol) + '</span>'
+      + '<span class="nom">' + esc(f.nombre) + '</span>'
+      + der + '</div>';
+  }
+
+  function bloqueTabla(titulo, filas, conteo, clave, columna){
+    var falta = faltanteDeTabla(clave, conteo);
+    var html = '<h2>' + esc(titulo) + '</h2>';
+    // LA CAUSA VA ARRIBA DE LA TABLA, no en lugar de ella: una lista de tres
+    // con "sólo 3 subieron" es honesta; una lista de tres a secas hace pensar
+    // que la pantalla se rompió.
+    if(falta) html += '<p class="nota">' + esc(falta) + '</p>';
+    html += '<div class="tabla">';
+    html += filas.length
+      ? filas.map(function(f){ return filaHtml(f, columna); }).join('')
+      : '<div class="vacio">' + esc(falta || 'sin datos para este bloque') + '</div>';
+    return html + '</div>';
+  }
+
+  function bloqueSemana(){
+    var html = '<h2>Esta semana</h2>';
+    if(!paneles){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
+    var s = paneles.esta_semana || {};
+    var fu = s.fuentes || {};
+    // Las dos mitades por separado: un Finnhub caído no se puede leer como
+    // "no hay reportes", que es la semana tranquila que nunca existió.
+    var avisos = [];
+    if(fu.macro && !fu.macro.ok) avisos.push('el calendario macro no respondió: ' + fu.macro.motivo);
+    if(fu.reportes && !fu.reportes.ok) avisos.push('el calendario de reportes no respondió: ' + fu.reportes.motivo);
+    if(avisos.length) html += '<p class="nota">' + esc(avisos.join(' · ')) + '</p>';
+    var ev = s.eventos || [];
+    html += '<div class="tabla">';
+    if(!ev.length){
+      html += '<div class="vacio">' + esc(avisos.length
+        ? 'no se pudo leer el calendario'
+        : 'sin eventos ni reportes en los próximos ' + ((s.ventana && s.ventana.dias) || 7) + ' días') + '</div>';
+    } else {
+      html += ev.slice(0, 12).map(function(e){
+        var dia = nombreDeDia(e.fecha);
+        return '<div class="evento ' + esc(e.tipo) + '">'
+          + '<span class="dia">' + esc(dia ? dia.slice(0,3) + ' ' + e.fecha.slice(8) : e.fecha) + '</span>'
+          + '<span class="que"><b>' + esc(e.titulo) + '</b>'
+          + (e.detalle ? '<small>' + esc(e.detalle) + '</small>' : '') + '</span>'
+          + '<span class="cuando">' + esc(e.tipo === 'reporte' ? (e.cuando || 'TBD') : (e.importancia || '')) + '</span>'
+          + '</div>';
+      }).join('');
+    }
+    return html + '</div>';
+  }
+
+  function bloqueArena(){
+    var html = '<h2>Arena</h2>';
+    if(!paneles){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
+    var a = paneles.arena || {};
+    html += '<div class="tabla">';
+    if(!a.agentes || !a.agentes.length){
+      html += '<div class="vacio">' + esc(a.motivo || 'el leaderboard no devolvió agentes') + '</div>';
+    } else {
+      html += a.agentes.map(function(g){
+        return '<div class="evento">'
+          + '<span class="que"><b>' + esc(g.nombre) + '</b>'
+          + (g.modelo ? '<small>' + esc(g.modelo) + '</small>' : '') + '</span>'
+          + '<span class="val">'
+          // `qdPctTag` exige etiqueta de periodo: la de Arena es el acumulado
+          // desde su baseline, y decirlo es lo que impide leerlo como el % del
+          // día. El número NO se calcula acá: lo trae el leaderboard.
+          + qdPctTag(g.pct, 'acum.', { motivo: g.pct_motivo }) + '</span>'
+          + '</div>';
+      }).join('');
+    }
+    return html + '</div>';
+  }
+
+  function pintarPaneles(d){
+    var el = document.getElementById('paneles');
+    // En Mundo no hay tablas de emisoras: un índice no tiene capitalización ni
+    // volumen, y "más operadas" no significa nada sobre el Nikkei. El resto de
+    // los paneles sí va, porque el calendario y Arena no son de un mapa.
+    var html = '';
+    if(estado.mapa !== 'mundo'){
+      var t = tablasDeMercado(filasDeTablas(d));
+      html += bloqueTabla('Más suben', t.suben, t.conteo, 'suben', 'pct');
+      html += bloqueTabla('Más bajan', t.bajan, t.conteo, 'bajan', 'pct');
+      html += bloqueTabla('Más operadas', t.operadas, t.conteo, 'operadas', 'importe');
+    }
+    html += bloqueSemana();
+    html += bloqueArena();
+    el.innerHTML = html;
+    el.hidden = false;
+    if(!panelesPedido) cargarPaneles();
+  }
+
+  function cargarPaneles(){
+    panelesPedido = true;
+    fetch('/api/mercado-paneles')
+      .then(function(r){ return r.json(); })
+      .then(function(j){ paneles = j; if(cache[estado.mapa]) pintarPaneles(cache[estado.mapa]); })
+      .catch(function(e){
+        // Un fallo de red no deja los paneles diciendo "cargando…" para
+        // siempre: se dice qué pasó.
+        paneles = { esta_semana: { eventos: [], fuentes: {
+          macro: { ok: false, motivo: e.message }, reportes: { ok: false, motivo: e.message } } },
+          arena: { agentes: [], motivo: 'no se pudo pedir el leaderboard: ' + e.message } };
+        if(cache[estado.mapa]) pintarPaneles(cache[estado.mapa]);
+      });
+  }
+
+  // Tap en una fila de tabla → la misma hoja que el cuadro del mapa.
+  document.getElementById('paneles').addEventListener('click', function(ev){
+    var f = ev.target.closest('.fila'); if(!f || !f.dataset.sym) return;
+    estado.symbol = f.dataset.sym; escribirUrl(true);
+    abrirHoja(cache[estado.mapa], f.dataset.sym);
+  });
 
   // ── Carga: UNA petición por mapa, y el toggle no vuelve a pedir ───
   var NOMBRE_MAPA = { us:'EE.UU.', mx:'México', mundo:'Mundo' };
