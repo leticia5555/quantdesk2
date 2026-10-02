@@ -746,6 +746,119 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B50 · EL TECHO QUE DERIVÉ MATÓ A UN AGENTE, Y EL 105s NO ERA UN BUG (2026-10-01)
+
+La corrida de humo de los siete, con el halt puesto (hora ET):
+
+| agente | wall | estado | el loop cortó por | vueltas | fichas |
+|---|---:|---|---|---:|---:|
+| gemini | 15s | `ok_target` | `end_turn` | 3 | 5/20 |
+| openai | 51s | `ok_target` | `call_budget` | 3 | 20/20 |
+| control | 67s | `ok_target` | `end_turn` | 3 | 9/20 |
+| claude | 77s | `ok_target` | `end_turn` | 4 | 10/20 |
+| grok | 146s | `ok_target` | `call_budget` | 3 | 20/20 |
+| deepseek | 200s | `ok_target` | `cuerpo_vacio` | 4 | 17/20 |
+| **qwen** | **238s** | **`aborted_cuerpo_vacio`** | `time_budget` | 3 | 12/20 |
+
+**La puerta falló, y el que la falló fue qwen — no DeepSeek.** Cuatro días
+apuntando a DeepSeek y sacó libro con 17 fichas.
+
+### LA CORRECCIÓN: EL 105s DE B45 NO ERA UN BUG
+
+En B45 leí un cierre con **104.984ms** de techo, dije que
+`ARENA_LLM_TIMEOUT_MS` existía y "no alcanzaba al camino que corre", y le puse
+el techo. **Estaba al revés.** El cierre sin techo está acotado por
+construcción:
+
+```
+usado + disponible = budgetMs + RESERVA = 255s, SIEMPRE
+255s + MARGEN 15s  = 270s = el deadline, exacto
+```
+
+`disponible` es, por definición, exactamente lo que queda. Nunca podía
+desbordar. Los 104.984ms eran el cierre **tomando el tiempo que le sobraba**,
+que es su trabajo.
+
+Y el techo que le puse **mató a qwen**: su cierre se cortó a **92.500ms
+exactos** —el techo— con `reloj_nuestro: true`, habiendo usado 238s de 270.
+Sin techo, ese cierre habría tenido ~109s.
+
+> **LA REGLA QUE FALTABA: el techo por llamada existe para que UNA llamada
+> colgada no se coma el presupuesto de las SIGUIENTES. Después del cierre no
+> hay siguientes.** Acotarlo no protege nada y le quita segundos al único turno
+> que convierte una corrida perdida en una decisión.
+>
+> Corolario general: **un límite se justifica por lo que protege, no por ser un
+> límite.** Antes de poner un techo hay que poder nombrar qué recurso defiende
+> de qué consumidor. Si no hay consumidor después, el techo es puro costo.
+
+El techo sigue aplicando a las vueltas de investigación, donde sí hay llamadas
+siguientes que proteger.
+
+### Y POR QUÉ NINGÚN VALOR SALVABA A LOS DOS
+
+DeepSeek necesita margen sobre 61s; qwen necesitaba más de 92.5s y ya iba en
+238s de 270. Subir el techo no cabía. **La disyuntiva era falsa porque el techo
+estaba en el lugar equivocado**, no porque hubiera que elegir un agente.
+
+### `estado` Y `terminó_por` NO SE CONTRADICEN: MIDEN ETAPAS DISTINTAS
+
+En la misma tanda, en direcciones opuestas:
+
+```
+deepseek   ok_target             + cuerpo_vacio
+qwen       aborted_cuerpo_vacio  + time_budget
+```
+
+**Ninguno está mal.** Son dos preguntas que los nombres hacían ver como una:
+
+| campo | contesta |
+|---|---|
+| `loop_cortó_por` (`stopped_by`) | por qué terminó la fase de **investigación** |
+| `estado` (`status`) | qué produjo el turno de **cierre**, que viene DESPUÉS |
+
+- **deepseek SÍ entregó libro.** Una vuelta volvió vacía (el loop cortó por
+  eso) y el cierre funcionó. Es un éxito: perdió una vuelta y entregó igual.
+- **qwen murió en el CIERRE, por reloj.** El loop se quedó sin tiempo
+  (`time_budget`), y después el cierre volvió vacío.
+
+**Y lo que importa para las tablas de la T2: el reparto de las tres culpas NO
+usa `stopped_by`.** Keyea sobre `status` (`CORRIDA_ABORTADA`) y sobre
+`llm_error.timeout_nuestro`. Verificado leyendo `_lib/arena-manos.js`. Las
+tablas publicadas no están afectadas por esta ambigüedad.
+
+Lo que sí se arregló: el campo publicado se llama ahora `loop_cortó_por`, y
+`coherenciaDeEtapas()` marca las combinaciones **imposibles** —un `aborted_*`
+sin `llm_error` que lo registre, o un `ok_*` con un fallo de cierre— en vez de
+pretender derivar una etapa de la otra, que sería borrar información.
+
+### `call_budget` CUENTA COMO COMPLETA
+
+grok y ChatGPT cortaron por `call_budget` con 20/20 fichas: **entregaron libro,
+pasan**. Pero no es el mismo hecho que `end_turn` y los dos salían como
+`ok_target`:
+
+| corte | qué es |
+|---|---|
+| `end_turn` | el modelo **decidió** que tenía suficiente |
+| `call_budget` | seguía trabajando y lo cortó NUESTRO tope de fichas |
+| `time_budget` | seguía trabajando y lo cortó NUESTRO reloj |
+
+Un agente que corta siempre por `call_budget` dice que 20 herramientas no le
+alcanzan: es un dato sobre el tope, no sobre el agente.
+
+### Y «VERDE» EN `arena-smoke` NO ERA LA PUERTA
+
+`/api/arena-smoke` decía *"VERDE: respondieron JSON válido sin truncarse"* —
+leído, razonablemente, como "listo para abrir". Es una sonda de conectividad:
+UNA llamada, `phase: 'scan'`, portafolio stand-in. **En esta tanda habría dicho
+VERDE y la puerta falló.**
+
+Ahora dice `CONECTIVIDAD OK (NO es la puerta de apertura)` y nombra cuál es.
+Dos sellos distintos no se pueden parecer.
+
+---
+
 ## B49 · UN CICLO DE IMPORTS SE JUZGA POR LA FORMA DE SUS ARISTAS (2026-09-30)
 
 `api/arena-shadow.js` importa cinco cosas de `api/arena-run.js`, y

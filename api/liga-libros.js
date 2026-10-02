@@ -97,9 +97,59 @@ export function secuenciaPublicable(ctx) {
     presupuesto: t.budget ?? null,
     usadas: t.used ?? pasos.length,
     vueltas: t.turns ?? null,
+    // ── DOS CAMPOS, DOS PREGUNTAS, Y LOS NOMBRES LO OCULTABAN ────────
+    // `estado` (el `status` de la corrida) y `terminó_por` (el `stopped_by`
+    // del loop) se leían como si contestaran lo mismo, y en la tanda del
+    // 1-oct salieron "contradiciéndose" en direcciones opuestas:
+    //
+    //   deepseek  ok_target             + cuerpo_vacio
+    //   qwen      aborted_cuerpo_vacio  + time_budget
+    //
+    // **Ninguno estaba mal.** Son etapas distintas de la misma corrida:
+    //
+    //   `loop_cortó_por` → por qué terminó la fase de INVESTIGACIÓN
+    //   `estado`         → qué produjo el turno de CIERRE, que viene DESPUÉS
+    //
+    // deepseek: una vuelta volvió vacía (el loop cortó por eso) y el cierre
+    // SÍ entregó libro. qwen: el loop se quedó sin reloj y después el CIERRE
+    // volvió vacío. Las dos lecturas son correctas y describen momentos
+    // distintos.
+    //
+    // El nombre viejo se conserva para no romper lectores, pero el nuevo dice
+    // de qué etapa habla. `etapas` las pone una al lado de la otra.
+    // El nombre viejo se conserva para no romper lectores; el nuevo dice de qué
+    // ETAPA habla. La explicación vive acá arriba y NO en el payload: era una
+    // frase en prosa repetida en cada una de las 200 filas del feed, y la
+    // prueba de tamaño la cazó — con razón.
     terminó_por: t.stopped_by || null,
+    loop_cortó_por: t.stopped_by || null,
     pasos,
   };
+}
+
+// ── LA COHERENCIA ENTRE LAS DOS ETAPAS ───────────────────────────────
+// No se puede DERIVAR una de la otra —miden cosas distintas— pero sí hay
+// combinaciones IMPOSIBLES, y ésas son las que valen una prueba:
+//
+//   · un `status` que arranca con `aborted_` SIN `llm_error` en el contexto:
+//     el aborto dice que el modelo falló y no hay registro de la falla.
+//   · un `status` `ok_*` CON `llm_error` del cierre: el cierre no puede haber
+//     fallado y haber entregado libro a la vez.
+//
+// Y una aclaración que NO es incoherencia y por eso no se marca: cualquier
+// `stopped_by` puede convivir con cualquier `status`. `cuerpo_vacio` en la
+// investigación con `ok_target` al cierre es el caso de deepseek del 1-oct, y
+// es un éxito: el agente perdió una vuelta y entregó igual.
+export function coherenciaDeEtapas(status, ctx) {
+  const abortada = String(status || '').startsWith('aborted');
+  const tieneError = !!(ctx && ctx.llm_error);
+  if (abortada && !tieneError) {
+    return { ok: false, motivo: `status \`${status}\` dice que el modelo falló, pero no hay \`llm_error\` que lo registre: el aborto no se puede atribuir.` };
+  }
+  if (!abortada && tieneError && ctx.llm_error.motivo) {
+    return { ok: false, motivo: `status \`${status}\` dice que entregó libro, pero el contexto trae un fallo del cierre (\`${ctx.llm_error.motivo}\`): no pueden ser las dos.` };
+  }
+  return { ok: true };
 }
 
 // ── POR QUÉ SE CAYÓ, EN LA FICHA Y NO EN EL JOURNAL ──────────────────

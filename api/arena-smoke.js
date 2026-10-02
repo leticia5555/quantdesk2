@@ -694,7 +694,7 @@ export default async function handler(req, res) {
   if (catalogOnly) {
     out.verdict = blocked.length
       ? `PASO 1: ${exact.length}/${out.slugs.length} slugs resueltos. ${blocked.length} bloqueados — poné las env vars de abajo y volvé a correr.`
-      : `PASO 1 VERDE: los ${exact.length} slugs existen en el catálogo. Corré sin ?catalog=1 para el paso 2.`;
+      : `PASO 1 OK (NO es la puerta de apertura): los ${exact.length} slugs existen en el catálogo. Corré sin ?catalog=1 para el paso 2, y después /api/arena-shadow por los siete, que es la puerta.`;
     return res.status(200).json(out);
   }
 
@@ -779,7 +779,18 @@ export default async function handler(req, res) {
       (l.agentes_sin_costo.length ? ` Sin precio: ${l.agentes_sin_costo.join(', ')} — el total real es MAYOR que esto.` : '');
   }
   out.verdict = red.length === 0 && blocked.length === 0
-    ? `VERDE: los ${green.length} agentes respondieron JSON válido sin truncarse. Costo de ESTE smoke: $${out.total_cost_usd.toFixed(4)}` +
+    // ── «VERDE» ACÁ NO ES LA PUERTA DE APERTURA (2026-10-01) ─────────
+    // Esto decía «VERDE: respondieron JSON válido sin truncarse», y se leyó —
+    // razonablemente — como que el sistema estaba listo para abrir. No lo es:
+    // este endpoint manda UNA llamada con `phase: 'scan'` y un portafolio
+    // stand-in. Es una sonda de CONECTIVIDAD Y FORMATO.
+    //
+    // La puerta de apertura es `/api/arena-shadow`: corrida completa, loop de
+    // herramientas real, rieles reales, órdenes calculadas. En la tanda del
+    // 1-oct este endpoint habría dicho VERDE y la puerta falló (qwen abortó).
+    //
+    // Dos sellos distintos no se pueden parecer. El prefijo lo dice.
+    ? `CONECTIVIDAD OK (NO es la puerta de apertura): los ${green.length} agentes respondieron JSON válido sin truncarse con UNA llamada y un portafolio stand-in. Esto prueba slug, formato y techo de salida — NO prueba que la liga pueda abrir. La puerta es /api/arena-shadow?agent=<id> por los siete, con su criterio de lecturas. Costo de ESTE smoke: $${out.total_cost_usd.toFixed(4)}` +
       (out.costo_proyectado ? `; costo ESTIMADO de operar: ~$${out.costo_proyectado.liga.rondas_fijas_dia_usd}/día con 3 rondas fijas` : '') +
       '. La nocturna puede correr con modelos nuevos.'
     : `ROJO: ${green.length}/${out.probes.length} en verde` +

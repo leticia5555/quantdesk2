@@ -494,6 +494,28 @@ holgura, el techo se puede apretar.
 | `estado` | empieza con `ok_` o es `rejected_rails` | **cualquier `aborted_*`** |
 | `error` | `null` | cualquier texto |
 | `corto_por` | `end_turn` · `no_tools` · `call_budget` | `cuerpo_vacio` · `error` · `time_budget` |
+
+> #### `call_budget` CUENTA COMO COMPLETA — y por qué no es lo mismo que `end_turn`
+>
+> En la tanda del 1-oct, grok y ChatGPT cortaron por `call_budget` con 20/20
+> fichas usadas. **Los dos entregaron libro, así que pasan la puerta.**
+>
+> Pero no es el mismo hecho que `end_turn`, y conviene saber la diferencia
+> porque se leen igual en `estado: ok_target`:
+>
+> | corte | qué significa |
+> |---|---|
+> | `end_turn` | el modelo **decidió** que ya tenía suficiente |
+> | `call_budget` | el modelo **seguía trabajando** y lo cortó nuestro tope de 20 fichas |
+> | `time_budget` | seguía trabajando y lo cortó el reloj |
+>
+> `end_turn` es una decisión del modelo; los otros dos son topes nuestros. Un
+> agente que corta siempre por `call_budget` está diciendo que 20 herramientas
+> no le alcanzan — es un dato sobre el tope, no sobre el agente, y vale
+> mirarlo si se repite varios días.
+>
+> **Lo que sí sería rojo:** `call_budget` SIN libro (`rejected_rails` o un
+> `aborted_*`). Ahí el tope se comió la corrida.
 | `reloj_pct` | < 90 | ≥ 90 (llegó justo, va a abortar un día malo) |
 | `costo` | un número | `null` (no sabemos qué gastó) |
 | `lectura_max_ms` | **< 90.000 en TODAS las vueltas** | ≥ 90.000 en cualquiera |

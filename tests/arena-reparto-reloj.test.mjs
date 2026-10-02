@@ -234,5 +234,67 @@ console.log('\n── todos los relojes de una corrida, enumerados ──');
     `${relojDisponible({ scanMs: 0 }) + RESERVA_CIERRE_MS + MARGEN_MS} <= ${ARENA_AGENT_DEADLINE_MS}`);
 }
 
+// ── 8) EL CIERRE NO LLEVA EL TECHO POR LLAMADA ───────────────────────
+// CORRECCIÓN DE B45, con evidencia de la corrida de humo del 1-oct 2026.
+//
+// En B45 leí un cierre con 104.984ms de techo y lo llamé "un límite real que
+// no alcanzaba al camino que corre". **Era al revés.** El cierre sin techo
+// está acotado POR CONSTRUCCIÓN:
+//
+//     usado + disponible = budgetMs + RESERVA = 255s, siempre
+//     255s + MARGEN 15s  = 270s = el deadline, exacto
+//
+// Los 104.984ms no eran un techo suelto: eran el cierre tomando lo que le
+// quedaba, que es su trabajo.
+//
+// Y ponerle el techo MATÓ A UN AGENTE: qwen se cortó en el cierre a 92.500ms
+// exactos —el techo— con `reloj_nuestro: true`, habiendo usado 238s de 270.
+// Sin techo ese cierre habría tenido ~109s.
+//
+// LA REGLA: el techo por llamada existe para que UNA llamada colgada no se
+// coma el presupuesto de las SIGUIENTES. Después del cierre no hay siguientes.
+console.log('\n── el cierre toma lo que queda, sin techo ──');
+{
+  const B = relojDisponible({ scanMs: 0 });
+  const cierre = (usado) => Math.max(PISO_VUELTA_MS, Math.max(0, (B + RESERVA_CIERRE_MS) - usado));
+
+  // El caso de qwen, reproducido.
+  ok(cierre(146000) > ARENA_LLM_TIMEOUT_MS,
+    'con 146s usados el cierre toma ~109s, MÁS que el techo por llamada: es lo que salvó a qwen',
+    `${cierre(146000) / 1000}s > ${ARENA_LLM_TIMEOUT_MS / 1000}s`);
+  ok(cierre(146000) === 109000, 'y el número exacto', String(cierre(146000)));
+
+  // LA COTA, barrida: mientras el piso no muerda, total + margen == deadline.
+  const desbordes = [];
+  for (let u = 0; u <= (B + RESERVA_CIERRE_MS) - PISO_VUELTA_MS; u += 977) {
+    if (u + cierre(u) + MARGEN_MS !== ARENA_AGENT_DEADLINE_MS) desbordes.push(u);
+  }
+  ok(desbordes.length === 0,
+    'y para todo reparto donde el piso no manda, usado + cierre + margen == deadline EXACTO',
+    desbordes.slice(0, 3).join(', '));
+
+  // El único caso en que el piso empuja por encima: el loop desbordado. Se
+  // declara en vez de pretender que la cota es absoluta.
+  const extremo = (B + RESERVA_CIERRE_MS) - 1000;
+  ok(extremo + cierre(extremo) + MARGEN_MS > ARENA_AGENT_DEADLINE_MS,
+    'con el loop desbordado el piso de 10s empuja hasta 15s por encima: lo absorbe el MARGEN, y es lo que permite ESCRIBIR que se pasó',
+    `${(extremo + cierre(extremo) + MARGEN_MS) / 1000}s vs ${ARENA_AGENT_DEADLINE_MS / 1000}s`);
+
+  // Y que el código no vuelva a meterle el techo.
+  const src = readFileSync(new URL('../api/_lib/arena-tool-loop.js', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('const relojDeCierre'));
+  ok(/return Math\.max\(PISO_VUELTA_MS, disponible\);/.test(fn.slice(0, 2500)),
+    'el cierre devuelve `disponible` sin pasarlo por el techo');
+  ok(!/timeoutMs \? Math\.min\(timeoutMs, disponible\)/.test(src),
+    'y la versión con techo ya no está: fue la que mató a qwen');
+
+  // La vuelta de investigación SÍ lo lleva: ahí el techo protege a las
+  // siguientes, que es su razón de existir.
+  const vuelta = (rest) => Math.max(PISO_VUELTA_MS, Math.min(ARENA_LLM_TIMEOUT_MS, rest - RESERVA_CIERRE_MS));
+  ok(vuelta(B) === ARENA_LLM_TIMEOUT_MS,
+    'la vuelta de investigación sigue acotada: ahí sí hay llamadas siguientes que proteger',
+    String(vuelta(B)));
+}
+
 console.log(failures ? `\n${failures} fallo(s)` : '\nTodo en verde');
 process.exit(failures ? 1 : 0);

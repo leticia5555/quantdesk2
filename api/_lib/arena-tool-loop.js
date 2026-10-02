@@ -740,7 +740,36 @@ export async function runToolLoop({
     // le daría un techo que ya no existe — así es como el total se pasaba del
     // deadline sin que la cuenta lo delatara.
     const disponible = Math.max(0, (budgetMs + RESERVA_CIERRE_MS) - usado);
-    return Math.max(PISO_VUELTA_MS, timeoutMs ? Math.min(timeoutMs, disponible) : disponible);
+    // ── EL CIERRE NO LLEVA EL TECHO POR LLAMADA (2026-10-01) ─────────
+    // Y CORRIJO UNA CONCLUSIÓN MÍA DE B45. Ahí leí un cierre con 104.984ms de
+    // techo y lo llamé "un límite real que no alcanzaba al camino que corre".
+    // Era al revés: **el cierre sin techo estaba acotado por construcción.**
+    //
+    //     usado + disponible = budgetMs + RESERVA = 255s, SIEMPRE
+    //     255s + MARGEN 15s = 270s = el deadline, exacto
+    //
+    // O sea que `disponible` nunca podía producir un desborde: es, por
+    // definición, exactamente lo que queda. Los 104.984ms no eran un techo
+    // suelto — eran el cierre tomando el tiempo que le sobraba, que es lo que
+    // tiene que hacer.
+    //
+    // Y ponerle el techo por llamada **mató a un agente**: en la corrida de
+    // humo del 1-oct, qwen se cortó en el cierre a 92.500ms exactos —el techo—
+    // con `reloj_nuestro: true`, habiendo usado 238s de 270. Sin el techo, ese
+    // cierre habría tenido ~109s.
+    //
+    // LA REGLA, que es la que faltaba: el techo por llamada existe para que
+    // UNA llamada colgada no se coma el presupuesto de las SIGUIENTES. Después
+    // del cierre no hay siguientes. Acotarlo no protege nada y le quita
+    // segundos al único turno que convierte una corrida perdida en decisión.
+    //
+    // EL ÚNICO CASO EN QUE ESTO PUEDE PASARSE: el `max` con el piso. Con
+    // `usado ≥ 245s` el piso de 10s gana y el total se va hasta 15s por
+    // encima del deadline — justo lo que el MARGEN absorbe. Requiere que el
+    // loop se haya desbordado (una vuelta que ignoró su techo, o sea un fetch
+    // colgado), y en ese escenario el piso es lo que permite ESCRIBIR que se
+    // pasó. Un cierre de 0s no journalea nada.
+    return Math.max(PISO_VUELTA_MS, disponible);
   };
   const llamarCierre = (msgs, extra = {}) => call({
     agent, system, messages: msgs, maxTokens, now,
