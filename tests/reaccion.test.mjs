@@ -19,12 +19,13 @@
 // ═══════════════════════════════════════════════════════════════
 
 import {
-  CRITERIOS_REACCION, retornoVentana, sorpresaEps, sorpresaIngresos,
+  CRITERIOS_REACCION, retornoVentana, retornoSaltoNocturno, sorpresaEps, sorpresaIngresos,
   clasificaFuenteEstimado, ingresosTrimestralesXbrl, ingresoDelEvento,
   htmlATexto, parrafosDeGuia, eligeExhibit991, pValorT, pearson, ols,
   analizaReaccion, aciertoDireccional, advertenciasFijas, renderCensoMd, renderAnalisisMd, SENALES,
 } from '../api/_lib/reaccion.js';
 import { CRITERIOS_F2 } from '../api/_lib/earnings-beat-analyze.js';
+import { readFileSync } from 'node:fs';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -318,6 +319,110 @@ ok(/SESGO DE SELECCIÓN en A/.test(parcial.advertencia_seleccion || conSenal.adv
 const parcialEmp = analizaReaccion(fabrica(200, { fuerza: 0.5 }).map((e) => (['S0', 'S1', 'S2'].includes(e.symbol) ? { ...e, eps: { ok: false } } : e)));
 ok(/SESGO DE SELECCIÓN en A/.test(parcialEmp.advertencia_seleccion || ''), 'si A no cubre todas las empresas, se dice');
 ok(/Sin datos: S0 S1 S2/.test(parcialEmp.advertencia_seleccion), 'nombrando de qué empresas NO hay', parcialEmp.advertencia_seleccion);
+
+console.log('LA VENTANA: una principal y una SENSIBILIDAD, congeladas');
+
+const SN = C.sensibilidad_salto_nocturno;
+ok(C.ventana_principal === 'cierre(T-1) → apertura(T+1)', 'la ventana PRINCIPAL es la del encargo', C.ventana_principal);
+ok(SN.rol === 'sensibilidad' && SN.reemplaza_a_la_principal === false && SN.decide_el_veredicto === false,
+  'el salto nocturno es SENSIBILIDAD: no reemplaza a la principal y no decide el veredicto');
+ok(SN.solo_horas.join(',') === 'bmo,amc', 'solo sobre los eventos con hora BMO/AMC conocida');
+ok(SN.bmo === 'cierre(T-1) → apertura(T)' && SN.amc === 'cierre(T) → apertura(T+1)', 'con las dos ventanas escritas');
+ok(SN.mismos_criterios_que_la_principal === true, 'y con los mismos criterios');
+// Congelado: ni en tiempo de ejecución se mueve la portería.
+ok(Object.isFrozen(C) && Object.isFrozen(SN) && Object.isFrozen(C.tags_ingresos), 'CRITERIOS_REACCION está congelado en profundidad');
+let lanzo = false;
+try { SN.decide_el_veredicto = true; } catch { lanzo = true; }
+ok(lanzo && SN.decide_el_veredicto === false, 'intentar que la sensibilidad decida el veredicto LANZA y no cambia nada');
+lanzo = false;
+try { C.min_abs_r = 0.05; } catch { lanzo = true; }
+ok(lanzo && C.min_abs_r === 0.20, 'bajar el umbral de r en tiempo de ejecución también');
+
+console.log('el salto nocturno: BMO y AMC, y lo que queda fuera');
+
+const SPY3 = { fechas: ['2026-06-24', '2026-06-25', '2026-06-26'], opens: [500, 502, 504], closes: [501, 503, 505] };
+const ACC3 = { fechas: [...SPY3.fechas], opens: [100, 90, 80], closes: [100, 95, 85] };
+const bmo = retornoSaltoNocturno(ACC3, SPY3, '2026-06-25', 'BMO');
+ok(bmo.ok && bmo.cierre === '2026-06-24' && bmo.apertura === '2026-06-25', 'BMO: cierre(T-1) → apertura(T)', `${bmo.cierre} → ${bmo.apertura}`);
+ok(Math.abs(bmo.ret_accion - (90 / 100 - 1)) < 1e-12, 'mide el salto ANTES de la sesión del reporte');
+const amc = retornoSaltoNocturno(ACC3, SPY3, '2026-06-25', 'amc');
+ok(amc.ok && amc.cierre === '2026-06-25' && amc.apertura === '2026-06-26', 'AMC: cierre(T) → apertura(T+1)', `${amc.cierre} → ${amc.apertura}`);
+ok(Math.abs(amc.ret_accion - (80 / 95 - 1)) < 1e-12, 'mide el salto DESPUÉS de la sesión del reporte');
+ok(Math.abs(amc.ret_ajustado - (amc.ret_accion - amc.ret_spy)) < 1e-12, 'ajustado por SPY igual que la principal');
+ok(retornoSaltoNocturno(ACC3, SPY3, '2026-06-25', 'dmh').motivo === 'hora_no_es_bmo_ni_amc', 'durante la sesión (dmh) queda FUERA');
+ok(retornoSaltoNocturno(ACC3, SPY3, '2026-06-25', null).motivo === 'sin_hora', 'sin hora queda FUERA: no se adivina');
+ok(retornoSaltoNocturno(ACC3, SPY3, '2026-06-27', 'amc').motivo === 'reporte_amc_en_dia_sin_sesion',
+  'un "AMC" en un día sin sesión no se corre a la sesión más cercana');
+const sinVelaS = retornoSaltoNocturno({ fechas: ['2026-06-24', '2026-06-25'], opens: [100, 90], closes: [100, 95] }, SPY3, '2026-06-25', 'amc');
+ok(sinVelaS.motivo === 'sin_vela_apertura' && sinVelaS.fecha === '2026-06-26', 'una vela faltante se declara, no se rellena');
+
+console.log('ANTI-ELECCIÓN: la sensibilidad NO puede cambiar el veredicto');
+
+// La principal SIN señal y el salto con una señal FUERTE. Si la sensibilidad
+// pudiera tocar el veredicto, este es el caso donde lo haría.
+// El ruido sale del ÍNDICE con su propio generador, no de la sorpresa: un ruido
+// que es función de la señal (la primera versión usaba `(v*7)%3`) no es ruido,
+// es otra señal disfrazada, y el salto "mudo" dejaba de estarlo.
+function conSalto(eventos, fuerzaSalto) {
+  const ruido = rng(4242);
+  return eventos.map((e) => {
+    const v = e.eps.winsorizada;
+    return { ...e, salto: { ok: true, hora: 'amc', ret_ajustado: fuerzaSalto * v / 100 + 0.04 * ruido() } };
+  });
+}
+const baseSin = fabrica(200, { fuerza: 0 });
+const sinS = analizaReaccion(baseSin);
+const conS = analizaReaccion(conSalto(baseSin, 0.8));
+const conAS = conS.sensibilidad.senales.find((x) => x.id === 'A');
+ok(conAS.estado === 'EXPLICA', 'en la sensibilidad, A EXPLICA (la señal plantada en el salto)', `${conAS.estado} r=${conAS.r}`);
+ok(conS.veredicto === sinS.veredicto && conS.veredicto === 'MAYORMENTE_IMPREDECIBLE',
+  'y el veredicto es EXACTAMENTE el de la principal sola: sigue siendo impredecible', `${sinS.veredicto} → ${conS.veredicto}`);
+ok(conS.titular === sinS.titular, 'el titular, idéntico');
+ok(JSON.stringify(conS.senales) === JSON.stringify(sinS.senales), 'las señales de la principal, idénticas');
+ok(JSON.stringify(conS.conjunto) === JSON.stringify(sinS.conjunto), 'el conjunto de la principal, idéntico');
+// Y al revés: principal fuerte, salto sin señal.
+const baseCon = fabrica(200, { fuerza: 0.5, ruido: 0.02 });
+const principalSola = analizaReaccion(baseCon);
+const conSaltoMudo = analizaReaccion(conSalto(baseCon, 0));
+ok(conSaltoMudo.veredicto === principalSola.veredicto && conSaltoMudo.veredicto === 'ALGUNA_SENAL_EXPLICA',
+  'principal fuerte y salto mudo: el veredicto sigue siendo el de la principal', conSaltoMudo.veredicto);
+ok(conSaltoMudo.sensibilidad.senales.find((x) => x.id === 'A').estado !== 'EXPLICA',
+  'aunque la sensibilidad diga otra cosa — y queda a la vista, al lado');
+
+console.log('la sensibilidad usa las MISMAS señales y el MISMO código');
+
+const parcialS = analizaReaccion(conSalto(fabrica(200, { fuerza: 0.5, conIngresos: 60 }), 0.5), { motivosNoEntra: { guia: 'x' } });
+ok(parcialS.sensibilidad.senales.find((x) => x.id === 'B').estado === 'NO_ENTRA',
+  'una señal que no entró en la principal tampoco entra en la sensibilidad');
+ok(/No entró en la principal/.test(parcialS.sensibilidad.senales.find((x) => x.id === 'B').porque), 'y se dice por qué');
+ok(parcialS.sensibilidad.conjunto.senales.join('') === parcialS.conjunto.senales.join(''),
+  'el conjunto de la sensibilidad usa las mismas señales que el de la principal');
+// Candado propio: con 40 eventos con hora, la sensibilidad es INCONCLUSO aunque la principal no.
+const pocosConHora = analizaReaccion(fabrica(200, { fuerza: 0.5, ruido: 0.02 }).map((e, i) => (i < 40 ? { ...e, salto: { ok: true, ret_ajustado: 0.01 * e.eps.winsorizada } } : { ...e, salto: { ok: false, motivo: 'sin_hora' } })));
+ok(pocosConHora.sensibilidad.senales.find((x) => x.id === 'A').estado === 'INCONCLUSO'
+  && pocosConHora.senales.find((x) => x.id === 'A').estado === 'EXPLICA',
+  'con 40 eventos con hora, la sensibilidad es INCONCLUSO y la principal sigue midiendo');
+ok(pocosConHora.sensibilidad.eventos_con_salto === 40 && pocosConHora.sensibilidad.descartes.sin_hora === 160,
+  'con los eventos con salto y los descartes por motivo', JSON.stringify(pocosConHora.sensibilidad.descartes));
+// UNA sola implementación de la medición: `pearson(` se llama en un solo lugar
+// del análisis. Si alguien le diera a la sensibilidad su propio cálculo, este
+// test lo agarra.
+const fuente = readFileSync(new URL('../api/_lib/reaccion.js', import.meta.url), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const llamadasPearson = (fuente.match(/[^n]\bpearson\(/g) || []).filter((m) => !/function/.test(m)).length;
+ok((fuente.match(/= pearson\(/g) || []).length === 1, 'pearson() se llama en UN solo lugar: la medición es compartida', llamadasPearson);
+ok((fuente.match(/= ols\(/g) || []).length === 1, 'y ols() también');
+ok(/mideSenal\(lista, x, saltoDe/.test(fuente), 'la sensibilidad mide con mideSenal, el mismo código de la principal');
+
+console.log('la sensibilidad en el markdown: DESPUÉS de la principal');
+
+const mdS = renderAnalisisMd({ ...conS, generado_en: 'x' });
+const iVer = mdS.indexOf('## VEREDICTO'), iSen = mdS.indexOf('## Cada señal'), iSens = mdS.indexOf('SENSIBILIDAD pre-registrada');
+ok(iVer >= 0 && iSen > iVer && iSens > iSen, 'el orden es: veredicto, señales de la principal, y recién después la sensibilidad', `${iVer} ${iSen} ${iSens}`);
+ok(/NO reemplaza a la principal y NO decide el veredicto/.test(mdS), 'con la etiqueta que dice que no decide');
+ok(/no una invitación a quedarse con la que salió mejor/.test(mdS), 'y la nota de por qué');
+ok(analizaReaccion(fabrica(200).map((e, i) => (i % 3 ? { ...e, ret: { ok: false, motivo: 'x' } } : e))).sensibilidad === null,
+  'sin variable principal, no hay sensibilidad que reportar');
 
 console.log('markdown');
 

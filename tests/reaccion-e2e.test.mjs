@@ -244,6 +244,12 @@ let censoP;
   ok(queries.length > 0 && queries.every((q) => /^\s*select/i.test(q.trim())), 'TODAS las queries son SELECT', JSON.stringify(queries));
   ok(!queries.some((q) => /cron_heartbeat|insert into|create table|update |delete from/i.test(q)), 'ni heartbeat ni escrituras');
   ok(censoP.eventos.con_eps === 120, 'la señal A sale de pead_earnings', censoP.eventos.con_eps);
+  // La SENSIBILIDAD se cuenta ya en el censo: 40 reportes con hora AMC.
+  ok(p.sensibilidad && p.sensibilidad.con_salto === 40 && p.sensibilidad.de === 120,
+    'el censo cuenta cuántos eventos permiten la sensibilidad del salto nocturno', JSON.stringify(p.sensibilidad && { c: p.sensibilidad.con_salto, d: p.sensibilidad.de }));
+  ok(p.sensibilidad.alcanza_el_candado === false, 'y dice que con 40 NO alcanza el candado de 100 — antes de ver ningún resultado');
+  ok(p.sensibilidad.descartes.sin_hora === 80, 'los demás caen por no tener hora', JSON.stringify(p.sensibilidad.descartes));
+  ok(/no reemplaza a la principal/.test(p.sensibilidad.rol), 'con su rol dicho');
 
   // Una serie que falta se DECLARA con su motivo.
   global.fetch = mockFetch({ sinYahoo: ['XOM'] });
@@ -382,6 +388,14 @@ console.log('FASE 1 · la regla del 50% la aplica el código');
   ok(!pedidos.some((u) => /analyst-estimates|alphavantage/.test(u)), 'la Fase 1 no repite las sondas caras (AV, analyst-estimates)');
   ok(!pedidos.some((u) => /ex991\.htm|submissions/.test(u)), 'ni lee 8-K: la guía no entra');
   ok(a.detalle_eventos === undefined, 'el detalle por evento no viene por default');
+  // LA SENSIBILIDAD: al lado, con su candado propio, sin tocar el veredicto.
+  ok(a.ventana_principal === 'cierre(T-1) → apertura(T+1)', 'la respuesta dice cuál es la ventana principal');
+  ok(a.sensibilidad && a.sensibilidad.reemplaza_a_la_principal === false && a.sensibilidad.decide_el_veredicto === false,
+    'la sensibilidad viaja declarada como tal');
+  ok(a.sensibilidad.eventos_con_salto === 40, 'sobre los 40 reportes con hora', a.sensibilidad.eventos_con_salto);
+  ok(a.sensibilidad.senales.find((x) => x.id === 'A').estado === 'INCONCLUSO',
+    'con 40 eventos, la sensibilidad de A es INCONCLUSO — y la principal sigue siendo EXPLICA', a.sensibilidad.senales.find((x) => x.id === 'A').estado);
+  ok(a.sensibilidad.senales.find((x) => x.id === 'C').estado === 'NO_ENTRA', 'C tampoco entra en la sensibilidad');
 
   // Con Finnhub a medias y FMP con la mitad: B queda bajo 50% → NO ENTRA.
   global.fetch = mockFetch({ finnhubParcial: ['AAPL', 'MSFT'], fmpBloqueados: ['KO', 'PEP', 'XOM', 'NKE'] });
@@ -396,6 +410,8 @@ console.log('FASE 1 · la regla del 50% la aplica el código');
   await handler(GET({ secret: SECRET, fase: '1', format: 'md' }), md);
   ok(/VEREDICTO:/.test(md.text) && /ocurre de noche/.test(md.text), 'el md abre con el veredicto y la advertencia del PEAD');
   ok(/\| C — /.test(md.text) && /NO ENTRA/.test(md.text), 'con la C marcada como no entra');
+  ok(md.text.indexOf('SENSIBILIDAD pre-registrada') > md.text.indexOf('## Cada señal'),
+    'y la sensibilidad aparece DESPUÉS de la principal, con su etiqueta');
 
   const det = mockRes();
   await handler(GET({ secret: SECRET, fase: '1', eventos: '1' }), det);

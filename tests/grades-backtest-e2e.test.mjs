@@ -531,9 +531,24 @@ console.log('un 402 por limit NO se clasifica como auth_error');
   const f = r.body.cobertura.simbolos_sin_grades[0];
   ok(f.motivo === 'parametro_fuera_de_rango', 'el motivo es el parámetro, no auth', f.motivo);
   ok(f.status === 402 && /between 0 and 10/.test(f.body_sample || ''), 'con el status y el cuerpo que lo dicen');
-  ok(/NO un problema de plan/.test(f.detalle || '') && /No se toca la key/.test(f.detalle || ''),
-    'y el detalle dice explícitamente que NO se toca la key — el texto anterior mandaba a rotarla', f.detalle);
+  // El texto dice lo que el dato sostiene: el VALOR no está en el plan, y se
+  // arregla cambiando el valor, no la key. La versión anterior decía "NO es un
+  // problema de plan", que es falso para `period=quarter` (un valor de pago).
+  ok(/ese VALOR del parámetro no está en el plan/.test(f.detalle || '') && /no la key/.test(f.detalle || ''),
+    'el detalle dice que es el VALOR y que no se toca la key — sin afirmar que "no es el plan"', f.detalle);
+  ok(!/NO un problema de plan/.test(f.detalle || ''), 'y ya no afirma "NO es un problema de plan"');
   ok(!/auth/.test(f.motivo), 'en ninguna forma dice auth');
+
+  // Un 402 de `symbol` — el del censo de 35 de 75 — NO es "un valor fuera de
+  // rango, no es el plan": es justamente el plan, sobre esa empresa.
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: "Premium Query Parameter: This value set for 'symbol' is not available under your current subscription please visit our subscription page to upgrade your plan" } });
+  const sym = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0' }), sym);
+  const fs = sym.body.cobertura.simbolos_sin_grades[0];
+  ok(fs.motivo === 'sin_acceso_al_simbolo', 'un 402 que nombra `symbol` es sin_acceso_al_simbolo, no parametro_fuera_de_rango', fs.motivo);
+  ok(/el plan NO cubre/.test(fs.detalle || '') && !/NO un problema de plan/.test(fs.detalle || ''),
+    'y el texto dice que el plan no cubre la empresa — no lo contrario', fs.detalle);
+  ok(sym.body.muestra.descartes.sin_acceso_al_simbolo > 0, 'y sus eventos caen en la cubeta de artefacto del plan');
 
   // Un 402 cuyo cuerpo NO nombra un parámetro: se admite que no se sabe.
   global.fetch = mockFetch(FX, { todos: { status: 402, body: 'This endpoint is not available under your current subscription' } });

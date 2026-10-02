@@ -33,7 +33,7 @@
 import { sql } from './_lib/db.js';
 import { bajaSerie, bajaSeries } from './_lib/yahoo-daily.js';
 import {
-  CRITERIOS_REACCION, retornoVentana, sorpresaEps, sorpresaIngresos, clasificaFuenteEstimado,
+  CRITERIOS_REACCION, retornoVentana, retornoSaltoNocturno, sorpresaEps, sorpresaIngresos, clasificaFuenteEstimado,
   ingresoDelEvento, analizaReaccion, advertenciasFijas, renderCensoMd, renderAnalisisMd,
 } from './_lib/reaccion.js';
 import {
@@ -98,10 +98,17 @@ async function cargaEventos() {
 async function preciosDeEventos(eventos, { deadline }) {
   const simbolos = [...new Set(eventos.map((e) => e.symbol))].sort();
   const [spy, series] = await Promise.all([bajaSerie('SPY', RANGO_PRECIOS), bajaSeries(simbolos, RANGO_PRECIOS)]);
-  const ret = new Map();
-  for (const e of eventos) ret.set(`${e.symbol}|${e.report_date}`, retornoVentana(series[e.symbol], spy, e.report_date));
+  const ret = new Map(), salto = new Map();
+  for (const e of eventos) {
+    const k = `${e.symbol}|${e.report_date}`;
+    ret.set(k, retornoVentana(series[e.symbol], spy, e.report_date));
+    // La SENSIBILIDAD pre-registrada: solo con hora BMO/AMC conocida. Se mide
+    // con las mismas series, en la misma pasada — no hay una bajada aparte que
+    // pueda traer otros datos.
+    salto.set(k, retornoSaltoNocturno(series[e.symbol], spy, e.report_date, e.hour));
+  }
   return {
-    ret,
+    ret, salto,
     series: { pedidas: simbolos.length, ok: simbolos.filter((s) => series[s]).length, spy: !!spy },
     simbolos_sin_serie: simbolos.filter((s) => !series[s]),
     cortado: Date.now() > deadline,
@@ -298,6 +305,16 @@ export default async function handler(req, res) {
           total: eventos.length, con_retorno: ok, cobertura: +cob.toFixed(3), descartes,
           series: p.series, simbolos_sin_serie: p.simbolos_sin_serie,
           con_hora: eventos.filter((e) => e.hour).length, error_hora: errorHora,
+          // La cobertura de la SENSIBILIDAD, contada en el censo para que la
+          // decisión de cuánto pesa se tome con este número y no con el resultado.
+          sensibilidad: (() => {
+            const ss = [...p.salto.values()];
+            const ok = ss.filter((x) => x.ok).length;
+            const motivos = {};
+            for (const x of ss) if (!x.ok) motivos[x.motivo] = (motivos[x.motivo] || 0) + 1;
+            return { rol: 'sensibilidad — no reemplaza a la principal', ventana: `BMO: ${CRITERIOS_REACCION.sensibilidad_salto_nocturno.bmo} · AMC: ${CRITERIOS_REACCION.sensibilidad_salto_nocturno.amc}`,
+              con_salto: ok, de: eventos.length, alcanza_el_candado: ok >= CRITERIOS_REACCION.min_eventos, descartes: motivos };
+          })(),
           entra: cob >= CRITERIOS_REACCION.min_cobertura_frente,
           porque: cob >= CRITERIOS_REACCION.min_cobertura_frente
             ? `${(cob * 100).toFixed(0)}% de los eventos tiene la ventana completa: la variable dependiente existe.`
@@ -350,6 +367,7 @@ export default async function handler(req, res) {
         return {
           symbol: e.symbol, report_date: e.report_date,
           ret: p.ret.get(`${e.symbol}|${e.report_date}`),
+          salto: p.salto.get(`${e.symbol}|${e.report_date}`),
           eps: sorpresaEps(e.reported_eps, e.estimated_eps),
           // Real y estimado de la MISMA fuente: mezclar el real de EDGAR con el
           // estimado de otra fuente compararía dos definiciones de "ingresos".

@@ -77,11 +77,49 @@ que incluye **una sesión completa, el día T**:
 Ese ruido **baja** las correlaciones; no las sube. Así que un "no explica" puede
 ser en parte la ventana — y un "explica" sobrevivió a pesar de ella.
 
-La alternativa (el gap puro, usando la hora de `pead_event_hour`) es **otra
-variable dependiente** y se decide ANTES de correr, no después de ver cuál da
-mejor. Esta versión usa la ventana del encargo; el censo cuenta cuántos eventos
-tienen la hora conocida, para que la decisión de cambiarla — si se toma — se tome
-con ese número y no con el resultado.
+### La decisión, congelada antes de correr (aprobada)
+
+- **PRINCIPAL:** cierre(T-1) → apertura(T+1), tal como está arriba. Es la
+  **única** que decide el veredicto.
+- **SENSIBILIDAD pre-registrada:** el salto nocturno, **solo** sobre los eventos
+  con hora BMO/AMC conocida (`pead_event_hour`):
+  - **BMO** → cierre(T-1) → apertura(T)
+  - **AMC** → cierre(T) → apertura(T+1)
+  - `dmh` (durante la sesión) y la hora desconocida quedan **fuera**: no hay salto
+    nocturno que medir, y adivinar la hora sería elegir la ventana a ojo.
+  - Un "AMC" en un día sin sesión **no** se corre a la sesión más cercana: se
+    descarta con su motivo.
+
+La sensibilidad se reporta **al lado** y **nunca reemplaza a la principal**. Para
+que no se pueda elegir la que salga mejor después de ver las dos, eso está
+asegurado de cuatro maneras:
+
+1. **En `CRITERIOS_REACCION`**: `ventana_principal`, y
+   `sensibilidad_salto_nocturno` con `rol: 'sensibilidad'`,
+   `reemplaza_a_la_principal: false` y `decide_el_veredicto: false`.
+2. **Congelado con `Object.freeze` en profundidad**: intentar
+   `decide_el_veredicto = true` o bajar `min_abs_r` en tiempo de ejecución
+   **lanza** y no cambia nada. Hay test.
+3. **En el orden del código**: el veredicto y el titular se cierran **antes** de
+   calcular la sensibilidad, y nada de lo que sigue los toca.
+4. **El test anti-elección**: eventos donde la principal **no** tiene señal y el
+   salto tiene una **fuerte**. La sensibilidad dice EXPLICA; el veredicto, el
+   titular, las señales y el conjunto de la principal son **idénticos** a los de
+   los mismos eventos sin el salto. Y al revés.
+
+**Mismas señales, mismo código.** La sensibilidad hereda qué señales entraron
+en la principal (si cada ventana decidiera eso, serían dos experimentos con un
+mismo nombre) y mide con la **misma** función: `pearson()` y `ols()` se llaman en
+un solo lugar del análisis, y hay un test que lo verifica leyendo el código.
+Tiene su propio candado de 100: con pocos eventos con hora, sale INCONCLUSO
+mientras la principal sigue midiendo.
+
+**El censo cuenta la cobertura de la sensibilidad antes de cualquier resultado**
+(`frentes.precios.sensibilidad`), para que su peso se juzgue con ese número y no
+con lo que dé.
+
+Si la sensibilidad y la principal discrepan, eso es información sobre la
+ventana — no una invitación a quedarse con la que salió mejor.
 
 ---
 
@@ -300,6 +338,33 @@ Ahora el nombre tiene que aparecer **en contexto de parámetro**: entre comillas
 (`'period'`, que es como FMP los nombra), con `=`, o pegado a una frase que solo
 se usa para parámetros (*must*, *is required*, *invalid …*). Hay tests de
 regresión con el mensaje real de plan y con *"from 2019 to 2026"*.
+
+### Y dos más de la misma familia, encontradas al revisar esa cobertura
+
+1. **El 402 de `symbol` en la frontera de grades** salía como
+   `parametro_fuera_de_rango` con el texto *"NO es un problema de plan. No se
+   toca la key."* Para una empresa que el plan no cubre — el caso del censo de 35
+   de 75 — eso es falso: **es** el plan, sobre esa empresa. Ahora es
+   `sin_acceso_al_simbolo`, con un texto que dice eso. El texto del parámetro
+   también cambió: decía "NO es un problema de plan" y para `period=quarter` (un
+   valor de pago) tampoco era cierto; ahora dice *"ese VALOR del parámetro no está
+   en el plan. Se arregla cambiando el valor, no la key."*
+2. **El smoke** con un símbolo fuera del plan caía en `http_error_uniforme` y
+   escribía *"No es el `limit` ni el símbolo"* — y era el símbolo. Ahora tiene su
+   causa (`sin_acceso_al_simbolo`), y el texto del caso uniforme afirma solo lo
+   probado: el limit sí (falla igual con y sin él), el símbolo no (se probó uno).
+
+### Lo que los tests cubren, y lo que no
+
+Los tests cubren **los dos mensajes**: el de PLAN y el de PARÁMETRO, **con y sin**
+la cola *"…subscription page to upgrade your plan"* — que es el caso donde los dos
+bugs se tocan, porque un mensaje de parámetro con esa cola tiene `page` y `to`
+además del nombre entre comillas. Para `limit`, `period` y `symbol`.
+
+**Pero esos textos reproducen el formato de FMP, no son copias literales** de lo
+que contestó en producción. Las respuestas verbatim están en el `body_sample` de
+los smokes que ya corrió quien lee esto; pegadas como fixtures, el test queda
+anclado a lo que FMP dice de verdad y no a mi reconstrucción.
 
 ---
 

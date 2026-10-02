@@ -36,6 +36,30 @@ const CRITERIOS_REACCION = {
   // falta a la acción en una fecha de SPY NO se rellena, el evento se descarta.
   ajuste: 'retorno_accion_menos_retorno_spy',
 
+  // ── LA VENTANA: una PRINCIPAL y una SENSIBILIDAD, congeladas ANTES de correr ──
+  //
+  // La principal es la del encargo y es la ÚNICA que decide el veredicto.
+  //
+  // El salto nocturno entra como SENSIBILIDAD pre-registrada: solo sobre los
+  // eventos con hora BMO/AMC conocida, con los MISMOS criterios, y se reporta AL
+  // LADO. Nunca reemplaza a la principal. Esto está acá —y pineado por test, y
+  // congelado con Object.freeze— para que no se pueda elegir la que salga mejor
+  // después de ver las dos.
+  ventana_principal: 'cierre(T-1) → apertura(T+1)',
+  sensibilidad_salto_nocturno: {
+    rol: 'sensibilidad',
+    reemplaza_a_la_principal: false,
+    decide_el_veredicto: false,
+    solo_horas: ['bmo', 'amc'],
+    // BMO (antes de la apertura): el salto es cierre(T-1) → apertura(T).
+    // AMC (después del cierre):   el salto es cierre(T)   → apertura(T+1).
+    // `dmh` (durante la sesión) y la hora desconocida quedan FUERA: no hay salto
+    // nocturno que medir, y adivinar la hora sería elegir la ventana a ojo.
+    bmo: 'cierre(T-1) → apertura(T)',
+    amc: 'cierre(T) → apertura(T+1)',
+    mismos_criterios_que_la_principal: true,
+  },
+
   // ── LAS SEÑALES ──
   // EPS: la decisión de winsorización ya estaba congelada por INTC (±100%).
   // Se IMPORTA, no se copia: si alguien la moviera en un lado y no en el otro,
@@ -106,6 +130,15 @@ const CRITERIOS_REACCION = {
   regla_fuente_ingresos: 'mayor_cobertura__empate_gana_la_que_tiene_fecha__nunca_mezclar',
 };
 
+// Congelado PROFUNDO: un `CRITERIOS_REACCION.min_abs_r = 0.1` en algún lado del
+// código, o un `sensibilidad_salto_nocturno.decide_el_veredicto = true`, falla
+// en silencio en modo no estricto y lanza en modo estricto (los módulos ES lo
+// son). La portería no se mueve ni en tiempo de ejecución.
+(function congela(o) {
+  Object.freeze(o);
+  for (const v of Object.values(o)) if (v && typeof v === 'object' && !Object.isFrozen(v)) congela(v);
+})(CRITERIOS_REACCION);
+
 // ─────────────────── utilidades ───────────────────
 
 const num = (x) => {
@@ -172,6 +205,46 @@ function retornoVentana(serieAccion, serieSpy, reportDate) {
     ret_accion: rA, ret_spy: rS,
     ret_ajustado: rA - rS,
   };
+}
+
+// ── SENSIBILIDAD: el salto nocturno, SOLO con la hora conocida ──
+// BMO → cierre(T-1) → apertura(T). AMC → cierre(T) → apertura(T+1).
+// En los dos casos el día del reporte TIENE que ser una sesión: si no lo es, no
+// hay un "antes de la apertura" o "después del cierre" de ese día, y el evento
+// se descarta con su motivo en vez de correrse a la sesión más cercana.
+function retornoSaltoNocturno(serieAccion, serieSpy, reportDate, hour, {
+  criterios = CRITERIOS_REACCION,
+} = {}) {
+  const T = dia(reportDate);
+  const h = hour ? String(hour).toLowerCase().trim() : null;
+  if (!h) return { ok: false, motivo: 'sin_hora' };
+  if (!criterios.sensibilidad_salto_nocturno.solo_horas.includes(h)) return { ok: false, motivo: 'hora_no_es_bmo_ni_amc', hora: h };
+  if (!T) return { ok: false, motivo: 'sin_fecha_de_reporte' };
+  if (!serieSpy || !Array.isArray(serieSpy.fechas) || !serieSpy.fechas.length) return { ok: false, motivo: 'sin_serie_spy' };
+  if (!serieAccion || !Array.isArray(serieAccion.fechas) || !serieAccion.fechas.length) return { ok: false, motivo: 'sin_serie_accion' };
+
+  const iS = indicePorFecha(serieSpy), iA = indicePorFecha(serieAccion);
+  if (!iS.has(T)) return { ok: false, motivo: `reporte_${h}_en_dia_sin_sesion`, T };
+  let previa = null, siguiente = null;
+  for (const f of serieSpy.fechas) {
+    if (f < T) previa = f;
+    else if (f > T && siguiente === null) siguiente = f;
+  }
+  // BMO: el cierre es el de la sesión anterior y la apertura la del día T.
+  // AMC: el cierre es el del día T y la apertura la de la sesión siguiente.
+  const fCierre = h === 'bmo' ? previa : T;
+  const fApertura = h === 'bmo' ? T : siguiente;
+  if (!fCierre) return { ok: false, motivo: 'sin_sesion_previa', T };
+  if (!fApertura) return { ok: false, motivo: 'sin_sesion_siguiente', T };
+  const aC = iA.get(fCierre), aO = iA.get(fApertura);
+  if (aC === undefined) return { ok: false, motivo: 'sin_vela_cierre', fecha: fCierre, T };
+  if (aO === undefined) return { ok: false, motivo: 'sin_vela_apertura', fecha: fApertura, T };
+  const cA = serieAccion.closes[aC], oA = serieAccion.opens[aO];
+  const cS = serieSpy.closes[iS.get(fCierre)], oS = serieSpy.opens[iS.get(fApertura)];
+  if (![cA, oA, cS, oS].every((v) => Number.isFinite(v) && v > 0)) return { ok: false, motivo: 'precio_invalido', T };
+  const rA = oA / cA - 1, rS = oS / cS - 1;
+  return { ok: true, T, hora: h, cierre: fCierre, apertura: fApertura,
+    ret_accion: rA, ret_spy: rS, ret_ajustado: rA - rS };
 }
 
 // ─────────────────── las sorpresas ───────────────────
@@ -545,67 +618,34 @@ function analizaReaccion(eventos, { criterios = CRITERIOS_REACCION, motivosNoEnt
   };
   if (coberturaPrecios < criterios.min_cobertura_frente) {
     return { ...base, senales: [], conjunto: null, tres_piezas: null, exploratorio: null,
+      ventana_principal: criterios.ventana_principal, sensibilidad: null,
       veredicto: 'INCONCLUSO',
       titular: `INCONCLUSO: solo ${conRet.length} de ${total} eventos tienen la ventana de precios completa (${(coberturaPrecios * 100).toFixed(0)}%, el mínimo es ${criterios.min_cobertura_frente * 100}%). Sin la variable dependiente no hay nada que explicar.`,
       advertencia_seleccion: null };
   }
 
-  // ── 2 y 3. Cada señal: cobertura, candado, números ──
-  const senales = SENALES.map((sen) => {
+  // ── 2. La ENTRADA de cada señal: cobertura sobre los eventos ──
+  // Se decide UNA vez y con la variable principal. La sensibilidad hereda esta
+  // decisión tal cual: si cada ventana decidiera qué señales entran, serían dos
+  // experimentos distintos con un mismo nombre.
+  const entradas = SENALES.map((sen) => {
     const con = lista.filter((e) => valorDe(e, sen.clave) !== null);
     const cobertura = total ? con.length / total : 0;
     const out = { id: sen.id, clave: sen.clave, nombre: sen.nombre,
       eventos_con_senal: con.length, cobertura: +cobertura.toFixed(3) };
     if (cobertura < criterios.min_cobertura_frente) {
-      return { ...out, estado: 'NO_ENTRA',
+      return { ...out, entra: false, estado: 'NO_ENTRA',
         porque: `Cobertura ${(cobertura * 100).toFixed(0)}% (${con.length} de ${total}), bajo el mínimo de ${criterios.min_cobertura_frente * 100}%.`
           + (motivosNoEntra[sen.clave] ? ` ${motivosNoEntra[sen.clave]}` : '') };
     }
-    const pares = lista.filter((e) => valorDe(e, sen.clave) !== null && retDe(e) !== null);
-    const empresas = [...new Set(pares.map((e) => e.symbol))].sort();
-    if (pares.length < criterios.min_eventos) {
-      return { ...out, estado: 'INCONCLUSO', n: pares.length, empresas,
-        porque: `Solo ${pares.length} eventos con la señal Y la ventana de precios; el candado son ${criterios.min_eventos}.` };
-    }
-    const c = pearson(pares.map((e) => valorDe(e, sen.clave)), pares.map(retDe));
-    const explica = c.r !== null && Math.abs(c.r) >= criterios.min_abs_r && c.p_valor < criterios.max_p_valor;
-    return { ...out, estado: explica ? 'EXPLICA' : 'NO_EXPLICA', n: c.n, empresas,
-      r: c.r === null ? null : +c.r.toFixed(4),
-      p_valor: c.p_valor === null ? null : +c.p_valor.toFixed(4),
-      r2_sola: c.r === null ? null : +(c.r * c.r).toFixed(4),
-      porque: c.r === null ? `Sin varianza: ${c.motivo}.`
-        : `r = ${c.r.toFixed(3)} (umbral |r| ≥ ${criterios.min_abs_r}) ${Math.abs(c.r) >= criterios.min_abs_r ? '✓' : '✗'} · p = ${c.p_valor.toFixed(4)} (umbral < ${criterios.max_p_valor}) ${c.p_valor < criterios.max_p_valor ? '✓' : '✗'} · n = ${c.n}.` };
+    return { ...out, entra: true };
   });
 
-  // ── 4. El conjunto: con las señales que ENTRARON (cobertura ≥ 50%) ──
-  const entraron = senales.filter((x) => x.estado !== 'NO_ENTRA');
-  let conjunto = null;
-  if (entraron.length) {
-    const completos = lista.filter((e) => retDe(e) !== null && entraron.every((x) => valorDe(e, x.clave) !== null));
-    const nombres = entraron.map((x) => x.id).join(' + ');
-    if (completos.length < criterios.min_eventos) {
-      conjunto = { senales: entraron.map((x) => x.id), n: completos.length, r2: null, estado: 'INCONCLUSO',
-        porque: `Solo ${completos.length} eventos con ${nombres} y la ventana de precios completos; el candado son ${criterios.min_eventos}.` };
-    } else {
-      const m = ols(completos.map((e) => entraron.map((x) => valorDe(e, x.clave))), completos.map(retDe));
-      const r2 = m.r2;
-      const impredecible = r2 !== null && r2 < criterios.umbral_r2_conjunto;
-      // "Las tres juntas" solo se dice si son las tres. Con menos, se nombra con
-      // cuáles se midió: decir "las tres" con una sola sería mentir con el plural.
-      const conCuales = entraron.length === SENALES.length ? 'las tres señales juntas'
-        : entraron.length === 1 ? `solo con ${entraron[0].nombre} (las demás no entraron)`
-          : `con ${nombres} (${SENALES.length - entraron.length} no entró)`;
-      conjunto = {
-        senales: entraron.map((x) => x.id), n: m.n,
-        r2: r2 === null ? null : +r2.toFixed(4),
-        estado: r2 === null ? 'INCONCLUSO' : impredecible ? 'MAYORMENTE_IMPREDECIBLE' : 'EXPLICA_PARTE',
-        porque: r2 === null ? `La regresión no se pudo resolver: ${m.motivo}.`
-          : impredecible
-            ? `R² = ${(r2 * 100).toFixed(1)}% ${conCuales}, bajo el umbral de ${criterios.umbral_r2_conjunto * 100}%: la reacción es mayormente impredecible con datos públicos del reporte. Es un HALLAZGO, no un fracaso.`
-            : `R² = ${(r2 * 100).toFixed(1)}% ${conCuales}: explican esa parte del movimiento ajustado por mercado; el resto queda sin explicar.`,
-      };
-    }
-  }
+  // ── 3. La PRINCIPAL: el candado y los números, con el código compartido ──
+  const senales = entradas.map((x) => (x.entra ? { ...x, ...mideSenal(lista, x, retDe, criterios, 'la ventana de precios') } : x))
+    .map(({ entra, ...resto }) => resto);
+  const entraron = SENALES.filter((sen) => entradas.find((x) => x.id === sen.id).entra);
+  const conjunto = entraron.length ? mideConjunto(lista, entraron, retDe, criterios, 'la ventana de precios') : null;
 
   // "≥100 eventos con las tres piezas, o INCONCLUSO para la parte que falte".
   const tres = lista.filter((e) => retDe(e) !== null && SENALES.every((x) => valorDe(e, x.clave) !== null));
@@ -629,13 +669,100 @@ function analizaReaccion(eventos, { criterios = CRITERIOS_REACCION, motivosNoEnt
       : senales.every((x) => x.estado === 'NO_ENTRA' || x.estado === 'INCONCLUSO') ? 'INCONCLUSO'
         : 'NINGUNA_SENAL_EXPLICA';
 
+  const titular = conjunto && conjunto.estado === 'MAYORMENTE_IMPREDECIBLE'
+    ? `La reacción es mayormente impredecible con datos públicos del reporte (${conjunto.porque.split(':')[0]}).`
+    : titulares.join(' · ');
+
+  // ── SENSIBILIDAD: el salto nocturno, calculada DESPUÉS del veredicto ──
+  // El orden es a propósito: el veredicto y el titular ya están cerrados cuando
+  // esto se calcula, y nada de lo que sigue los toca. Mismas señales (las que
+  // entraron en la principal), mismo candado, mismos umbrales, mismo código.
+  const sensibilidad = sensibilidadSaltoNocturno(lista, entradas, entraron, criterios);
+
   return {
     ...base, senales, conjunto, tres_piezas: tresPiezas, exploratorio,
-    veredicto,
-    titular: conjunto && conjunto.estado === 'MAYORMENTE_IMPREDECIBLE'
-      ? `La reacción es mayormente impredecible con datos públicos del reporte (${conjunto.porque.split(':')[0]}).`
-      : titulares.join(' · '),
+    veredicto, titular,
+    ventana_principal: criterios.ventana_principal,
+    sensibilidad,
     advertencia_seleccion: advertenciaDeSeleccion(senales, empresasTodas),
+  };
+}
+
+// ── LA MEDICIÓN, compartida por la principal y la sensibilidad ──
+// Una sola implementación: si la sensibilidad tuviera su propio cálculo, el día
+// que alguien arreglara uno y no el otro, las dos ventanas medirían cosas
+// distintas sin decirlo.
+function mideSenal(lista, sen, retFn, criterios, nombreVentana) {
+  const pares = lista.filter((e) => valorDe(e, sen.clave) !== null && retFn(e) !== null);
+  const empresas = [...new Set(pares.map((e) => e.symbol))].sort();
+  if (pares.length < criterios.min_eventos) {
+    return { estado: 'INCONCLUSO', n: pares.length, empresas,
+      porque: `Solo ${pares.length} eventos con la señal Y ${nombreVentana}; el candado son ${criterios.min_eventos}.` };
+  }
+  const c = pearson(pares.map((e) => valorDe(e, sen.clave)), pares.map(retFn));
+  const explica = c.r !== null && Math.abs(c.r) >= criterios.min_abs_r && c.p_valor < criterios.max_p_valor;
+  return { estado: explica ? 'EXPLICA' : 'NO_EXPLICA', n: c.n, empresas,
+    r: c.r === null ? null : +c.r.toFixed(4),
+    p_valor: c.p_valor === null ? null : +c.p_valor.toFixed(4),
+    r2_sola: c.r === null ? null : +(c.r * c.r).toFixed(4),
+    porque: c.r === null ? `Sin varianza: ${c.motivo}.`
+      : `r = ${c.r.toFixed(3)} (umbral |r| ≥ ${criterios.min_abs_r}) ${Math.abs(c.r) >= criterios.min_abs_r ? '✓' : '✗'} · p = ${c.p_valor.toFixed(4)} (umbral < ${criterios.max_p_valor}) ${c.p_valor < criterios.max_p_valor ? '✓' : '✗'} · n = ${c.n}.` };
+}
+
+function mideConjunto(lista, entraron, retFn, criterios, nombreVentana) {
+  const completos = lista.filter((e) => retFn(e) !== null && entraron.every((x) => valorDe(e, x.clave) !== null));
+  const nombres = entraron.map((x) => x.id).join(' + ');
+  if (completos.length < criterios.min_eventos) {
+    return { senales: entraron.map((x) => x.id), n: completos.length, r2: null, estado: 'INCONCLUSO',
+      porque: `Solo ${completos.length} eventos con ${nombres} y ${nombreVentana} completos; el candado son ${criterios.min_eventos}.` };
+  }
+  const m = ols(completos.map((e) => entraron.map((x) => valorDe(e, x.clave))), completos.map(retFn));
+  const r2 = m.r2;
+  const impredecible = r2 !== null && r2 < criterios.umbral_r2_conjunto;
+  // "Las tres juntas" solo se dice si son las tres. Con menos, se nombra con
+  // cuáles se midió: decir "las tres" con una sola sería mentir con el plural.
+  const conCuales = entraron.length === SENALES.length ? 'las tres señales juntas'
+    : entraron.length === 1 ? `solo con ${entraron[0].nombre} (las demás no entraron)`
+      : `con ${nombres} (${SENALES.length - entraron.length} no entró)`;
+  return {
+    senales: entraron.map((x) => x.id), n: m.n,
+    r2: r2 === null ? null : +r2.toFixed(4),
+    estado: r2 === null ? 'INCONCLUSO' : impredecible ? 'MAYORMENTE_IMPREDECIBLE' : 'EXPLICA_PARTE',
+    porque: r2 === null ? `La regresión no se pudo resolver: ${m.motivo}.`
+      : impredecible
+        ? `R² = ${(r2 * 100).toFixed(1)}% ${conCuales}, bajo el umbral de ${criterios.umbral_r2_conjunto * 100}%: la reacción es mayormente impredecible con datos públicos del reporte. Es un HALLAZGO, no un fracaso.`
+        : `R² = ${(r2 * 100).toFixed(1)}% ${conCuales}: explican esa parte del movimiento ajustado por mercado; el resto queda sin explicar.`,
+  };
+}
+
+const saltoDe = (e) => (e.salto && e.salto.ok ? e.salto.ret_ajustado : null);
+
+function sensibilidadSaltoNocturno(lista, entradas, entraron, criterios) {
+  const cfg = criterios.sensibilidad_salto_nocturno;
+  const conHora = lista.filter((e) => e.salto && e.salto.motivo !== 'sin_hora' && e.salto.motivo !== 'hora_no_es_bmo_ni_amc');
+  const conSalto = lista.filter((e) => saltoDe(e) !== null);
+  const descartes = {};
+  for (const e of lista) if (!(e.salto && e.salto.ok)) {
+    const m = (e.salto && e.salto.motivo) || 'sin_salto';
+    descartes[m] = (descartes[m] || 0) + 1;
+  }
+  const senales = entradas.map((x) => {
+    const base = { id: x.id, clave: x.clave, nombre: x.nombre };
+    if (!x.entra) return { ...base, estado: 'NO_ENTRA', porque: 'No entró en la principal: la sensibilidad usa las mismas señales.' };
+    return { ...base, ...mideSenal(lista, x, saltoDe, criterios, 'el salto nocturno') };
+  });
+  return {
+    etiqueta: 'SENSIBILIDAD pre-registrada — NO reemplaza a la principal y NO decide el veredicto',
+    ventana: `BMO: ${cfg.bmo} · AMC: ${cfg.amc}`,
+    rol: cfg.rol,
+    reemplaza_a_la_principal: cfg.reemplaza_a_la_principal,
+    decide_el_veredicto: cfg.decide_el_veredicto,
+    eventos_con_hora_bmo_amc: conHora.length,
+    eventos_con_salto: conSalto.length,
+    descartes,
+    senales,
+    conjunto: entraron.length ? mideConjunto(lista, entraron, saltoDe, criterios, 'el salto nocturno') : null,
+    nota: 'Se calcula con los MISMOS criterios y las MISMAS señales que la principal, sobre los eventos con hora BMO/AMC conocida, y se reporta al lado. Si la sensibilidad y la principal discrepan, eso es información sobre la ventana — no una invitación a quedarse con la que salió mejor.',
   };
 }
 
@@ -721,7 +848,8 @@ function renderCensoMd(c) {
     L.push('');
     L.push(`Ventana cierre(T-1) → apertura(T+1), calendario de SPY. Completa en **${x.con_retorno} de ${x.total}** eventos (${pctTxt(x.cobertura)}).`);
     if (x.series) L.push(`Series bajadas: ${x.series.ok} de ${x.series.pedidas} símbolos + SPY ${x.series.spy ? 'ok' : '**FALLÓ**'}.`);
-    if (x.con_hora !== undefined) L.push(`Con hora del reporte (BMO/AMC) conocida: ${x.con_hora} de ${x.total} — no entra a la variable, se reporta por la nota de la ventana.`);
+    if (x.con_hora !== undefined) L.push(`Con hora del reporte conocida: ${x.con_hora} de ${x.total}.`);
+    if (x.sensibilidad) L.push(`**Sensibilidad pre-registrada** (salto nocturno, ${x.sensibilidad.ventana}): medible en **${x.sensibilidad.con_salto} de ${x.sensibilidad.de}** eventos — ${x.sensibilidad.alcanza_el_candado ? 'alcanza' : '**NO alcanza**'} el candado de ${CRITERIOS_REACCION.min_eventos}. Se reporta al lado; nunca reemplaza a la principal.`);
     if (x.descartes && Object.keys(x.descartes).length) {
       L.push('');
       L.push('| Motivo | Eventos |');
@@ -858,6 +986,22 @@ function renderAnalisisMd(a) {
   }
   if (a.tres_piezas) { L.push(`**Las tres piezas:** ${a.tres_piezas.porque}`); L.push(''); }
 
+  // ── LA SENSIBILIDAD: después de la principal, con su etiqueta. Nunca arriba.
+  const sn = a.sensibilidad;
+  if (sn) {
+    L.push(`## ${sn.etiqueta}`);
+    L.push('');
+    L.push(`Ventana: ${sn.ventana} · eventos con hora BMO/AMC: **${sn.eventos_con_hora_bmo_amc}** · con salto medible: **${sn.eventos_con_salto}**`);
+    L.push('');
+    L.push('| Señal | n | r | p | R² sola | Estado (sensibilidad) |');
+    L.push('|---|---|---|---|---|---|');
+    for (const x of sn.senales) L.push(`| ${x.id} — ${x.nombre} | ${x.n ?? '—'} | ${x.r ?? '—'} | ${x.p_valor ?? '—'} | ${x.r2_sola ?? '—'} | ${x.estado.replace('_', ' ')} |`);
+    if (sn.conjunto) { L.push(''); L.push(`Juntas (sensibilidad): ${sn.conjunto.porque}`); }
+    L.push('');
+    L.push(`> ${sn.nota}`);
+    L.push('');
+  }
+
   const ex = a.exploratorio;
   if (ex && (ex.eps || ex.ingresos)) {
     L.push(`## ${ex.etiqueta}`);
@@ -882,7 +1026,8 @@ function renderAnalisisMd(a) {
 export {
   CRITERIOS_REACCION, num, dia, diasEntre, renderCensoMd, renderAnalisisMd,
   SENALES, analizaReaccion, aciertoDireccional, advertenciasFijas, advertenciaDeSeleccion,
-  retornoVentana, sorpresaEps, sorpresaIngresos,
+  mideSenal, mideConjunto, sensibilidadSaltoNocturno,
+  retornoVentana, retornoSaltoNocturno, sorpresaEps, sorpresaIngresos,
   clasificaFuenteEstimado, CLASES_QUE_SIRVEN,
   ingresosTrimestralesXbrl, ingresoDelEvento,
   PATRONES_GUIA, RE_SAFE_HARBOR, htmlATexto, parrafosDeGuia, eligeExhibit991,

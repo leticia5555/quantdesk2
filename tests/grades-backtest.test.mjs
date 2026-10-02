@@ -250,6 +250,31 @@ ok(mencionaParametro("Premium Query Parameter: This value set for 'period' is no
 ok(mencionaParametro("Premium Query Parameter: This value set for 'symbol' is not available").parametro === 'symbol',
   'y el 402 de símbolo fuera del plan sale como `symbol`');
 
+// LOS DOS MENSAJES, CON LA COLA DE PLAN. Es el caso donde los dos bugs se
+// tocan: un mensaje de PARÁMETRO que además termina en "…subscription page to
+// upgrade your plan". El nombre entre comillas tiene que ganarle a `page`/`to`.
+// OJO: estos textos reproducen el formato de FMP ("Premium Query Parameter: This
+// value set for '<p>' …"), no son copias literales de lo que contestó en
+// producción. Las respuestas reales están en el `body_sample` del smoke.
+const COLA = ' is not available under your current subscription please visit our subscription page to upgrade your plan';
+for (const prm of ['limit', 'period', 'symbol']) {
+  const r = mencionaParametro(`Premium Query Parameter: This value set for '${prm}'` + COLA);
+  ok(r.menciona === true && r.parametro === prm,
+    `mensaje de PARÁMETRO con la cola de plan → \`${prm}\`, no "page" ni "to"`, JSON.stringify(r));
+}
+const soloPlan = mencionaParametro('Special Endpoint : This endpoint is not available under your current subscription please visit our subscription page to upgrade your plan');
+ok(soloPlan.menciona === false, 'y el mensaje de PLAN, con la MISMA cola, sigue sin nombrar parámetro', JSON.stringify(soloPlan));
+
+// El smoke con un símbolo fuera del plan: la causa ES el símbolo.
+const V402 = (id, limit) => ({ id, limit, ok: false, status: 402, motivo: 'sin_acceso_al_simbolo', parametro: 'symbol' });
+const smokeSym = interpretaSmoke([V402('sin_limit', null), V402('limit_chico', 10), V402('limit_alto', 1000)]);
+ok(smokeSym.causa === 'sin_acceso_al_simbolo', 'smoke con el símbolo fuera del plan: la causa es el símbolo', smokeSym.causa);
+ok(!/No es el `limit` ni el símbolo/.test(smokeSym.lectura), 'y ya NO dice "no es el símbolo"');
+ok(/con un símbolo que el censo liste con acceso/.test(smokeSym.lectura), 'y dice qué hacer');
+const unif = interpretaSmoke([{ id: 'a', limit: null, ok: false, status: 500, motivo: 'http_error' }, { id: 'b', limit: 10, ok: false, status: 500, motivo: 'http_error' }]);
+ok(/no es el limit/.test(unif.lectura) && /no se puede descartar el símbolo/.test(unif.lectura),
+  'el "uniforme" afirma solo lo probado: el limit sí, el símbolo no (se probó uno)', unif.lectura);
+
 console.log('interpretaSmoke: el contraste de meses es EL hallazgo');
 
 const conContraste = interpretaSmoke([
