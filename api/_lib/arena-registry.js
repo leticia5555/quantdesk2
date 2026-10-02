@@ -651,6 +651,31 @@ export function temporadaEfectiva(inicioReal = null, season = ARENA_SEASON) {
 // puede olvidarse de bumpearla. El `v3` sí es manual — marca el flujo (tres
 // rondas fijas + matutina por evento) y cambia cuando cambia el flujo, no
 // cuando cambia la temporada.
+// ── EL REINTENTO SOLO-JSON: UN RIEL, NO UN FAVOR (2026-10-02) ────────
+// Un cierre malformado se puede rescatar pidiendo de nuevo SOLO el JSON. La
+// pregunta no es técnica: si la liga compara modelos, "no sabe entregar JSON
+// válido" ES un hallazgo, y darle un reintento es ayudarlo.
+//
+// LA DECISIÓN (Lety, 2026-10-02): se permite, con dos condiciones que lo
+// vuelven un riel en vez de un favor —
+//   1. lo tienen LOS SIETE IGUAL. Por eso esta bandera NO tiene variante por
+//      agente (`ARENA_REINTENTO_JSON_<AGENTE>` no existe, a propósito): un
+//      riel que se puede encender para uno solo no es un riel.
+//   2. "necesitó reintento" se PUBLICA por agente, con su causa. Igual que
+//      las tres culpas de B44: no se esconde, se cuenta.
+//
+// Y una tercera que agrego yo: el reintento compra FORMATO, no deliberación.
+// El mensaje de rescate dice explícitamente que no cambie su decisión, y no
+// trae herramientas ni contexto nuevo. Un segundo turno para volver a pensar
+// sería una ventaja; reimprimir lo ya decidido en el formato pedido no lo es.
+//
+// Default ENCENDIDO: con el reintento apagado, un cierre malformado es una
+// corrida perdida, y una corrida perdida también deforma la comparación.
+export const ARENA_REINTENTO_JSON = (() => {
+  const v = String(process.env.ARENA_REINTENTO_JSON ?? '').trim().toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
+})();
+
 export const PROMPT_FLUJO = 'arena-pm-v3';
 export const PROMPT_VERSION = `${PROMPT_FLUJO}-${ARENA_SEASON.id.toLowerCase()}`;
 

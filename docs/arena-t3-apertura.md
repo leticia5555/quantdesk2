@@ -487,7 +487,25 @@ color: si `lectura_max_ms` de un agente roza el `techo_ms` en una corrida
 limpia, ese agente va a morir el primer día lento. Y si lo roza por debajo con
 holgura, el techo se puede apretar.
 
-**Criterio de apertura, los siete a la vez:**
+> #### ESTA TABLA ES EL DIAGNÓSTICO DE **UNA** CORRIDA, NO LA PUERTA (2026-10-02)
+>
+> Las dos tandas del 1 y del 2 de octubre dieron 5 de 7 y 5 de 7 — y **no los
+> mismos cinco por las mismas razones**. Con una corrida por agente no hay
+> forma de separar "este modelo no sirve" de "este minuto no sirvió".
+>
+> **La puerta es `scripts/arena-humo.sh` (§3.3): tres corridas por agente, con
+> el criterio sobre las tres.** Los umbrales de abajo siguen valiendo —son los
+> que se leen fila por fila— pero el veredicto por agente sale de las tres.
+>
+> Y el `jq` de arriba lee `.context.*`, que sólo existe en las corridas que
+> salieron bien. Desde el 2026-10-02 las **tres** salidas (éxito y los dos
+> abortos) devuelven el bloque `loop` con las mismas claves:
+> `.agents[0].loop.vueltas`, `.cortó_por`, `.reloj_pct`, `.lectura_max_ms`,
+> `.vacias`, `.cortes_nuestros` — más `.agents[0].lectura_cierre`, que es el
+> campo que separa un JSON **cortado** de un JSON **malo**. Usá ésos: son los
+> que el script lee, y existen también cuando el agente abortó.
+
+**Criterio por corrida (los umbrales que lee cada fila):**
 
 | campo | verde | rojo |
 |---|---|---|
@@ -543,8 +561,9 @@ holgura, el techo se puede apretar.
 > que ya hacemos con `caps.cache` y con `sampling`, que difieren por familia y
 > salen publicados. Lo que no se puede es que difiera y no se diga.
 
-**Si UNO aborta, la temporada no abre.** Se arregla y se vuelve a correr ese
-agente. Esto es exactamente lo que no hicimos con la T2 y costó nueve días.
+**Si UNO aborta las tres veces, la temporada no abre.** Se arregla y se vuelve
+a correr ese agente. Esto es exactamente lo que no hicimos con la T2 y costó
+nueve días.
 
 Un agente que aborta con `requires more credits` o `credit balance is too low`
 después de la recarga significa que la recarga no llegó a esa cuenta — se mira
@@ -554,6 +573,61 @@ Y un detalle que sale de B43, porque acá aplica: **los siete corren al mismo
 tiempo si se lanzan en paralelo.** El `for` de arriba es secuencial a propósito.
 Si los siete fallan en el mismo minuto, eso es la cuenta, no los modelos —
 esperar cinco minutos y repetir ANTES de tocar nada.
+
+---
+
+### 3.3 · LA PUERTA: TRES CORRIDAS POR AGENTE
+
+```bash
+set -a && . ./.env.local && set +a      # ARENA_ADMIN_KEY, que nunca viaja en la URL
+bash scripts/arena-humo.sh              # 21 corridas, ~50 min, secuencial
+```
+
+**El criterio, fijado antes de medir** (y el script lo imprime antes de la
+primera fila — un umbral que aparece junto al resultado es un umbral que se
+puede haber elegido mirándolo):
+
+| libros entregados | puerta |
+|---|---|
+| 3 de 3 | **VERDE** |
+| 2 de 3 | **ÁMBAR** — no abre sola: la decide Lety mirando el error de esa corrida |
+| ≤ 1 de 3 | **ROJO** |
+
+**"Entrega libro" = el `status` NO empieza con `aborted`.** Eso incluye
+`rejected_rails`: un objetivo que los rieles rechazan es un modelo que SÍ
+entregó un portafolio parseable y un riel que hizo su trabajo. La puerta
+pregunta si el harness saca una decisión del modelo, no si la decisión gustó.
+
+**Abre sólo con los siete en VERDE** y las cuatro puertas físicas en verde
+(`reloj_pct < 90`, `lectura < 90.000 ms`, cero cortes nuestros, cierre sin
+truncar). Esas cuatro **no se votan**: un solo desborde en una corrida de 21 es
+un desborde que puede repetirse cualquier día de la temporada.
+
+**Ronda, no ráfaga.** Las tres de un agente no van seguidas: ronda completa de
+los siete y después la siguiente. B43 al revés — si las tres de qwen cayeran
+dentro del mismo apagón de Alibaba, qwen saldría ROJO por un minuto malo, que
+es justo lo que las tres corridas existen para separar.
+
+**Dos columnas nuevas, y las dos mandan a lugares distintos:**
+
+| columna | qué leer |
+|---|---|
+| `TRUNC` | `SÍ` = el cierre se **cortó** (nuestro `ARENA_MAX_TOKENS`). `no` = el modelo cerró el turno solo, así que un JSON roto es del modelo. `?` = **no se sabe**: el proveedor no mandó `finish_reason`. Un `?` no es un "no". |
+| `REINT` | `—` sin reintento · `RESCATÓ:corte` (nuestro techo lo salvó: subir `ARENA_MAX_TOKENS`) · `RESCATÓ:formato` (hallazgo del agente) · `falló` · `omitido` (no le quedó reloj — se lee junto con el veredicto, ver abajo) |
+
+En el veredicto, **`SIN_AYUDA`** es cuántos de los 3 entregaron sin reintento.
+Un `3/3 VERDE` con `SIN_AYUDA 2/3` se lee distinto de un `3/3` limpio, y el
+criterio **no cambia** por eso: lo decide quien mira.
+
+**Reimprimir sin volver a gastar:**
+
+```bash
+REUSAR=./humo-20261002T140000Z bash scripts/arena-humo.sh
+```
+
+Rearma la tabla y los veredictos desde las respuestas ya guardadas, sin pedir
+una sola llamada. 21 corridas son ~50 minutos y dinero: si el formato de la
+tabla está mal, arreglarlo no puede costar otra tanda.
 
 ---
 

@@ -33,8 +33,8 @@
 import { ensureSchema } from './_lib/db.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import * as alpaca from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, PROMPT_VERSION } from './_lib/arena-registry.js';
-import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd } from './_lib/arena-model.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_REINTENTO_JSON, PROMPT_VERSION } from './_lib/arena-registry.js';
+import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd, diagnosticoDeCorte } from './_lib/arena-model.js';
 // `PROMPT_VERSION` ya NO viene de acá: era la única arista del ciclo que no
 // hoisteaba. Sale de _lib/arena-registry.js, que es hoja. Los cuatro que
 // quedan son `function` declarations y en un ciclo son benignos.
@@ -51,7 +51,7 @@ import { fetchOptionChain } from './options.js';
 import { getNews } from './_lib/alpaca.js';
 import { buildRebalance } from './_lib/arena-rebalance.js';
 import { createToolExecutor, TOOL_BUDGET } from './_lib/arena-tools.js';
-import { runToolLoop, relojDisponible } from './_lib/arena-tool-loop.js';
+import { runToolLoop, relojDisponible, RESERVA_CIERRE_MS, PISO_VUELTA_MS } from './_lib/arena-tool-loop.js';
 import { buildTail, enfoqueDelDia } from './_lib/arena-herding.js';
 import { buildRailMeta, sectorFromGics } from './_lib/arena-meta.js';
 
@@ -119,6 +119,131 @@ export function runShadowAgent(args) {
 // contrato objetivo produce un portafolio COMPLETO, así que no existe la
 // corrida "sobre NVDA" y el evento NO cambia ninguna decisión. Pero el registro
 // sí tiene que decir QUÉ despertó la corrida — ver el bloque de `ctx.event`.
+// ── EL RELOJ QUE LE QUEDA A UN RESCATE (2026-10-02) ──────────────────
+// El presupuesto TOTAL de una corrida es `loop + reserva de cierre` = 255s. El
+// MARGEN (15s) no es presupuesto: es lo que separa 255 de los 270 del deadline,
+// y existe para que una corrida que se desbordó alcance a ESCRIBIR que se
+// desbordó. Un reintento que se lo come convierte una corrida malformada en
+// una corrida sin journal, que es peor.
+//
+// Se mide contra `elapsed_ms` del loop —que ya incluye el cierre— y NO contra
+// `restante()`, que mide contra el presupuesto de investigación y da negativo
+// después de cualquier cierre normal (el descuadre de B45).
+export function relojDeReintento({ budgetMs, elapsedMs }) {
+  const total = (Number(budgetMs) || 0) + RESERVA_CIERRE_MS;
+  return total - (Number(elapsedMs) || 0);
+}
+
+// ── EL RESCATE DE UN CIERRE MALFORMADO ───────────────────────────────
+// Devuelve SIEMPRE un objeto, también cuando no se concede: "no hubo
+// reintento" y "hubo y falló" no pueden verse iguales, y el motivo de la
+// omisión es el dato (ver `motivo`).
+//
+// LA DESIGUALDAD QUE HAY QUE PUBLICAR. El riel es el mismo para los siete en
+// el REGLAMENTO y no en el RESULTADO: gemini cierra a los 42s y le quedan
+// ~213s para un rescate; qwen cerró a los 253s de 270 y no le queda nada. O
+// sea que el reintento se lo lleva, de hecho, el que es rápido. Eso no se
+// puede arreglar con más reloj (el deadline es el deadline), así que se
+// DECLARA: `omitido_por_reloj` se cuenta por agente al lado de
+// `necesitó_reintento`, y las dos cifras se leen juntas. Un riel que en la
+// práctica alcanza a cinco de siete y no lo dice es el patrón de B45 otra vez,
+// un límite que no llega al camino que corre.
+async function rescatarConSoloJson({ agent, system, loop, textoMalo, corte, parseError, now, trace }) {
+  // La CAUSA, del diagnóstico del cierre y no de una suposición. Se publica
+  // separada porque manda a lugares opuestos: `corte` es NUESTRO techo de
+  // tokens (se sube `ARENA_MAX_TOKENS`), `formato` es el modelo (es hallazgo).
+  const causa = corte.truncado === true ? 'corte' : corte.truncado === false ? 'formato' : 'desconocida';
+  const restante = relojDeReintento({ budgetMs: loop.budget_ms, elapsedMs: loop.elapsed_ms });
+  const base = { causa, parse_error: parseError, reloj_restante_ms: restante };
+
+  if (!ARENA_REINTENTO_JSON) {
+    return { ...base, concedido: false, motivo: 'el riel está apagado (ARENA_REINTENTO_JSON=0)' };
+  }
+  if (restante < PISO_VUELTA_MS) {
+    // El MISMO piso que el loop usa para decidir si una vuelta vale la pena.
+    // Un número nuevo acá serían dos reglas sobre el mismo presupuesto, que es
+    // exactamente la forma de B45.
+    return {
+      ...base, concedido: false, omitido_por_reloj: true,
+      motivo: `quedan ${restante}ms del presupuesto total (loop ${loop.budget_ms}ms + reserva ${RESERVA_CIERRE_MS}ms, gastados ${loop.elapsed_ms}ms): por debajo del piso de vuelta (${PISO_VUELTA_MS}ms). El margen de ${15000}ms que separa del deadline NO se toca: es lo que garantiza que esta corrida alcance a journalearse.`,
+    };
+  }
+
+  // EL MENSAJE COMPRA FORMATO, NO DELIBERACIÓN. Sin herramientas, sin contexto
+  // nuevo, y con la instrucción explícita de no cambiar la decisión: un
+  // segundo turno para volver a PENSAR sería una ventaja sobre los agentes que
+  // acertaron el formato de una; reimprimir lo ya decidido no lo es.
+  const msgs = [
+    ...(loop.messages || []),
+    { role: 'assistant', content: String(textoMalo || '').slice(0, 4000) },
+    { role: 'user', content: [
+      'Your previous answer is not a valid JSON object.',
+      '',
+      'Resend the SAME target portfolio you just decided — do not change a single weight, ticker or thesis.',
+      'Reply with ONLY the JSON object: no prose before or after, no markdown fences, no commentary.',
+    ].join('\n') },
+  ];
+
+  const t0 = Date.now();
+  let r = null; let threw = null;
+  try {
+    r = await callArenaLLM({
+      agent, system, messages: msgs, maxTokens: ARENA_MAX_TOKENS, now,
+      // Mismo criterio que el cierre: es la ÚLTIMA llamada de la corrida, así
+      // que no hay "siguientes" cuyo presupuesto proteger con un techo.
+      timeoutMs: Math.max(PISO_VUELTA_MS, restante),
+      origenTecho: `reintento solo-JSON: ${restante}ms de presupuesto total sin gastar`,
+      ...(trace ? { trace, fase: 'reintento_solo_json' } : {}),
+    });
+  } catch (e) { threw = String((e && e.message) || e); }
+
+  const ms = Date.now() - t0;
+  if (threw || !r || r.status !== 200 || !r.data) {
+    return { ...base, concedido: true, resuelto: false, ms, error: threw || (r ? `HTTP ${r.status}${r.error_detail ? ': ' + r.error_detail : ''}` : 'sin respuesta') };
+  }
+  const texto = ((r.data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('')).trim();
+  const corte2 = diagnosticoDeCorte(r.data, { maxTokens: ARENA_MAX_TOKENS, texto });
+  const parsed = parsePortfolioResponse(texto);
+  return {
+    ...base, concedido: true, resuelto: !!parsed.ok, ms,
+    lectura: corte2,
+    ...(parsed.ok ? {} : { parse_error_2: parsed.error }),
+    // El PRIMER intento no se pierde. Si el rescate funciona, el hallazgo
+    // ("este agente no entregó JSON de una") sigue estando: borrarlo
+    // convertiría un dato en un salvataje silencioso.
+    texto_1: String(textoMalo || '').slice(0, 1200),
+    llm: r, texto, parsed,
+  };
+}
+
+// ── EL RESUMEN DEL LOOP, EN TODAS LAS SALIDAS (2026-10-02) ───────────
+// La respuesta HTTP de un aborto traía `{agent, status, error, cost_usd}` y
+// nada más. Las salidas buenas traían `tools_used`. O sea: la tabla de la
+// puerta de apertura —vueltas, qué techo cortó, lectura máxima, vacías— NO se
+// podía armar desde la respuesta, justo en las filas que importan. Lety las
+// armó cruzando a mano con /api/liga-libros, que lee el journal.
+//
+// Un diagnóstico que existe en la base y no en la respuesta es un diagnóstico
+// que obliga a una consulta SQL para contestar la primera pregunta de la fila.
+// La puerta la corre ella desde el navegador, no una consulta.
+//
+// MISMA FORMA EN LAS TRES SALIDAS, a propósito: el script no puede tener un
+// `if` por estado, porque el estado es justo lo que está en duda.
+export function resumenDelLoop(loop, executor) {
+  const v = (loop && loop.vueltas_medidas) || [];
+  const lim = (loop && loop.limites) || {};
+  const ms = v.map((x) => Number(x && x.ms) || 0);
+  return {
+    vueltas: (loop && loop.turns) || 0,
+    cortó_por: (loop && loop.stopped_by) || null,
+    herramientas: executor ? executor.used : null,
+    reloj_pct: (lim.reloj_ms && lim.reloj_ms.pct) ?? null,
+    lectura_max_ms: ms.length ? Math.max(...ms) : null,
+    vacias: v.filter((x) => x && x.vacio).length,
+    cortes_nuestros: v.filter((x) => x && x.reloj_nuestro).length,
+  };
+}
+
 export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier = null, deps = {}, trace = null, vivo = false, journalInsert = null, runId: runIdDado = null, esDisparador = false, evento = null }) {
   const runId = runIdDado || shadowRunId(agent.id, now);
   const base = { id: runId, run_date: marketDay(now), agent_id: agent.id, phase: 'decide', prompt_version: PROMPT_VERSION, model: agent.model };
@@ -436,6 +561,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     await shadowJournalInsert({ ...base, account: cuenta, status, error, context: ctx });
     return {
       agent: agent.id, status, error, cost_usd: costo.usd,
+      loop: resumenDelLoop(loop, executor),
       cuerpos_vacios: (loop && loop.cuerpos_vacios) || null,
       murio_en: (loop && loop.murio_en) || null,
       llm_error: ctx.llm_error,
@@ -444,10 +570,87 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   }
 
   const text = ((llm.data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('')).trim();
-  const parsed = parsePortfolioResponse(text);
+  // ── ¿JSON MALO O JSON CORTADO? (2026-10-02) ─────────────────────────
+  // Se mide SIEMPRE, no solo cuando falla el parseo. Dos razones:
+  //
+  //   1. Un `ok_target` que salió con `stop_reason: max_tokens` entregó libro
+  //      POR SUERTE: el JSON cerró justo antes del techo. Eso es un aviso, y
+  //      si solo se mide en la falla no se ve hasta que muerde.
+  //   2. La línea base. Sin saber cuánto del techo gastan los que SÍ entregan,
+  //      no hay con qué comparar a los que no — y entonces "subir el techo"
+  //      es una corazonada, no una medida.
+  //
+  // Sale del objeto `llm` que de verdad se PARSEÓ, no del array de intentos del
+  // cierre: ahí hay hasta tres turnos (cierre, otro proveedor, reintento sin
+  // herramientas) y cuál ganó se deducía de `resuelto_por`. Una derivación
+  // frágil para el dato que decide el diagnóstico.
+  const corte = diagnosticoDeCorte(llm.data, { maxTokens: ARENA_MAX_TOKENS, texto: text });
+  ctx.lectura_cierre = corte;
+  let texto = text;
+  let parsed = parsePortfolioResponse(texto);
+  // EL MOTIVO, ADELANTE DEL ERROR DEL PARSER. "Expected ',' or '}' at
+  // position 771" describe el síntoma; `truncado` dice la causa. Sin esto, los
+  // dos abortos de la segunda tanda se leían idénticos y no lo eran.
+  const porQueMalo = (pe) => (corte.truncado === true
+    ? `CORTADO (${corte.truncado_por}) · ${pe}`
+    : corte.truncado === false
+      ? `el modelo cerró el turno solo y el JSON no sirve · ${pe}`
+      : `no se sabe si fue corte o formato (${corte.por_que_no_se_sabe}) · ${pe}`);
+
   if (!parsed.ok) {
-    await shadowJournalInsert({ ...base, account: cuenta, status: 'aborted_malformed_target', error: parsed.error, llm_response: text, context: ctx });
-    return { agent: agent.id, status: 'aborted_malformed_target', error: parsed.error, cost_usd: costo.usd };
+    const rescate = await rescatarConSoloJson({
+      agent, system: [system, shared], loop, textoMalo: texto, corte,
+      parseError: parsed.error, now, trace,
+    });
+    // LO QUE SE PUBLICA del rescate: sin el objeto `llm` crudo ni el texto
+    // entero (eso ya va en `llm_response`). Se publica SIEMPRE, también
+    // cuando no se concedió — "no hubo reintento" y "hubo y falló" no pueden
+    // verse iguales.
+    const { llm: _l, texto: _t, parsed: _p, ...publicable } = rescate;
+    ctx.reintento_json = publicable;
+
+    // EL GASTO DEL RESCATE, con su propio id. `arena_spend` tiene
+    // `on conflict (id) do nothing` y el id es el runId: una segunda llamada
+    // con el mismo id se descarta en silencio y el reintento habría salido
+    // GRATIS en el breaker. Un contador que no ve una llamada que se pagó no
+    // es un breaker.
+    if (rescate.concedido && rescate.llm && rescate.llm.data) {
+      const u2 = rescate.llm.data.usage || {};
+      const c2 = callCost({
+        anthropicUsd: agent.provider === 'anthropic' ? anthropicCostUsd(agent.model, u2) : null,
+        providerUsd: Number.isFinite(rescate.llm.data.cost_usd) ? rescate.llm.data.cost_usd : null,
+      });
+      await recordRunSpend({
+        agentId: agent.id, runId: `${runId}:reintento`, phase: vivo ? 'decide' : 'shadow',
+        usd: c2.usd, usdSource: c2.source,
+        tokens: { input: u2.input_tokens, output: u2.output_tokens, cache_read: u2.cache_read_input_tokens, cache_write: u2.cache_creation_input_tokens },
+        llmCalls: 1, toolCalls: 0, now,
+      });
+      ctx.reintento_json.cost = c2;
+      costo.usd = (Number(costo.usd) || 0) + (Number(c2.usd) || 0);
+    }
+
+    if (rescate.resuelto) {
+      // SE RESCATÓ, Y SE DICE. El texto que decide es el del reintento; el
+      // primero queda en `context.reintento_json.texto_1` y el hallazgo
+      // ("no entregó JSON de una") sigue contado.
+      texto = rescate.texto;
+      parsed = rescate.parsed;
+      ctx.lectura_cierre_reintento = rescate.lectura;
+    } else {
+      const error = `${porQueMalo(parsed.error)} · reintento solo-JSON: ${rescate.concedido ? (rescate.resuelto === false ? 'concedido y tampoco' : 'concedido') : 'NO concedido (' + rescate.motivo + ')'}`;
+      await shadowJournalInsert({ ...base, account: cuenta, status: 'aborted_malformed_target', error, llm_response: texto, context: ctx });
+      // VA EN LA RESPUESTA HTTP, no solo en el journal. La tabla del humo se
+      // lee desde el navegador; un campo que solo existe en Neon obliga a una
+      // consulta SQL para contestar la primera pregunta de la fila — y la
+      // puerta de apertura la corre Lety, no una consulta.
+      return {
+        agent: agent.id, status: 'aborted_malformed_target', error, cost_usd: costo.usd,
+        loop: resumenDelLoop(loop, executor),
+        lectura_cierre: corte, parse_error: parsed.error,
+        reintento_json: publicable,
+      };
+    }
   }
 
   // ── LOS TICKERS, ANTES DE LOS RIELES ────────────────────────────────
@@ -514,7 +717,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     rescate = rescatarObjetivo(tick);
     ctx.tickers.rescate = rescate;
     if (!rescate.rescatable) {
-      await shadowJournalInsert({ ...base, account: cuenta, status: 'rejected_tickers', error: tick.error, llm_response: text, context: ctx });
+      await shadowJournalInsert({ ...base, account: cuenta, status: 'rejected_tickers', error: tick.error, llm_response: texto, context: ctx });
       return { agent: agent.id, status: 'rejected_tickers', error: tick.error, motivo_rescate: rescate.motivo, tickers: ctx.tickers, cost_usd: costo.usd };
     }
   }
@@ -682,7 +885,10 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     // mezclaran, un agente al que se le descarta una posición cada día se
     // vería igual de sano que uno que nunca falla.
     status: !v.ok ? 'rejected_rails' : (rescate && rescate.rescatable ? 'ejecutado_parcial' : 'ok_target'),
-    plan: parsed.plan, llm_response: text,
+    // `texto` y no `text`: si el reintento solo-JSON rescató la corrida, el
+    // libro que se ejecutó es el del REINTENTO. Journalear el primero dejaría
+    // el `target` y el `llm_response` describiendo respuestas distintas.
+    plan: parsed.plan, llm_response: texto,
     target: { weights: parsed.weights, cash: parsed.cash, theses: parsed.theses },
     rebalance,
     context: { ...ctx, rails: v, rail_trims: trims, ...(ejecucion ? { ejecucion } : {}), ...(aperturas ? { aperturas } : {}) },
@@ -713,6 +919,14 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       },
     } : {}),
     lens: cola.lens, tools_used: executor.used, tools_intentos: executor.intentos, cost_usd: costo.usd,
+    loop: resumenDelLoop(loop, executor),
+    // ¿NECESITÓ AYUDA? La estadística por agente que Lety pidió, en la misma
+    // respuesta que la tabla de la puerta: un `ok_target` rescatado por el
+    // reintento y uno que entregó de una no pueden leerse igual.
+    ...(ctx.reintento_json ? { reintento_json: ctx.reintento_json } : {}),
+    // El corte también cuando SALIÓ BIEN. Un libro entregado con el techo al
+    // 0.99 entregó por centímetros, y eso solo se ve si se publica siempre.
+    lectura_cierre: corte,
     weights: parsed.weights,
     exposures: v.exposures,
     violations: v.violations,

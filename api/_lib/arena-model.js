@@ -172,6 +172,100 @@ function normalizeOpenRouter(raw) {
   };
 }
 
+// ── ¿JSON MALO O JSON CORTADO? (2026-10-02) ──────────────────────────
+// Dos agentes abortaron con `aborted_malformed_target` en la segunda tanda de
+// humo y los dos errores se leían como "el modelo no sabe entregar JSON":
+//
+//   deepseek · JSON inválido: Expected ',' or '}' after property value in
+//              JSON at position 771
+//   qwen     · la respuesta no contiene un objeto JSON
+//
+// El primero NO es mal JSON: es un JSON que MURIÓ en el carácter 771. Un
+// objeto que arranca bien, nombra propiedades bien, y se termina a mitad de un
+// valor es una respuesta CORTADA — y quien la cortó puede ser el techo de
+// tokens, no el modelo. Son diagnósticos opuestos: uno se arregla subiendo
+// `ARENA_MAX_TOKENS`, el otro es un hallazgo sobre el agente y se publica.
+//
+// La sonda de /api/arena-smoke ya separaba las dos cosas (`stop_reason` →
+// `truncated`). El camino de arena-shadow —el que corre la liga— NO. O sea: la
+// liga medía con un instrumento más ciego que el de la prueba de conectividad.
+// Esta función es ese instrumento, UNO para los dos caminos (B41: una regla en
+// dos lugares se vuelve dos reglas).
+//
+// TRES ESTADOS, NO DOS. `truncado: false` cuando en realidad no se puede saber
+// es el mismo patrón que Lety ya cazó dos veces: un chequeo que confirma la
+// propiedad débil y se lee como si confirmara la fuerte. Acá:
+//
+//   true  — hay testigo de corte: `stop_reason` lo dice, o los tokens de
+//           salida llegaron al techo.
+//   false — hay testigo de lo CONTRARIO: el modelo cerró el turno por su
+//           cuenta (`end_turn`/`stop`/`stop_sequence`/`tool_use`). Eso sí
+//           descarta el corte por tokens.
+//   null  — NO SE SABE, con el motivo al lado. Pasa cuando el proveedor no
+//           manda `finish_reason` (varios de OpenRouter) y los tokens quedaron
+//           por debajo del techo: el turno pudo terminar solo o pudo cortarse
+//           el stream, y desde acá se ven igual.
+//
+// El testigo de TOKENS es independiente del de `stop_reason` a propósito: los
+// proveedores que no mandan `finish_reason` son justamente los que necesitamos
+// diagnosticar.
+const FINALES_LIMPIOS = new Set(['end_turn', 'stop', 'stop_sequence', 'tool_use']);
+
+export function diagnosticoDeCorte(data, { maxTokens = ARENA_MAX_TOKENS, texto = null } = {}) {
+  const stop = (data && data.stop_reason) || null;
+  const u = (data && data.usage) || {};
+  const salida = Number(u.output_tokens) || 0;
+  const razonamiento = Number(u.reasoning_tokens) || 0;
+  const techo = Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0 ? Number(maxTokens) : null;
+
+  const porStop = stop === 'max_tokens';
+  // `>=` y no `===`: algunos proveedores cuentan el razonamiento aparte y el
+  // total puede pasar el techo por unos tokens. Que lo ALCANCE ya es el hecho.
+  const porTokens = techo != null && salida > 0 && salida >= techo;
+  const finalLimpio = !!stop && FINALES_LIMPIOS.has(stop);
+
+  const truncado = (porStop || porTokens) ? true : (finalLimpio ? false : null);
+  const porQue = porStop && porTokens ? 'stop_reason y tokens, los dos'
+    : porStop ? 'stop_reason=max_tokens'
+      : porTokens ? `tokens de salida (${salida}) alcanzaron el techo (${techo})`
+        : finalLimpio ? `el modelo cerró el turno solo (stop_reason=${stop})`
+          : null;
+
+  const diag = {
+    stop_reason: stop,
+    truncado,
+    truncado_por: porQue,
+    output_tokens: salida || null,
+    max_tokens: techo,
+    reasoning_tokens: razonamiento || null,
+    // Cuánto del techo se gastó. Un 0.98 con `stop_reason` nulo es un corte
+    // aunque nadie lo haya dicho; un 0.12 con JSON roto es el modelo.
+    techo_usado: techo != null && salida > 0 ? +(salida / techo).toFixed(3) : null,
+    chars: typeof texto === 'string' ? texto.length : null,
+    // LA COLA, no la cabeza. Donde se murió el texto es donde está la prueba:
+    // un JSON cortado termina a mitad de un valor; uno que el modelo decidió
+    // no entregar termina en prosa.
+    cola: typeof texto === 'string' && texto ? texto.slice(-160) : null,
+  };
+
+  if (truncado === null) {
+    diag.por_que_no_se_sabe = stop
+      ? `el proveedor mandó stop_reason=\`${stop}\`, que no es ni un final limpio ni max_tokens` +
+        (techo != null ? `, y los tokens de salida (${salida}) no llegaron al techo (${techo})` : ', y no sabemos el techo')
+      : 'el proveedor no mandó `finish_reason`' +
+        (techo != null && salida > 0 ? `, y los tokens de salida (${salida}) no llegaron al techo (${techo}): el turno pudo terminar solo o pudo cortarse el stream` : ', y tampoco reportó tokens de salida');
+    // Es un hueco DECLARADO, no uno silencioso: dice qué habría que mirar.
+    diag.como_se_sabría = 'el `generation_id` en el registro de OpenRouter trae el finish_reason de su lado; sin eso, subir `ARENA_MAX_TOKENS` y repetir separa las dos causas.';
+  }
+  // El razonamiento se cobra y se cuenta como salida. Un modelo que gastó el
+  // techo PENSANDO y no emitió JSON no es lo mismo que uno que emitió JSON
+  // malo, y sin esta línea los dos salen como `malformed`.
+  if (truncado === true && razonamiento > 0 && salida > 0 && razonamiento / salida >= 0.5) {
+    diag.nota = `${razonamiento} de ${salida} tokens de salida fueron RAZONAMIENTO (${Math.round((razonamiento / salida) * 100)}%): el techo se gastó pensando, no escribiendo. Subir el techo ayuda; bajar el \`effort\` también.`;
+  }
+  return diag;
+}
+
 // Cuerpo de OpenRouter, EXPORTADO para que /api/arena-smoke mande exactamente
 // el mismo payload que la corrida real (un smoke que manda otra cosa no prueba
 // nada). `reasoning.effort` es el parámetro unificado de OpenRouter; un modelo
