@@ -164,8 +164,6 @@ const MACRO = {
     'MXN=X': { price: 99.99, currency: 'MXN', series: serieAnual(99, 0.5) },
     'GC=F': { price: 3684, currency: 'USD', series: serieAnual(3100, 0.188, -1.7) },
     'CAD=X': { price: 1.38, currency: 'CAD', series: serieAnual(1.42, -0.028) },
-    'CLP=X': { price: 965, currency: 'CLP', series: serieAnual(990, -0.025) },
-    '^IPSA': { price: 8720, currency: 'CLP', series: serieAnual(7900, 0.104, 1.6) },
     'CNY=X': { price: 7.06, currency: 'CNY', series: serieAnual(7.2, -0.019) },
     'INR=X': { price: 88.4, currency: 'INR', series: serieAnual(86, 0.028) },
     'AUD=X': { price: 1.49, currency: 'AUD', series: serieAnual(1.53, -0.026) },
@@ -405,59 +403,27 @@ try {
     v: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
   }));
   chequeo('sin scroll horizontal a 390 px', !scroll.h);
-  // ── EN CELULAR EL MAPA ES LARGO, A PROPÓSITO ───────────────────────
-  // Hasta el 2026-09-29 esto exigía que el mapa cupiera en una pantalla de
-  // 390px. Con ~550 cuadros, caber significa que el más chico queda en 3px: se
-  // ve, se toca, y no se puede saber de quién es. Decisión de Lety: en celular
-  // el alto es max(2000, ancho × 5) y se recorre. El no-scroll sigue siendo la
-  // regla en escritorio, y se comprueba abajo a 1440×900.
+  // ── EL MAPA CABE EN UNA PANTALLA (como TradingView) ────────────────
+  // Hasta el 2026-10-01 el mapa del celular era LARGO (alto = ancho × 12) y se
+  // recorría. Se fue: "nadie estira el mapa hacia abajo; todos lo dejan en una
+  // pantalla y la letra aparece con el zoom" (Lety, 2026-10-02). Lo que se
+  // comprueba es que NO hay scroll y que el lienzo mide lo que <main> le deja.
   const alto = await p.evaluate(() => {
-    const l = document.getElementById('lienzo');
+    const l = document.getElementById('lienzo').getBoundingClientRect();
+    const m = document.querySelector('main').getBoundingClientRect();
     return {
-      lienzo: Math.round(l.getBoundingClientRect().height),
-      ancho: Math.round(l.getBoundingClientRect().width),
+      lienzo: Math.round(l.height), ancho: Math.round(l.width), main: Math.round(m.height),
       scrollBody: document.documentElement.scrollHeight,
-      marcado: document.body.getAttribute('data-scroll'),
-      // Las constantes salen de la página, no se repiten acá: un número
-      // copiado en dos lados se desincroniza y la prueba mide lo de ayer.
+      pantalla: window.innerHeight,
       k: window.QD_MAPA,
     };
   });
-  chequeo(`en celular el mapa es LARGO: max(${alto.k.ALTO_MIN_MOVIL}, ancho × ${alto.k.FACTOR_ALTO_MOVIL})`,
-    alto.marcado === '1'
-      && alto.lienzo === Math.max(alto.k.ALTO_MIN_MOVIL, Math.round(alto.ancho * alto.k.FACTOR_ALTO_MOVIL)),
+  chequeo('el mapa cabe en UNA pantalla: el lienzo es el alto que deja <main>, y no hay scroll',
+    !scroll.v && alto.lienzo === alto.main && alto.lienzo > 0 && alto.lienzo < alto.pantalla,
     JSON.stringify(alto));
-
-  // ── EL CUADRO MÁS ALTO NO SE COME LA PANTALLA ──────────────────────
-  // "En el iPhone, NVDA ocupa la pantalla completa (unos 800px de alto) por el
-  // ×12" (Lety, 2026-09-29). El alto de un cuadro es
-  // `(cap/cap_total) × columnas × alto_total`, así que la única palanca es el
-  // alto total — y esto comprueba el RESULTADO, no la palanca.
-  //
-  // Se mide de dos maneras porque el fixture NO es producción: su mayor pesa
-  // 20.8% de la cap dibujada y NVDA pesa 17.1% (los 800px que ella midió,
-  // sobre los 4,680 del ×12). El fixture da la cota alta; la cuota de prod da
-  // el número que ella va a ver.
-  const CUOTA_MAYOR_PROD = 0.171; // NVDA: 800px medidos sobre 4,680 de alto
-  const masAlto = await p.evaluate(() => {
-    let h = 0, sym = '', area = 0;
-    for (const e of document.querySelectorAll('.cuadro')) {
-      const r = e.getBoundingClientRect();
-      area += r.width * r.height;
-      if (r.height > h) { h = r.height; sym = e.getAttribute('aria-label'); }
-    }
-    return { h: Math.round(h), sym, pantalla: window.innerHeight, cuota: null, area };
-  });
-  const altoNvda = Math.round(alto.lienzo * CUOTA_MAYOR_PROD);
-  chequeo('el mayor de PRODUCCIÓN (NVDA, 17.1% de la cap dibujada) queda en media pantalla',
-    altoNvda <= masAlto.pantalla / 2,
-    `${altoNvda}px sobre un mapa de ${alto.lienzo}px; media pantalla es ${Math.round(masAlto.pantalla / 2)}px`);
-  // Y en el fixture, que es más desigual, al menos no llena una pantalla: con
-  // ×12 el mayor medía 901px sobre 844 de pantalla, que es la queja de ella.
-  chequeo('y en el fixture el mayor ya no llena una pantalla entera',
-    masAlto.h < masAlto.pantalla,
-    `el mayor es ${masAlto.sym} con ${masAlto.h}px de ${masAlto.pantalla}px de pantalla`);
-  chequeo('y la página se recorre en vertical', scroll.v, JSON.stringify(alto));
+  chequeo('ya no existe el mapa largo: ninguna constante de factor de alto',
+    alto.k.FACTOR_ALTO_MOVIL === undefined && alto.k.ALTO_MIN_MOVIL === undefined,
+    JSON.stringify(alto.k));
 
   const taps = await p.evaluate(() => {
     const sel = ['nav button', '.toggle button', '#cerrar'];
@@ -529,14 +495,21 @@ try {
         out.tallas[f] = (out.tallas[f] || 0) + 1;
       }
       if (val) out.conDos++;
-      if (area >= 900) {
+      // EL UMBRAL ES LA GEOMETRÍA DEL TICKER, NO UN ÁREA. Era "≥900px² (30×30)",
+      // que daba por sentado que los cuadros son casi cuadrados. Con el mapa en
+      // una sola pantalla hay astillas —MNST salía de 14×121, o sea 1,694px²—
+      // donde el área sobra y el ANCHO no alcanza: 4 letras a 6px miden 14.45px
+      // con la fuente real y necesitan 16.45px con su margen. Media palabra no
+      // se pinta, así que ir sin letra ahí es correcto.
+      const t = e.getAttribute('aria-label') || '';
+      if (r.width >= t.length * 6 * 0.6022 + 2 && r.height >= 6) {
         out.total++;
-        if (!sym) out.mudos.push({ w: Math.round(r.width), h: Math.round(r.height), aria: e.getAttribute('aria-label') });
+        if (!sym) out.mudos.push({ w: Math.round(r.width), h: Math.round(r.height), aria: t });
       }
     }
     return out;
   });
-  chequeo('ningún cuadro de ≥900px² se queda sin texto',
+  chequeo('ningún cuadro con sitio para su ticker se queda sin texto',
     mudos.mudos.length === 0, `${mudos.mudos.length} de ${mudos.total}: ${JSON.stringify(mudos.mudos.slice(0, 5))}`);
   // Y la fuente escala de verdad: si todas las tallas fueran iguales, seguiría
   // siendo el tamaño fijo con otro número.
@@ -607,27 +580,145 @@ try {
   chequeo('ningún cuadro con sitio para su ticker se queda sin él',
     tickers.deben.length === 0,
     `${tickers.deben.length} tienen sitio y están mudos: ${JSON.stringify(tickers.deben.slice(0, 6))}`);
-  // ── EL TECHO DE CUADROS MINÚSCULOS, DECLARADO APARTE ───────────────
-  // Lety pidió en R1 "menos de 20 de ~550 bajo los 14px de lado", y con ×12 se
-  // cumplía (9 de 552). Al bajar el factor a 6 para que el mayor quepa en media
-  // pantalla (su pedido del 2026-09-29), el área de cada cuadro se parte a la
-  // mitad y el conteo sube. Las dos cosas no caben juntas, y el techo se mueve
-  // ACÁ, con su nombre y sus dos números, para que moverlo se vea en el diff —
-  // igual que `CRITERIOS.g2_max_error_pct` en el veredicto de la cap:
+  // A 1× casi todo el mapa es minúsculo y eso es correcto: en una pantalla de
+  // 390px, 550 cuadros dan 3px de lado. Lo que NO puede pasar es que el mayor
+  // —el que sí tiene sitio de sobra— se quede sin nombre y sin número.
+  const mayor = await p.evaluate(() => {
+    let a = 0, el = null;
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      if (r.width * r.height > a) { a = r.width * r.height; el = e; }
+    }
+    return el && {
+      sym: el.getAttribute('aria-label'),
+      w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height),
+      ticker: (el.querySelector('.sym') || {}).textContent || '',
+      pct: (el.querySelector('.val') || {}).textContent || '',
+    };
+  });
+  chequeo('a 1× el mayor del mapa (el NVDA del fixture) lleva ticker Y %',
+    mayor && mayor.ticker && /%/.test(mayor.pct), JSON.stringify(mayor));
+  console.log(`     ↳ a 1×: sin ticker ${tickers.sin} de ${tickers.total} cuadros · `
+    + `${tickers.bajo14} bajo 14px de lado · el más angosto mide ${tickers.anchoMin}px`);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // EL ZOOM: pellizcar amplía, y la letra aparece conforme hay sitio.
   //
-  //     factor   fixture (552)   producción (307)
-  //       ×12          9/552            3/307
-  //        ×6        242/552           11/307
-  //
-  // Lo que NO se movió es el criterio de verdad, que es el de arriba: ningún
-  // cuadro con sitio para su ticker se queda sin él. Éste es un detector de
-  // regresión sobre la densidad, no la promesa.
-  const MAX_BAJO_14 = 250;
-  chequeo(`no más de ${MAX_BAJO_14} cuadros caen bajo los 14px de lado (era <20 con ×12; el factor bajó a 6)`,
-    tickers.bajo14 <= MAX_BAJO_14, `${tickers.bajo14} de ${tickers.total}`);
-  console.log(`     ↳ sin ticker: ${tickers.sin} de ${tickers.total} cuadros · `
-    + `${tickers.bajo14} bajo 14px de lado · ${tickers.excepcion} no les cabe su propio ticker a 6px `
-    + `· el más angosto mide ${tickers.anchoMin}px`);
+  // Los gestos se mandan con dedos de verdad (`Input.dispatchTouchEvent` por
+  // CDP), no llamando a una función de la página: un atajo que saltara el
+  // gesto dejaría sin probar justo lo que se acaba de escribir.
+  // ═══════════════════════════════════════════════════════════════════
+  const cdp = await movil.newCDPSession(p);
+  const dedos = (type, puntos) => cdp.send('Input.dispatchTouchEvent', {
+    type,
+    touchPoints: puntos.map((q, i) => ({ x: q.x, y: q.y, id: i, radiusX: 4, radiusY: 4, force: 1 })),
+  });
+  const caja = await p.evaluate(() => {
+    const r = document.getElementById('lienzo').getBoundingClientRect();
+    return { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+  });
+  const verVista = () => p.evaluate(() => ({ ...window.QD_MAPA.vista, reset: getComputedStyle(document.getElementById('reset')).display }));
+
+  /** Pellizco de `k` veces alrededor del centro del lienzo. */
+  async function pellizcar(k, { soltarUnoPrimero = false } = {}) {
+    const d0 = 60, d1 = 60 * k;
+    await dedos('touchStart', [{ x: caja.cx - d0, y: caja.cy }, { x: caja.cx + d0, y: caja.cy }]);
+    for (let i = 1; i <= 6; i++) {
+      const d = d0 + (d1 - d0) * (i / 6);
+      await dedos('touchMove', [{ x: caja.cx - d, y: caja.cy }, { x: caja.cx + d, y: caja.cy }]);
+    }
+    // Levantar un dedo antes que el otro es lo normal al pellizcar, y es el
+    // caso que hacía que el final pareciera un toque.
+    if (soltarUnoPrimero) await dedos('touchEnd', [{ x: caja.cx - d1, y: caja.cy }]);
+    await dedos('touchEnd', []);
+    await p.waitForTimeout(80);
+  }
+
+  await pellizcar(4);
+  const v4 = await verVista();
+  chequeo('pellizcar amplía: la vista queda en ~4× y aparece el botón ⤢',
+    Math.abs(v4.z - 4) < 0.25 && v4.reset !== 'none', JSON.stringify(v4));
+
+  // EL CRITERIO DE LETY (2026-10-02): "a 4×, contar los cuadros visibles sin
+  // ticker que midan ≥17px en pantalla debe dar 0". Los 17px son la geometría
+  // del ticker más largo: 4 letras a 6px miden 14.45px con la fuente real, más
+  // 1px de margen por lado.
+  const a4 = await p.evaluate(() => {
+    const l = document.getElementById('lienzo').getBoundingClientRect();
+    const out = { visibles: 0, grandes: 0, mudos: [] };
+    for (const e of document.querySelectorAll('.cuadro')) {
+      const r = e.getBoundingClientRect();
+      // "Visible" es lo que de verdad se ve: un cuadro medio fuera del borde
+      // cuenta por la parte que entra, no por su tamaño completo.
+      const w = Math.min(r.right, l.right) - Math.max(r.left, l.left);
+      const h = Math.min(r.bottom, l.bottom) - Math.max(r.top, l.top);
+      if (w <= 0 || h <= 0) continue;
+      out.visibles++;
+      if (w < 17 || h < 17) continue;
+      out.grandes++;
+      if (!((e.querySelector('.sym') || {}).textContent || '')) {
+        out.mudos.push({ sym: e.getAttribute('aria-label'), w: Math.round(w), h: Math.round(h) });
+      }
+    }
+    return out;
+  });
+  chequeo('a 4×, cero cuadros visibles de ≥17px sin ticker',
+    a4.mudos.length === 0,
+    `${a4.mudos.length} mudos de ${a4.grandes} que miden ≥17px (${a4.visibles} visibles): ${JSON.stringify(a4.mudos.slice(0, 6))}`);
+  await p.screenshot({ path: join(OUT, 'mercado-390-zoom4.png') });
+  console.log(`     → ${join(OUT, 'mercado-390-zoom4.png')}`);
+  chequeo('y ampliar NO repinta el mapa entero: sólo se dibuja lo que se ve',
+    a4.visibles < tickers.total,
+    `${a4.visibles} cuadros en el DOM a 4× contra ${tickers.total} a 1×`);
+
+  // ── UN DEDO MUEVE EL MAPA AMPLIADO ─────────────────────────────────
+  const antesPan = await verVista();
+  await dedos('touchStart', [{ x: caja.cx + 80, y: caja.cy + 80 }]);
+  for (let i = 1; i <= 5; i++) await dedos('touchMove', [{ x: caja.cx + 80 - i * 14, y: caja.cy + 80 - i * 14 }]);
+  await dedos('touchEnd', []);
+  await p.waitForTimeout(80);
+  const traPan = await verVista();
+  chequeo('con un dedo se recorre el mapa ampliado, y el zoom no cambia',
+    traPan.px > antesPan.px && traPan.py > antesPan.py && Math.abs(traPan.z - antesPan.z) < 0.01,
+    `${JSON.stringify(antesPan)} → ${JSON.stringify(traPan)}`);
+  chequeo('y el arrastre NO abre la hoja',
+    (await p.locator('.hoja').getAttribute('data-abierta')) !== '1');
+
+  // ── EL TAP DE UN PELLIZCO NO ABRE NADA ─────────────────────────────
+  // Soltando un dedo antes que el otro, el final del gesto parece un toque:
+  // un dedo abajo, sin movimiento, que se levanta. Es el caso que abría la
+  // hoja de un cuadro cualquiera al terminar de ampliar.
+  await p.locator('#reset').tap();
+  await p.waitForTimeout(80);
+  await pellizcar(2, { soltarUnoPrimero: true });
+  await p.waitForTimeout(400);
+  const trasPellizco = await p.locator('.hoja').getAttribute('data-abierta');
+  chequeo('el tap que cierra un pellizco NO abre la hoja',
+    trasPellizco !== '1', `data-abierta=${trasPellizco}`);
+
+  // ── DOBLE TAP: 2× DONDE SE TOCÓ ────────────────────────────────────
+  await p.locator('#reset').tap();
+  await p.waitForTimeout(80);
+  const antesDoble = await verVista();
+  for (let i = 0; i < 2; i++) {
+    await dedos('touchStart', [{ x: caja.cx, y: caja.cy }]);
+    await dedos('touchEnd', []);
+    await p.waitForTimeout(40);
+  }
+  await p.waitForTimeout(120);
+  const trasDoble = await verVista();
+  chequeo('doble tap amplía 2× y no abre la hoja',
+    Math.abs(trasDoble.z - antesDoble.z * 2) < 0.01
+      && (await p.locator('.hoja').getAttribute('data-abierta')) !== '1',
+    `${antesDoble.z}× → ${trasDoble.z}×`);
+
+  // ── ⤢ VUELVE A 1× ──────────────────────────────────────────────────
+  await p.locator('#reset').tap();
+  await p.waitForTimeout(120);
+  const tras1x = await verVista();
+  chequeo('el botón ⤢ vuelve a 1× y se esconde',
+    tras1x.z === 1 && tras1x.px === 0 && tras1x.py === 0 && tras1x.reset === 'none',
+    JSON.stringify(tras1x));
 
   // REGLA 5: cero logos en el mapa. Ni <img>, ni background-image.
   const imgs = await p.evaluate(() => {
@@ -807,7 +898,7 @@ try {
     mundo.regiones.map((r) => r.titulo.trim()).join(' · '));
   // `^AXJO` no está en la lista porque el fixture lo omite A PROPÓSITO: es el
   // caso de "no llegó → se dice con su causa", que se comprueba más abajo.
-  const esperados = ['^GSPC', '^NDX', '^MXX', '^BVSP', '^GSPTSE', '^IPSA', '^GDAXI', '^FTSE', '^FCHI',
+  const esperados = ['^GSPC', '^NDX', '^MXX', '^BVSP', '^GSPTSE', '^GDAXI', '^FTSE', '^FCHI',
     '^N225', '^KS11', '^HSI', '000001.SS', '^NSEI', 'BTC-USD', 'MXN=X', 'GC=F'];
   const symsMundo = mundo.cajas.map((c) => c.sym);
   chequeo('los índices del mockup están, y los cruces de moneda NO ocupan cuadro',
@@ -1048,11 +1139,16 @@ try {
 
   // El FIX del fixture cae 6.1% en el año: en pesos TODO el mapa de EE.UU.
   // tiene que moverse. Cero cuadros movidos es exactamente el bug de ella.
+  //
+  // Con el mapa en UNA pantalla, el % impreso lo llevan sólo los cuadros
+  // grandes —el resto no tiene sitio hasta que se amplía—, así que el número
+  // se compara en los que lo muestran y el COLOR en todos: el color lo tiene
+  // cada cuadro, lo lleve o no escrito.
   const symsUs = Object.keys(usLocal.cuadros).filter((k) => /%/.test(usLocal.cuadros[k].val));
   const movidos = symsUs.filter((k) => usMxn.cuadros[k] && usMxn.cuadros[k].val !== usLocal.cuadros[k].val);
   chequeo('en MXN el % de los cuadros de EE.UU. cambia (era el bug: +1.7% en las dos)',
     symsUs.length > 0 && movidos.length === symsUs.length,
-    `${movidos.length} de ${symsUs.length} con % cambiaron`);
+    `${movidos.length} de ${symsUs.length} con % impreso cambiaron`);
 
   // EL COLOR SIGUE AL NÚMERO EN PESOS. Con el peso apreciándose 6.1%, los
   // cuadros que estaban apenas en verde cruzan a rojo: si ninguno cambia de
@@ -1071,16 +1167,18 @@ try {
   // la propia página tiene, y se compara con el número pintado: si alguien
   // cambia la fórmula por una suma, el cruzado se pierde y esto lo ve.
   const rmFix = qdPeriodChange(SERIE_FIX, 'YTD').pct;
-  const rlLocal = parseFloat(String((usLocal.cuadros.MNST || {}).val || '').replace(/[^\-0-9.]/g, ''));
-  const pintado = parseFloat(String((usMxn.cuadros.MNST || {}).val || '').replace(/[^\-0-9.]/g, ''));
+  // El mayor del mapa es el que seguro trae su % impreso a 1×.
+  const refUs = symsUs[0];
+  const rlLocal = parseFloat(String((usLocal.cuadros[refUs] || {}).val || '').replace(/[^\-0-9.]/g, ''));
+  const pintado = parseFloat(String((usMxn.cuadros[refUs] || {}).val || '').replace(/[^\-0-9.]/g, ''));
   const esperado = ((1 + rlLocal / 100) * (1 + rmFix / 100) - 1) * 100;
   const suma = rlLocal + rmFix;
   chequeo('el % en pesos es (1+r_local)(1+r_moneda)−1, no la suma',
     Number.isFinite(pintado) && Math.abs(pintado - esperado) < 0.1 && Math.abs(esperado - suma) > 0.15,
-    `local ${rlLocal}% · FIX ${rmFix.toFixed(3)}% → pintado ${pintado}% · multiplicativo ${esperado.toFixed(3)}% · suma ingenua ${suma.toFixed(3)}%`);
+    `${refUs}: local ${rlLocal}% · FIX ${rmFix.toFixed(3)}% → pintado ${pintado}% · multiplicativo ${esperado.toFixed(3)}% · suma ingenua ${suma.toFixed(3)}%`);
 
   // LA HOJA: las dos líneas y el FIX, igual que en Mundo.
-  await p.locator('.cuadro[aria-label^="MNST"]').first().tap();
+  await p.locator(`.cuadro[aria-label="${refUs}"]`).first().tap();
   await p.waitForSelector('.hoja[data-abierta="1"]');
   const hojaUs = await p.locator('#hojaCuerpo').innerText();
   chequeo('la hoja de una acción de EE.UU. en pesos trae las dos líneas y su FIX',

@@ -32,10 +32,11 @@ test('las cuatro regiones del encargo, en orden y con su nombre', () => {
 });
 
 test('los cruces de moneda son INSUMO y no ocupan cuadro', () => {
-  // Once monedas con cruce declarado: las cuatro de R2(a) más las cinco que
-  // trajo el artboard 4 (CAD, COP, CNY, INR, AUD) y el euro.
+  // Diez monedas con cruce declarado: las cuatro de R2(a) más las que trajo
+  // el artboard 4 (CAD, CNY, INR, AUD) y el euro. `CLP=X` se fue con `^IPSA`:
+  // un cruce que no convierte ningún cuadro es una petición a Yahoo por nada.
   assert.deepEqual(SOLO_INSUMO.sort(),
-    ['AUD=X', 'BRL=X', 'CAD=X', 'CLP=X', 'CNY=X', 'EURUSD=X', 'GBPUSD=X', 'HKD=X', 'INR=X', 'JPY=X', 'KRW=X']);
+    ['AUD=X', 'BRL=X', 'CAD=X', 'CNY=X', 'EURUSD=X', 'GBPUSD=X', 'HKD=X', 'INR=X', 'JPY=X', 'KRW=X']);
   const m = armaMundo({ data: conTodo(), fix: FIX });
   const pintados = m.regiones.flatMap((r) => r.cuadros.map((c) => c.symbol));
   for (const s of SOLO_INSUMO) assert.ok(!pintados.includes(s), `${s} no debería tener cuadro`);
@@ -199,11 +200,16 @@ test('sin FIX, el cuadro del peso dice por qué no está en vez de caer a Yahoo'
   assert.match(f.motivo, /no llegó el FIX/);
 });
 
-test('Chile entra, Colombia sale, y el aviso de cripto se fue con Bitcoin', () => {
+test('los índices que Yahoo no tiene NO están, y el aviso de cripto se fue con Bitcoin', () => {
+  // Los dos candidatos de Sudamérica devolvieron 404 contra producción:
+  // `^COLCAP` el 2026-09-29 y `^IPSA` el 2026-10-02. Ninguno se sustituye por
+  // un ticker parecido —un índice que no se pudo comprobar no entra— y con
+  // `^IPSA` se fue su cruce, que ya no convertía nada.
   const claves = CATALOGO.map((c) => c.symbol);
-  assert.ok(claves.includes('^IPSA'), 'Chile');
   assert.ok(!claves.includes('^COLCAP'), 'COLCAP no existe en Yahoo');
-  assert.ok(claves.includes('CLP=X') && !claves.includes('COP=X'), 'y su cruce va con él');
+  assert.ok(!claves.includes('^IPSA'), 'IPSA tampoco: 404');
+  assert.ok(!claves.includes('CLP=X'), 'y su cruce se fue con él');
+  assert.ok(claves.includes('^BVSP'), 'Sudamérica se queda en Brasil');
   const data = {};
   for (const c of CATALOGO) data[c.symbol] = { price: 100, currency: c.moneda, series: [{ t: 1, c: 1 }, { t: 2, c: 2 }] };
   const m = armaMundo({ data });
@@ -239,13 +245,13 @@ test('cuando el precio de hoy entró a la serie, la fecha del dato es la de hoy'
 test('la causa de un símbolo ausente la da el ENDPOINT, no se inventa', () => {
   const data = {};
   for (const c of CATALOGO) data[c.symbol] = { price: 100, currency: c.moneda, series: serie() };
-  delete data['^IPSA'];
+  delete data['^FTSE'];
   delete data['^AXJO'];
-  const m = armaMundo({ data, fix: FIX, omitidos: { '^IPSA': 'Yahoo respondió HTTP 404' } });
+  const m = armaMundo({ data, fix: FIX, omitidos: { '^FTSE': 'Yahoo respondió HTTP 404' } });
   const por = new Map(m.faltantes.map((f) => [f.symbol, f.motivo]));
   // Con razón declarada: se usa tal cual, porque un 404 se arregla cambiando
   // el ticker y un timeout no.
-  assert.equal(por.get('^IPSA'), 'Yahoo respondió HTTP 404');
+  assert.equal(por.get('^FTSE'), 'Yahoo respondió HTTP 404');
   // Sin razón declarada: se dice que no la hay, en vez de afirmar una.
   assert.match(por.get('^AXJO'), /ni dijo por qué/);
 });

@@ -62,14 +62,24 @@
   /* overflow:hidden NO es cosmético: sin él, un cuadro calculado con una
      altura vieja se dibuja encima del pie y tapa la fuente del dato. */
   #lienzo{position:absolute;inset:0;overflow:hidden}
-  /* ── EL MAPA LARGO DEL CELULAR ────────────────────────────────────────
-     En 390px de ancho, obligar al mapa a caber en una pantalla deja cuadros
-     de 3px: se ven, se tocan, y no se puede saber de quién son. En celular el
-     treemap crece a max(2000px, ancho × 5) y la página se recorre, como el
-     mockup (Main medía 1,640px). En escritorio no cambia nada: ahí el mapa
-     cabe entero y el no-scroll sigue siendo la regla.
-     `position:relative` es necesario, no cosmético: con `inset:0` el alto
-     queda sobre-restringido y el navegador ignora el `height` que pone el JS. */
+  /* ── EL MAPA CABE EN UNA PANTALLA, Y SE AMPLÍA CON LOS DEDOS ─────────
+     El mapa largo (alto = ancho × 12, con scroll) se fue el 2026-10-02:
+     "lo hacemos como TradingView, no largo. Nadie estira el mapa hacia abajo;
+     todos lo dejan en una pantalla y la letra aparece con el zoom" (Lety).
+     El alto disponible ya lo da el `flex:1` de <main>, así que acá no hay
+     ninguna cuenta de alto: lo que había (`FACTOR_ALTO_MOVIL`) se borró.
+     `touch-action:none` NO es cosmético: sin él el navegador se queda el
+     pellizco y el arrastre para su propio zoom de página y el mapa no ve
+     nada. Va sólo en celular, que es donde hay gestos. */
+  @media (max-width:599px){ #lienzo{touch-action:none} }
+  /* Volver a 1×. Flota sobre el mapa porque pertenece al mapa, y mide 44px
+     como todo lo que se toca (regla 8). Sólo aparece cuando hay a qué
+     volver: un botón que no hace nada es ruido. */
+  #reset{position:absolute;right:8px;bottom:8px;z-index:5;display:none;
+    min-width:var(--tap);min-height:var(--tap);background:rgba(20,20,20,.88);
+    border:1px solid #3a3a3a;border-radius:8px;color:var(--texto);
+    font-size:18px;line-height:1;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  main[data-zoom="1"] #reset{display:block}
   /* ── MUNDO: REJILLA, NO TREEMAP (artboard 4) ─────────────────────────
      Encargo §3/R2: "un cuadro por índice, TAMAÑO FIJO (los índices no tienen
      cap; no fingir)". El tamaño fijo es la regla 2 aplicada al tamaño: en el
@@ -113,9 +123,6 @@
   .c.punteado{border-style:dashed;border-color:#555}
   @media (pointer:fine){ .c:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
   #mundo .nota{padding:2px 0 4px;font-size:10px;color:#f59e0b}
-  body[data-scroll="1"]{overflow-y:auto;overflow-x:hidden}
-  body[data-scroll="1"] main{flex:0 0 auto}
-  body[data-scroll="1"] #lienzo{position:relative;inset:auto;width:100%}
   .cuadro{position:absolute;overflow:hidden;border:1px solid #0a0a0a;border-radius:2px;
     display:flex;flex-direction:column;justify-content:center;align-items:center;
     cursor:pointer;-webkit-tap-highlight-color:transparent;padding:2px}
@@ -194,7 +201,7 @@
 <div class="toggle" id="moneda" role="group" aria-label="Moneda" hidden></div>
 
 <div id="ruta"></div>
-<main><div id="lienzo"></div><div id="mundo" hidden></div></main>
+<main><div id="lienzo"></div><div id="mundo" hidden></div><button type="button" id="reset" aria-label="Volver al mapa completo">⤢</button></main>
 <div id="aviso"></div>
 <div id="mas"></div>
 <footer id="pie">cargando…</footer>
@@ -320,7 +327,8 @@
     document.getElementById('lienzo').hidden = (estado.mapa==='mundo');
     document.getElementById('mundo').hidden = (estado.mapa!=='mundo');
     if(estado.mapa==='mundo'){
-      document.body.removeAttribute('data-scroll');
+      // El botón de volver a 1× es del mapa, no de Mundo.
+      document.querySelector('main').setAttribute('data-zoom','0');
       pintarChipMundo(d);
       pintarAviso({});
       pintarPieMundo(d);
@@ -406,69 +414,76 @@
     return (window.innerWidth >= 900) ? 60 : 30;
   }
 
-  // ── CUÁNDO EL MAPA SE VUELVE LARGO, Y CUÁNTO ───────────────────────
-  // Debajo de 600px de ancho no hay manera de que ~300 cuadros quepan en una
-  // pantalla con letra legible: el más chico queda en 3px. Así que el alto pasa
-  // a ser max(2000, ancho × FACTOR) y la página se recorre. El piso de 2000 y
-  // la forma de la cuenta son de Lety (2026-09-29, del mockup, donde Main
-  // medía 1,640px). En escritorio no cambia nada.
+  // ── UNA PANTALLA, Y LA LETRA APARECE CON EL ZOOM ────────────────────
+  // Hasta el 2026-10-01 el mapa del celular crecía a `ancho × 12` y la página
+  // se recorría hacia abajo. Se fue: "lo hacemos como TradingView, no largo.
+  // Nadie estira el mapa hacia abajo; todos lo dejan en una pantalla y la letra
+  // aparece con el zoom" (Lety, 2026-10-02).
   //
-  // ┌ LA LEY DEL ALTO DE UN CUADRO ───────────────────────────────────┐
-  // │   alto = (cap / cap_total) × columnas × alto_total              │
-  // └─────────────────────────────────────────────────────────────────┘
-  // El ÁREA es la capitalización y eso no se negocia, así que el alto de un
-  // cuadro que ocupa el ancho de su columna sólo depende de `columnas ×
-  // alto_total`. De ahí salen las dos consecuencias que decidieron este número:
+  // CÓMO FUNCIONA, Y POR QUÉ NO ES UN `transform: scale`.
+  // El treemap se calcula UNA vez contra el alto visible —el que ya da el
+  // `flex:1` de <main>— y esa geometría base no se vuelve a tocar. El zoom sólo
+  // cambia cómo se PINTA: cada cuadro se dibuja en `x·z − px, y·z − py` con
+  // `w·z × h·z`, y su etiqueta se recalcula con `etiquetaCuadro(w·z, h·z)`.
   //
-  // 1. LAS COLUMNAS VAN AL REVÉS. Lety pidió (2026-09-29) "los sectores en 2
-  //    columnas para que ningún cuadro pase de media pantalla". Partir el ancho
-  //    a la mitad DUPLICA el alto del mayor: medido en el Chromium a 390px con
-  //    el universo a escala, NVDA/S0 pasa de 901px a 1,811px. Se probaron las
-  //    cuatro combinaciones y ninguna de dos columnas baja del alto que ya
-  //    había, así que el mapa se queda en UNA columna.
+  // Un `transform: scale` habría sido tres líneas y habría agrandado también
+  // las letras: un ticker de 6px a 8× son 48px de alto y el cuadro deja de
+  // caber en sí mismo. Lo que ella pidió es lo contrario — que al ampliar
+  // aparezcan los tickers y después los % de los cuadros que antes no tenían
+  // sitio—, y eso sólo sale recalculando la etiqueta contra el tamaño EN
+  // PANTALLA. Es también por lo que se repinta el DOM en vez de transformarlo.
   //
-  // 2. EL FACTOR BAJA DE 12 A 6. Es la única palanca que acorta al mayor.
-  //    NVDA medía ~800px en su iPhone con ×12 (toda la pantalla); con ×6 mide
-  //    ~400px, que es la media pantalla que pidió, y el mapa se recorre la
-  //    mitad: 2,148px en vez de 4,296px.
-  //
-  // LO QUE SE PAGA ES ÁREA, Y POR LO TANTO TICKERS. Cada cuadro tiene la mitad
-  // de área. Medido a 390px:
-  //
-  //             ancho  factor   largo   el mayor   sin ticker (552)   (307 de prod)
-  //     1 col     358     ×12   4,296      901px           75/552           4/307
-  //     1 col     358      ×6   2,148      446px          300/552          25/307
-  //     2 col     179     ×12   4,650    1,811px           48/552           0/307
-  //     2 col     179      ×6   2,325      901px          297/552          20/307
-  //
-  // Esto REVIERTE en parte la decisión de R1 ("me quedo con ×12, todos con
-  // ticker"): en producción 25 de 307 cuadros pierden su ticker, 11 de ellos
-  // por debajo de los 14px de lado que ella misma aceptó como excepción.
-  // Volverlo a ×12 es cambiar este número y nada más.
-  var ANCHO_MOVIL = 600, ALTO_MIN_MOVIL = 2000, FACTOR_ALTO_MOVIL = 6;
+  // El costo de repintar 550 cuadros se paga una vez a 1×; ampliado se pintan
+  // sólo los que caen dentro de la ventana (a 8× es 1/64 del mapa).
+  var ZOOM_MIN = 1, ZOOM_MAX = 8, ALTO_CABECERA = 14;
+  var vista = { z: 1, px: 0, py: 0 };
+  // La geometría base: lo que squarify repartió contra el alto visible.
+  var mapaBase = null;        // { cuadros:[], cabeceras:[], w, h }
+  var claveVista = null;      // mapa/sector: al cambiar de pantalla, vuelve a 1×
+
+  var ANCHO_MOVIL = 600;
   function esMovil(){ return window.innerWidth < ANCHO_MOVIL; }
-  // Expuestas para que la comprobación del Chromium calcule el alto esperado
-  // con LAS MISMAS constantes en vez de repetirlas: un número copiado en dos
-  // lados se desincroniza, y entonces la prueba mide lo que decía ayer.
-  window.QD_MAPA = { ANCHO_MOVIL: ANCHO_MOVIL, ALTO_MIN_MOVIL: ALTO_MIN_MOVIL, FACTOR_ALTO_MOVIL: FACTOR_ALTO_MOVIL };
+
+  function limitaVista(){
+    vista.z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, vista.z));
+    if(!mapaBase){ vista.px = 0; vista.py = 0; return; }
+    // El mapa ampliado nunca deja ver fuera de sus bordes: el hueco negro al
+    // lado de un treemap no es un dato, es un error de encuadre.
+    vista.px = Math.min(mapaBase.w * (vista.z - 1), Math.max(0, vista.px));
+    vista.py = Math.min(mapaBase.h * (vista.z - 1), Math.max(0, vista.py));
+  }
+
+  /** Amplía a `z2` dejando quieto el punto (cx,cy) de la pantalla. */
+  function zoomHacia(z2, cx, cy){
+    var z1 = vista.z;
+    z2 = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z2));
+    if(z2 === z1) return;
+    var k = z2 / z1;
+    vista.px = (vista.px + cx) * k - cx;
+    vista.py = (vista.py + cy) * k - cy;
+    vista.z = z2;
+    limitaVista();
+    pintarLienzo();
+  }
+
+  function volverA1(){ vista.z = 1; vista.px = 0; vista.py = 0; pintarLienzo(); }
+
+  // Lo que la comprobación del Chromium necesita LEER. No hay nada acá que
+  // mueva la vista: los tests amplían con dedos de verdad (Input.dispatchTouchEvent),
+  // porque un atajo que salte el gesto dejaría el gesto sin probar.
+  window.QD_MAPA = { ANCHO_MOVIL: ANCHO_MOVIL, ZOOM_MIN: ZOOM_MIN, ZOOM_MAX: ZOOM_MAX,
+    vista: vista, base: function(){ return mapaBase; } };
 
   function pintarMapa(d){
     var l = document.getElementById('lienzo');
-    l.innerHTML = '';
-    // El modo largo se decide ANTES de medir: cambia de dónde sale el alto.
-    var movil = esMovil();
-    if(movil) document.body.setAttribute('data-scroll','1');
-    else { document.body.removeAttribute('data-scroll'); l.style.height = ''; }
     var w = l.clientWidth, h = l.clientHeight;
-    if(movil && w){
-      h = Math.max(ALTO_MIN_MOVIL, Math.round(w * FACTOR_ALTO_MOVIL));
-      l.style.height = h + 'px';
-    }
     // Si el layout todavía no se aplicó (primer pintado), se reintenta en el
     // siguiente cuadro en vez de dibujar contra un cero.
     if(!w || !h){ requestAnimationFrame(function(){ pintarMapa(d); }); return; }
     var cs = cuadrosVisibles(d);
     if(!cs.length){
+      mapaBase = null;
+      pool.cuadros = []; pool.cabeceras = [];
       // ROTO Y VACÍO NO SON LO MISMO, y el marcador lo dice: confundirlos fue
       // el bug. "No hay cuadros" manda a revisar la cosecha; un error de
       // lectura manda a revisar la consulta, y son dos búsquedas distintas.
@@ -477,10 +492,144 @@
         + (d.error ? esc(d.error) : 'no hay cuadros con capitalización medida para pintar')
         + (d.detalle ? '<br><br>' + esc(JSON.stringify(d.detalle)) : '')
         + '</div>';
+      pintarReset();
       return;
     }
-    if(estado.sector) pintarSector(l, cs, w, h);
-    else pintarPrimerNivel(l, cs, w, h);
+    // Al cambiar de pantalla —otro mapa, entrar o salir de un sector— la vista
+    // vuelve a 1×: seguir ampliado sobre un reparto distinto deja al dedo en
+    // una parte del mapa que ya no es la que estaba mirando. Cambiar de
+    // periodo o de moneda NO la mueve: ahí el reparto es el mismo y perder el
+    // encuadre sería perder el sitio en el que estaba.
+    var clave = estado.mapa + '/' + (estado.sector || '');
+    if(clave !== claveVista){ claveVista = clave; vista.z = 1; vista.px = 0; vista.py = 0; }
+
+    // El cartel de "no hay cuadros" de una carga anterior no es un cuadro y no
+    // está en el pool: se quita a mano o se queda encima del mapa nuevo.
+    var cartel = l.querySelector(':scope > .aviso');
+    if(cartel) cartel.remove();
+
+    mapaBase = estado.sector ? baseDeSector(cs, w, h) : basePrimerNivel(cs, w, h);
+    limitaVista();
+    pintarLienzo();
+  }
+
+  // ── LA GEOMETRÍA BASE ─────────────────────────────────────────────
+  // Devuelve rectángulos en coordenadas del mapa a 1×. No toca el DOM: el
+  // reparto y el pintado quedan separados porque el zoom repinta muchas veces
+  // y repartir de nuevo en cada repintado movería los cuadros bajo el dedo.
+
+  // PRIMER NIVEL: TODAS las empresas, agrupadas bajo su sector.
+  // No hay "+N más". Un sector cuyas empresas no entraban al top salía como
+  // "+55 más · 100%": un sector entero sin una sola empresa, y un cuadro de
+  // resto que era el 100% de lo que decía resumir. El agregado había dejado
+  // de resumir para tapar.
+  function basePrimerNivel(cs, w, h){
+    var grupos = agrupaPorSector(cs).grupos;
+    var rects = squarify(grupos.map(function(g){ return { key:g.sector, value:g.cap_total, grupo:g }; }), { x:0, y:0, w:w, h:h });
+    var cuadros = [], cabeceras = [];
+    rects.forEach(function(r){
+      var g = r.item.grupo;
+      // Sin sitio para la cabecera, el sector se dibuja sin ella: media
+      // cabecera recortada no dice el nombre del sector, lo insinúa. Y una
+      // banda VACÍA es peor que ninguna: ocupa 14px, no nombra nada y no se
+      // puede tocar para entrar. Así que la banda sólo existe si al menos la
+      // abreviatura del sector cabe a 1×; si no, el sitio es de los cuadros.
+      var nom0 = SECTORES[g.sector] || g.sector;
+      var conCabecera = r.h >= ALTO_CABECERA + 12
+        && !!etiquetaQueCabe(candidatosSector(nom0), r.w, 11);
+      if(conCabecera) cabeceras.push({ x:r.x, y:r.y, w:r.w, h:ALTO_CABECERA, sector:g.sector });
+      var y0 = r.y + (conCabecera ? ALTO_CABECERA : 0);
+      var h0 = r.h - (conCabecera ? ALTO_CABECERA : 0);
+      squarify(itemsDe(g.items), { x:r.x, y:y0, w:r.w, h:h0 }).forEach(function(q){ cuadros.push(q); });
+    });
+    return { cuadros: cuadros, cabeceras: cabeceras, w: w, h: h };
+  }
+
+  // SEGUNDO NIVEL: un sector completo, a pantalla entera. Mismo criterio de
+  // área que el primer nivel —incluido el tamaño fijo de las grises— para que
+  // un cuadro no cambie de sentido al entrar al sector.
+  function baseDeSector(cs, w, h){
+    var g = agrupaPorSector(cs).grupos[0];
+    return { cuadros: squarify(itemsDe(g ? g.items : []), { x:0, y:0, w:w, h:h }),
+             cabeceras: [], w: w, h: h };
+  }
+
+  function itemsDe(lista){
+    return lista.map(function(c){ var x = cambio(c);
+      return { key:c.symbol, value:c.area, cuadro:c, pct:x.pct, motivo:x.motivo,
+               cap_verificada:c.cap_verificada }; });
+  }
+
+  // ── EL PINTADO, QUE ES LO QUE EL ZOOM CAMBIA ──────────────────────
+  // LOS NODOS SE RECICLAN, Y NO ES UNA OPTIMIZACIÓN: ES LO QUE HACE QUE EL
+  // PELLIZCO FUNCIONE. Repintar con `innerHTML = ''` quita del documento el
+  // cuadro que está debajo del dedo, y cuando el navegador pierde el blanco de
+  // un toque manda `touchcancel` y DA POR TERMINADO el gesto. El pellizco se
+  // moría en su primer movimiento: ampliaba a 1.5× y ahí se quedaba.
+  // Así que no se borra nada: los nodos que ya existen se reescriben en su
+  // sitio y los que sobran se esconden. El elemento bajo el dedo sigue vivo.
+  var pool = { cuadros: [], cabeceras: [] };
+
+  function nodoDe(lista, i, clase, l){
+    if(lista[i]) return lista[i];
+    var d = document.createElement('div');
+    d.className = clase;
+    l.appendChild(d);
+    lista[i] = d;
+    return d;
+  }
+  function escondeDesde(lista, i){
+    for(var k = i; k < lista.length; k++) lista[k].style.display = 'none';
+  }
+
+  function pintarLienzo(){
+    var l = document.getElementById('lienzo');
+    pintarReset();
+    if(!mapaBase){ escondeDesde(pool.cuadros, 0); escondeDesde(pool.cabeceras, 0); return; }
+    var z = vista.z, W = mapaBase.w, H = mapaBase.h;
+
+    // Sólo lo que cae dentro de la ventana. A 8× eso es 1/64 del mapa, y es
+    // lo que hace que ampliar no cueste 550 nodos cada vez.
+    function dentro(x, y, w, h){ return !(x + w < -1 || x > W + 1 || y + h < -1 || y > H + 1); }
+
+    var nc = 0;
+    mapaBase.cabeceras.forEach(function(c){
+      var x = c.x*z - vista.px, y = c.y*z - vista.py, w = c.w*z, h = c.h*z;
+      if(!dentro(x, y, w, h)) return;
+      // EL NOMBRE SE QUEDA A LA VISTA AL RECORRER. El texto va pegado al borde
+      // izquierdo de la banda, así que ampliado y movido hacia la derecha el
+      // nombre del sector se iba fuera de la pantalla y quedaba una franja
+      // negra sin decir de qué sector era lo que se estaba mirando. La banda se
+      // recorta a la parte visible —nunca más allá de su sector— y el nombre
+      // viaja con ella.
+      var xv = Math.max(0, x), wv = Math.min(x + w, W) - xv;
+      if(wv <= 0) return;
+      var cab = nodoDe(pool.cabeceras, nc++, 'cabecera', l);
+      var nom = SECTORES[c.sector] || c.sector;
+      // La banda escala con el mapa —si no, dejaría un hueco entre ella y los
+      // cuadros, que están repartidos por debajo— pero la LETRA se topa: una
+      // cabecera de 16px ya se lee, y a 8× sería un cartel.
+      var f = Math.max(9, Math.min(16, Math.round(h * 0.78)));
+      cab.style.cssText = 'left:'+xv+'px;top:'+y+'px;width:'+wv+'px;height:'+h+'px;font-size:'+f+'px';
+      // Regla 3: si no cabe entera, abreviatura; nunca cortada a la mitad.
+      cab.textContent = etiquetaQueCabe(candidatosSector(nom), wv, f) || '';
+      cab.title = nom;
+      cab.setAttribute('aria-label', nom);
+      cab.setAttribute('data-sector', c.sector);
+    });
+    escondeDesde(pool.cabeceras, nc);
+
+    var n = 0;
+    mapaBase.cuadros.forEach(function(q){
+      var x = q.x*z - vista.px, y = q.y*z - vista.py, w = q.w*z, h = q.h*z;
+      if(!dentro(x, y, w, h)) return;
+      pintaCuadro(nodoDe(pool.cuadros, n++, 'cuadro', l), q.item, x, y, w, h);
+    });
+    escondeDesde(pool.cuadros, n);
+  }
+
+  function pintarReset(){
+    document.querySelector('main').setAttribute('data-zoom', vista.z > 1 ? '1' : '0');
   }
 
   function pintarRuta(){
@@ -495,68 +644,11 @@
     r.appendChild(b);
   }
 
-  // ── PRIMER NIVEL: TODAS las empresas, agrupadas bajo su sector ────
-  // No hay "+N más". Un sector cuyas empresas no entraban al top salía como
-  // "+55 más · 100%": un sector entero sin una sola empresa, y un cuadro de
-  // resto que era el 100% de lo que decía resumir. El agregado había dejado
-  // de resumir para tapar.
-  function pintarPrimerNivel(l, cs, w, h){
-    var ALTO_CABECERA = 14;
-    var grupos = agrupaPorSector(cs).grupos;
-    var rects = squarify(grupos.map(function(g){ return { key:g.sector, value:g.cap_total, grupo:g }; }), { x:0, y:0, w:w, h:h });
-    var frag = document.createDocumentFragment();
-
-    rects.forEach(function(r){
-      var g = r.item.grupo;
-      // Sin sitio para la cabecera, el sector se dibuja sin ella: media
-      // cabecera recortada no dice el nombre del sector, lo insinúa.
-      var conCabecera = r.h >= ALTO_CABECERA + 12;
-      if(conCabecera){
-        var cab = document.createElement('div');
-        cab.className = 'cabecera';
-        cab.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+ALTO_CABECERA+'px';
-        var nom = SECTORES[g.sector] || g.sector;
-        // Regla 3: si no cabe entero, abreviatura; nunca cortado a la mitad.
-        var etq = etiquetaQueCabe(candidatosSector(nom), r.w, 11);
-        cab.textContent = etq || '';
-        cab.title = nom;
-        cab.setAttribute('aria-label', nom);
-        cab.addEventListener('click', function(){ entrarASector(g.sector); });
-        frag.appendChild(cab);
-      }
-      var y0 = r.y + (conCabecera ? ALTO_CABECERA : 0);
-      var h0 = r.h - (conCabecera ? ALTO_CABECERA : 0);
-
-      var items = g.items.map(function(c){ var x=cambio(c);
-        return { key:c.symbol, value:c.area, cuadro:c, pct:x.pct, motivo:x.motivo,
-                 cap_verificada:c.cap_verificada }; });
-      squarify(items, { x:r.x, y:y0, w:r.w, h:h0 }).forEach(function(q){
-        frag.appendChild(cuadroEmpresa(q, false));
-      });
-    });
-    l.appendChild(frag);
-  }
-
-  // ── SEGUNDO NIVEL: un sector completo ─────────────────────────────
-  function pintarSector(l, cs, w, h){
-    // Mismo criterio de área que el primer nivel —incluido el tamaño fijo de
-    // las grises— para que un cuadro no cambie de sentido al entrar al sector.
-    var g = agrupaPorSector(cs).grupos[0];
-    var items = (g ? g.items : []).map(function(c){ var x=cambio(c);
-      return { key:c.symbol, value:c.area, cuadro:c, pct:x.pct, motivo:x.motivo,
-               cap_verificada:c.cap_verificada }; });
-    var frag = document.createDocumentFragment();
-    squarify(items, { x:0, y:0, w:w, h:h }).forEach(function(q){ frag.appendChild(cuadroEmpresa(q, false)); });
-    l.appendChild(frag);
-  }
-
   function entrarASector(sector){
     estado.sector = sector; estado.symbol = null; escribirUrl(true); render();
   }
 
-  function cuadroEmpresa(r, esSector){
-    var it = r.item;
-    var div = document.createElement('div');
+  function pintaCuadro(div, it, x, y, w, h){
     // Dos motivos distintos para el mismo punteado, y los dos son "falta un
     // dato": sin % no se puede colorear, y sin cap verificada el TAMAÑO es
     // prestado. En el segundo caso el % se calla a propósito: pintarlo sobre
@@ -564,7 +656,7 @@
     var capGris = it.cap_verificada === false;
     var incompleto = capGris || !Number.isFinite(it.pct);
     div.className = 'cuadro' + (incompleto ? ' punteado' : '');
-    div.style.cssText = 'left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:'
+    div.style.cssText = 'left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px;background:'
       + (capGris ? COLOR_SIN_DATO : colorDe(it.pct));
     div.setAttribute('aria-label', it.key);
 
@@ -573,33 +665,165 @@
       var r1 = Math.round(it.pct*10)/10;
       txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
     }
-    // EL TEXTO SÓLO SI CABE. Un cuadro de 3px existe, se toca y va sin letra
-    // — como en Finviz. Nunca se recorta a mitad de palabra: media palabra no
-    // es información, es ruido con forma de información.
-    // 18 → 8: la fuente escala con el cuadro. Con la talla fija de 13 los
-    // cuadros grandes desperdiciaban sitio y se iban sin %.
-    // En celular el ticker puede bajar a 6px: con el mapa largo hay cuadros que
-    // sólo caben así, y un cuadro sin ticker es un color que no se puede
-    // nombrar. El % conserva su piso (`fontMinDos`), porque un número de 6px no
-    // se lee: se adivina.
-    var e = etiquetaCuadro(r.w, r.h, {
+    // EL TEXTO SÓLO SI CABE, Y CONTRA EL TAMAÑO EN PANTALLA. `w` y `h` ya
+    // vienen multiplicados por el zoom, así que ampliar hace aparecer primero
+    // el ticker y después el %, que es justo lo que se pidió: la letra sale
+    // cuando hay sitio, no antes. Un cuadro de 3px existe, se toca y va sin
+    // letra —como en Finviz—; nunca se recorta a mitad de palabra, porque
+    // media palabra no es información, es ruido con forma de información.
+    // El ticker puede bajar a 6px en celular; el % conserva su piso de 8
+    // (`fontMinDos`), porque un número de 6px no se lee: se adivina.
+    var e = etiquetaCuadro(w, h, {
       ticker: it.key, pct: txt, fontPx: 18,
       fontMin: esMovil() ? 6 : 8, fontMinDos: 8,
     });
+    var html = '';
     if(e.ticker){
-      var html = '<div class="sym" style="font-size:'+e.font+'px">'+esc(e.ticker)+'</div>';
+      html = '<div class="sym" style="font-size:'+e.font+'px">'+esc(e.ticker)+'</div>';
       if(e.pct) html += '<div class="val" style="font-size:'+e.font_pct+'px">'+esc(e.pct)+'</div>';
-      div.innerHTML = html;
     }
+    div.innerHTML = html;
+    // El tap y el hover NO se enganchan por cuadro: se delegan en el lienzo.
+    // Ampliar repinta, y 550 listeners por repintado es trabajo que se tira.
+    // Además el tap tiene que poder distinguirse de un arrastre o un pellizco,
+    // y eso sólo se sabe en el gesto completo, no en un `click` por cuadro.
+    div.qdItem = it;
+  }
 
-    div.addEventListener('click', function(){
-      estado.symbol = it.key; escribirUrl(true); abrirHoja(cache[estado.mapa], it.key);
-    });
-    if(window.matchMedia && window.matchMedia('(pointer:fine)').matches){
-      div.addEventListener('mousemove', function(ev){ mostrarTip(ev, it, false); });
-      div.addEventListener('mouseleave', ocultarTip);
+  // ═══════════════════════════════════════════════════════════════════
+  // LOS GESTOS: pellizcar para ampliar, un dedo para moverse, tap para abrir.
+  //
+  // TRES COSAS QUE ESTO TIENE QUE DISTINGUIR, y confundirlas es el bug:
+  //   · un TAP abre la hoja de ese cuadro;
+  //   · un ARRASTRE mueve el mapa y NO abre nada;
+  //   · un PELLIZCO amplía y NO abre nada, ni siquiera cuando el segundo dedo
+  //     se levanta antes que el primero y el final parece un toque.
+  // Por eso el tap no se engancha con un `click` por cuadro: el navegador
+  // sintetiza un click al final de casi cualquier gesto, y para entonces ya no
+  // se sabe de dónde venía.
+  //
+  // El doble tap amplía 2× donde se tocó, así que el primer tap no puede abrir
+  // la hoja de inmediato: espera `MS_DOBLE_TAP` por si llega el segundo. Es el
+  // mismo retardo que hace cualquier mapa táctil, y sólo en celular — con
+  // puntero fino el click abre al instante.
+  var MS_DOBLE_TAP = 280, PX_ARRASTRE = 8;
+  var gesto = { activo:false, movido:false, pellizco:false, dedos:0,
+                x0:0, y0:0, px0:0, py0:0, d0:0, z0:1, cx:0, cy:0,
+                tapT:0, tapX:0, tapY:0, tapTimer:null };
+
+  function puntosDe(ev, l){
+    var r = l.getBoundingClientRect(), out = [];
+    for(var i=0;i<ev.touches.length;i++){
+      out.push({ x: ev.touches[i].clientX - r.left, y: ev.touches[i].clientY - r.top,
+                 cx: ev.touches[i].clientX, cy: ev.touches[i].clientY });
     }
-    return div;
+    return out;
+  }
+  function distancia(a, b){ var dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
+
+  /** Abre lo que haya bajo ese punto de la pantalla: cuadro u hoja de sector. */
+  function abrirEnPunto(cx, cy){
+    var el = document.elementFromPoint(cx, cy);
+    if(!el) return;
+    var cab = el.closest ? el.closest('.cabecera') : null;
+    if(cab && cab.getAttribute('data-sector')){ entrarASector(cab.getAttribute('data-sector')); return; }
+    var cu = el.closest ? el.closest('.cuadro') : null;
+    if(cu && cu.qdItem){
+      estado.symbol = cu.qdItem.key; escribirUrl(true); abrirHoja(cache[estado.mapa], cu.qdItem.key);
+    }
+  }
+
+  function montarGestos(){
+    var l = document.getElementById('lienzo');
+
+    l.addEventListener('touchstart', function(ev){
+      if(!esMovil()) return;
+      var p = puntosDe(ev, l);
+      gesto.dedos = Math.max(gesto.dedos, p.length);
+      if(p.length === 1 && !gesto.pellizco){
+        gesto.activo = true; gesto.movido = false;
+        gesto.x0 = p[0].x; gesto.y0 = p[0].y;
+        gesto.px0 = vista.px; gesto.py0 = vista.py;
+      } else if(p.length >= 2){
+        // Un pellizco empieza: el punto medio entre los dedos es el ancla y no
+        // se mueve mientras dure. Volver a leerlo en cada `touchmove` haría que
+        // el mapa se escapara con el más mínimo temblor.
+        gesto.pellizco = true; gesto.movido = true;
+        gesto.d0 = distancia(p[0], p[1]) || 1;
+        gesto.z0 = vista.z;
+        gesto.cx = (p[0].x + p[1].x) / 2; gesto.cy = (p[0].y + p[1].y) / 2;
+        gesto.px0 = vista.px; gesto.py0 = vista.py;
+      }
+    }, { passive: true });
+
+    l.addEventListener('touchmove', function(ev){
+      if(!esMovil() || !mapaBase) return;
+      var p = puntosDe(ev, l);
+      if(gesto.pellizco && p.length >= 2){
+        ev.preventDefault();
+        var k = (distancia(p[0], p[1]) || 1) / gesto.d0;
+        var z2 = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, gesto.z0 * k));
+        var kk = z2 / gesto.z0;
+        vista.px = (gesto.px0 + gesto.cx) * kk - gesto.cx;
+        vista.py = (gesto.py0 + gesto.cy) * kk - gesto.cy;
+        vista.z = z2;
+        limitaVista(); pintarLienzo();
+        return;
+      }
+      if(!gesto.activo || p.length !== 1) return;
+      var dx = p[0].x - gesto.x0, dy = p[0].y - gesto.y0;
+      if(Math.abs(dx) > PX_ARRASTRE || Math.abs(dy) > PX_ARRASTRE) gesto.movido = true;
+      if(vista.z <= 1) return;   // a 1× no hay a dónde moverse
+      ev.preventDefault();
+      vista.px = gesto.px0 - dx; vista.py = gesto.py0 - dy;
+      limitaVista(); pintarLienzo();
+    }, { passive: false });
+
+    l.addEventListener('touchend', function(ev){
+      if(!esMovil()) return;
+      if(ev.touches.length > 0) return;   // todavía queda algún dedo abajo
+      var fueTap = gesto.activo && !gesto.movido && !gesto.pellizco && gesto.dedos === 1;
+      // El click sintético que el navegador manda después del touchend abriría
+      // la hoja aunque el gesto haya sido un arrastre o un pellizco.
+      ev.preventDefault();
+      gesto.activo = false; gesto.pellizco = false; gesto.dedos = 0;
+      if(!fueTap) return;
+
+      var t = ev.changedTouches[0];
+      var cx = t.clientX, cy = t.clientY;
+      var ahora = Date.now();
+      var esDoble = (ahora - gesto.tapT) < MS_DOBLE_TAP
+        && Math.abs(cx - gesto.tapX) < 32 && Math.abs(cy - gesto.tapY) < 32;
+      if(esDoble){
+        clearTimeout(gesto.tapTimer); gesto.tapTimer = null; gesto.tapT = 0;
+        var r = document.getElementById('lienzo').getBoundingClientRect();
+        zoomHacia(vista.z * 2, cx - r.left, cy - r.top);
+        return;
+      }
+      gesto.tapT = ahora; gesto.tapX = cx; gesto.tapY = cy;
+      clearTimeout(gesto.tapTimer);
+      gesto.tapTimer = setTimeout(function(){ gesto.tapTimer = null; abrirEnPunto(cx, cy); }, MS_DOBLE_TAP);
+    }, { passive: false });
+
+    l.addEventListener('touchcancel', function(){
+      gesto.activo = false; gesto.pellizco = false; gesto.dedos = 0;
+    }, { passive: true });
+
+    // Puntero fino (escritorio): click directo, sin retardo ni gestos.
+    l.addEventListener('click', function(ev){
+      if(esMovil()) return;
+      abrirEnPunto(ev.clientX, ev.clientY);
+    });
+    l.addEventListener('mousemove', function(ev){
+      if(esMovil() || !(window.matchMedia && window.matchMedia('(pointer:fine)').matches)) return;
+      var cu = ev.target.closest ? ev.target.closest('.cuadro') : null;
+      if(cu && cu.qdItem) mostrarTip(ev, cu.qdItem); else ocultarTip();
+    });
+    l.addEventListener('mouseleave', ocultarTip);
+
+    document.getElementById('reset').addEventListener('click', function(ev){
+      ev.stopPropagation(); volverA1();
+    });
   }
 
   function mostrarTip(ev, it){
@@ -1067,6 +1291,7 @@
     clearTimeout(rt); rt=setTimeout(function(){ if(cache[estado.mapa]) pintarMapa(cache[estado.mapa]); }, 120);
   });
 
+  montarGestos();
   escribirUrl(false);
   render();
 })();

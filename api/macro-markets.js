@@ -43,7 +43,7 @@ export const MACRO_SYMBOLS = [
   // moneda, el S&P/TSX, el COLCAP, Shanghái, el Nifty y el ASX no pueden
   // convertirse a pesos y su cuadro diría "—" con causa. Todos en la forma
   // "unidades por dólar", igual que JPY=X.
-  'CAD=X', 'CLP=X', 'CNY=X', 'INR=X', 'AUD=X',
+  'CAD=X', 'CNY=X', 'INR=X', 'AUD=X',
   'CL=F', 'BZ=F',               // commodities: WTI, Brent
   '^N225', '^KS11', '^HSI',     // Asia
   '^GDAXI', '^FTSE',            // Europa
@@ -58,9 +58,11 @@ export const MACRO_SYMBOLS = [
   '000001.SS',                  // China — Shanghai Composite
   '^NSEI',                      // India — Nifty 50
   '^AXJO',                      // Australia — ASX 200
-  // `^COLCAP` no existe en Yahoo —comprobado por Lety contra prod— así que
-  // Colombia sale y entra Chile, que sí tiene ticker.
-  '^IPSA',
+  // SUDAMÉRICA SE QUEDA EN BRASIL. `^COLCAP` no existe en Yahoo, y `^IPSA`
+  // tampoco: los dos devolvieron 404, comprobados por Lety contra producción
+  // (2026-09-29 y 2026-10-02). Se fueron el índice y su cruce `CLP=X`, que ya
+  // no convierte nada. No se sustituyen por un ticker parecido: un índice que
+  // no se pudo comprobar no entra al mapa.
   // Cripto, FX y materias primas de la última región del mockup.
   'BTC-USD',                    // Bitcoin — Lety confirmó que Yahoo lo tiene
   'MXN=X',                      // USD/MXN de mercado, para el CUADRO. La

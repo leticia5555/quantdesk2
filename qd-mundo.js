@@ -62,7 +62,6 @@ const MONEDAS = {
   HKD: { symbol: 'HKD=X', invertir: false },
   BRL: { symbol: 'BRL=X', invertir: false },
   CAD: { symbol: 'CAD=X', invertir: false },
-  CLP: { symbol: 'CLP=X', invertir: false },
   CNY: { symbol: 'CNY=X', invertir: false },
   INR: { symbol: 'INR=X', invertir: false },
   AUD: { symbol: 'AUD=X', invertir: false },
@@ -88,7 +87,6 @@ const CATALOGO = [
   { symbol: '^MXX', nombre: 'IPC', pais: 'México', region: 'america', bolsa: 'bmv', moneda: 'MXN' },
   { symbol: '^BVSP', nombre: 'Bovespa', pais: 'Brasil', region: 'america', bolsa: 'saopaulo', moneda: 'BRL' },
   { symbol: '^GSPTSE', nombre: 'S&P/TSX', pais: 'Canadá', region: 'america', bolsa: 'toronto', moneda: 'CAD' },
-  { symbol: '^IPSA', nombre: 'IPSA', pais: 'Chile', region: 'america', bolsa: 'santiago', moneda: 'CLP' },
   // ── Europa ──────────────────────────────────────────────────────────
   { symbol: '^GDAXI', nombre: 'DAX', pais: 'Alemania', region: 'europa', bolsa: 'francfort', moneda: 'EUR' },
   { symbol: '^FTSE', nombre: 'FTSE 100', pais: 'Reino Unido', region: 'europa', bolsa: 'londres', moneda: 'GBP' },
@@ -117,7 +115,6 @@ const CATALOGO = [
   { symbol: 'HKD=X', nombre: 'USD/HKD', region: null, bolsa: '24h', moneda: 'HKD', solo_insumo: true },
   { symbol: 'BRL=X', nombre: 'USD/BRL', region: null, bolsa: '24h', moneda: 'BRL', solo_insumo: true },
   { symbol: 'CAD=X', nombre: 'USD/CAD', region: null, bolsa: '24h', moneda: 'CAD', solo_insumo: true },
-  { symbol: 'CLP=X', nombre: 'USD/CLP', region: null, bolsa: '24h', moneda: 'CLP', solo_insumo: true },
   { symbol: 'CNY=X', nombre: 'USD/CNY', region: null, bolsa: '24h', moneda: 'CNY', solo_insumo: true },
   { symbol: 'INR=X', nombre: 'USD/INR', region: null, bolsa: '24h', moneda: 'INR', solo_insumo: true },
   { symbol: 'AUD=X', nombre: 'USD/AUD', region: null, bolsa: '24h', moneda: 'AUD', solo_insumo: true },
