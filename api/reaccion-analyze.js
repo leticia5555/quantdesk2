@@ -34,7 +34,7 @@ import { sql } from './_lib/db.js';
 import { bajaSerie, bajaSeries } from './_lib/yahoo-daily.js';
 import {
   CRITERIOS_REACCION, retornoVentana, retornoSaltoNocturno, sorpresaEps, sorpresaIngresos, clasificaFuenteEstimado,
-  ingresoDelEvento, analizaReaccion, advertenciasFijas, renderCensoMd, renderAnalisisMd,
+  ingresoDelEvento, analizaReaccion, advertenciasFijas, renderCensoMd, renderAnalisisMd, diagnosticaCobertura,
 } from './_lib/reaccion.js';
 import {
   fmpAnalystEstimatesTrimestral, fmpEarnings, finnhubCalendario, avEarningsEstimates,
@@ -165,7 +165,11 @@ async function estimadosDeIngresos(eventos, { deadline, hoy, conSondasCaras = tr
     cobertura.push({ fuente: b.fuente, clase: clase ? clase.clase : null, sirve, con_dato: conDato, total: eventos.length,
       cobertura: eventos.length ? +(conDato / eventos.length).toFixed(3) : 0,
       simbolos_sin_acceso: Object.entries(r.fallos).filter(([, f]) => f.motivo === 'sin_acceso_al_simbolo').map(([s]) => s),
-      cortado: r.cortado });
+      cortado: r.cortado,
+      // ¿El conteo de arriba es un HECHO de la fuente o un BUG del cruce? Lo
+      // decide esto: rango de fechas devuelto, filas con las dos cifras, cuántas
+      // caen en la ventana de los eventos, y la distancia a la fila más cercana.
+      diagnostico: diagnosticaCobertura(eventos, r.porSimbolo) });
     if (sirve) filasElegibles[b.fuente] = r.porSimbolo;
   }
 

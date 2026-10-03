@@ -571,6 +571,94 @@ function ols(filasX, ys) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// DIAGNÓSTICO DE COBERTURA DE UNA FUENTE — ¿el 0 es un hecho o un bug?
+//
+// Nació de Finnhub: respondió 75 de 75 símbolos, la muestra traía las dos
+// cifras, y aun así cubrió 0 de los eventos. Dos explicaciones posibles, y se
+// arreglan distinto:
+//   · la fuente sirve una VENTANA de fechas que no se solapa con los eventos
+//     (la cicatriz del PEAD: fechas futuras sí, ventanas históricas cero) — y
+//     entonces el 0 es un HECHO;
+//   · las filas están en la ventana pero el EMPAREJAMIENTO (símbolo, fecha ±1)
+//     falla — y entonces el 0 es un BUG.
+// Esto mide lo necesario para distinguirlas: qué rango de fechas devolvió la
+// fuente, cuántas filas traen las dos cifras, cuántas caen en la ventana de los
+// eventos, y a qué distancia quedó la fila más cercana de cada evento.
+function diagnosticaCobertura(eventos, porSimbolo, { tol = CRITERIOS_REACCION.tolerancia_cruce_dias } = {}) {
+  const evs = (eventos || []).filter((e) => e && dia(e.report_date));
+  const mapa = porSimbolo instanceof Map ? porSimbolo : new Map(Object.entries(porSimbolo || {}));
+  const todas = [...mapa.values()].flat().filter((f) => f && dia(f.date));
+  const conDos = todas.filter((f) => num(f.revenueEstimate) !== null && num(f.revenueActual) !== null);
+  const rango = (xs) => {
+    if (!xs.length) return null;
+    const fs = xs.map((f) => dia(f.date)).sort();
+    return { desde: fs[0], hasta: fs[fs.length - 1] };
+  };
+  const fechasEv = evs.map((e) => dia(e.report_date)).sort();
+  const ventana = fechasEv.length ? { desde: fechasEv[0], hasta: fechasEv[fechasEv.length - 1] } : null;
+  const enVentana = ventana ? conDos.filter((f) => dia(f.date) >= ventana.desde && dia(f.date) <= ventana.hasta) : [];
+
+  // La fila CON LAS DOS CIFRAS más cercana a cada evento, del mismo símbolo.
+  const tramos = { [`0-${tol}`]: 0, '2-7': 0, '8-31': 0, '32+': 0, sin_filas_del_simbolo: 0 };
+  const cercanos = [];
+  for (const e of evs) {
+    const T = dia(e.report_date);
+    const filas = (mapa.get(e.symbol) || []).filter((f) => dia(f.date) && num(f.revenueEstimate) !== null && num(f.revenueActual) !== null);
+    if (!filas.length) { tramos.sin_filas_del_simbolo++; cercanos.push({ symbol: e.symbol, report_date: T, fila_mas_cercana: null, dias: null }); continue; }
+    let mejor = null, d0 = Infinity;
+    for (const f of filas) {
+      const d = Math.abs(diasEntre(dia(f.date), T));
+      if (d < d0) { d0 = d; mejor = f; }
+    }
+    if (d0 <= tol) tramos[`0-${tol}`]++;
+    else if (d0 <= 7) tramos['2-7']++;
+    else if (d0 <= 31) tramos['8-31']++;
+    else tramos['32+']++;
+    cercanos.push({ symbol: e.symbol, report_date: T, fila_mas_cercana: dia(mejor.date), dias: d0 });
+  }
+  const cruzados = tramos[`0-${tol}`];
+  // Los ejemplos más informativos: los que quedaron CERCA sin cruzar (si hay un
+  // bug de emparejamiento, está ahí), y después los más lejanos.
+  const ejemplos = cercanos.filter((x) => x.dias !== null && x.dias > tol).sort((a, b) => a.dias - b.dias).slice(0, 6)
+    .concat(cercanos.filter((x) => x.dias === null).slice(0, 2));
+
+  let causa, texto;
+  if (!todas.length) {
+    causa = 'sin_filas';
+    texto = 'La fuente no devolvió ninguna fila con fecha.';
+  } else if (!conDos.length) {
+    causa = 'sin_dos_cifras';
+    texto = `La fuente devolvió ${todas.length} filas, pero ninguna trae estimado Y real de ingresos.`;
+  } else if (!enVentana.length) {
+    const r = rango(conDos);
+    causa = 'ventana_de_la_fuente';
+    texto = `Ninguna de las ${conDos.length} filas con las dos cifras cae dentro de la ventana de los eventos (${ventana.desde} → ${ventana.hasta}): la fuente solo devolvió ${r.desde} → ${r.hasta}. El 0 es un HECHO de la fuente, no del emparejamiento.`;
+  } else if (!cruzados) {
+    causa = 'emparejamiento_sospechoso';
+    texto = `${enVentana.length} filas con las dos cifras caen DENTRO de la ventana de los eventos, y aun así ningún evento cruzó con ±${tol} día(s). Eso apunta al EMPAREJAMIENTO, no a la fuente: mirar las distancias de abajo.`;
+  } else if (cruzados === evs.length) {
+    causa = 'completa';
+    texto = `Los ${evs.length} eventos cruzan con una fila de la fuente a ±${tol} día(s).`;
+  } else {
+    causa = 'parcial';
+    texto = `${cruzados} de ${evs.length} eventos cruzan. Los que no, se reparten por distancia a la fila más cercana en la tabla de abajo.`;
+  }
+  return {
+    filas_totales: todas.length,
+    filas_con_dos_cifras: conDos.length,
+    rango_fuente: rango(todas),
+    rango_fuente_con_dos_cifras: rango(conDos),
+    ventana_eventos: ventana,
+    filas_con_dos_cifras_en_ventana: enVentana.length,
+    eventos: evs.length,
+    eventos_cruzados: cruzados,
+    distancia_a_la_fila_mas_cercana: tramos,
+    ejemplos,
+    causa, lectura: texto,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // EL ANÁLISIS Y EL VEREDICTO
 //
 // Orden NO negociable:
@@ -887,6 +975,28 @@ function renderCensoMd(c) {
       L.push('| Fuente que califica | Eventos con estimado Y real | Cobertura |');
       L.push('|---|---|---|');
       for (const f of es.cobertura_por_fuente) L.push(`| ${f.fuente} | ${f.con_dato} de ${f.total} | ${pctTxt(f.cobertura)} |`);
+      // ¿Hecho o bug? Por fuente: el rango que devolvió, las filas con las dos
+      // cifras, cuántas caen en la ventana de los eventos, y las distancias.
+      for (const f of es.cobertura_por_fuente) {
+        const d = f.diagnostico;
+        if (!d) continue;
+        const rg = (r) => (r ? `${r.desde} → ${r.hasta}` : '—');
+        L.push('');
+        L.push(`**${f.fuente} — ¿el ${f.con_dato} es un hecho o un bug?** → \`${d.causa}\``);
+        L.push('');
+        L.push(`- Rango de fechas que devolvió: **${rg(d.rango_fuente)}** (${d.filas_totales} filas)`);
+        L.push(`- Filas con estimado Y real: **${d.filas_con_dos_cifras}** (rango ${rg(d.rango_fuente_con_dos_cifras)})`);
+        L.push(`- Ventana de nuestros eventos: **${rg(d.ventana_eventos)}** · filas con las dos cifras DENTRO: **${d.filas_con_dos_cifras_en_ventana}**`);
+        L.push(`- Distancia de cada evento a la fila más cercana de su símbolo: ${Object.entries(d.distancia_a_la_fila_mas_cercana).map(([k, v]) => `${k} días: ${v}`).join(' · ')}`);
+        if ((d.ejemplos || []).length) {
+          L.push('');
+          L.push('| Evento | Fecha del reporte | Fila más cercana | Días |');
+          L.push('|---|---|---|---|');
+          for (const x of d.ejemplos) L.push(`| ${x.symbol} | ${x.report_date} | ${x.fila_mas_cercana || '(ninguna)'} | ${x.dias ?? '—'} |`);
+        }
+        L.push('');
+        L.push(`> ${d.lectura}`);
+      }
     }
     L.push('');
     L.push(`Fuente elegida: **${es.elegida || 'ninguna'}** — ${es.porque_eleccion || '—'}`);
@@ -1025,7 +1135,7 @@ function renderAnalisisMd(a) {
 
 export {
   CRITERIOS_REACCION, num, dia, diasEntre, renderCensoMd, renderAnalisisMd,
-  SENALES, analizaReaccion, aciertoDireccional, advertenciasFijas, advertenciaDeSeleccion,
+  SENALES, analizaReaccion, aciertoDireccional, advertenciasFijas, advertenciaDeSeleccion, diagnosticaCobertura,
   mideSenal, mideConjunto, sensibilidadSaltoNocturno,
   retornoVentana, retornoSaltoNocturno, sorpresaEps, sorpresaIngresos,
   clasificaFuenteEstimado, CLASES_QUE_SIRVEN,
