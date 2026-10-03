@@ -81,12 +81,17 @@ async function guardar(symbol, filas, lote = 400) {
   for (let i = 0; i < filas.length; i += lote) {
     const t = filas.slice(i, i + lote);
     await sql(
-      `insert into mercado_precios_us (symbol, fecha, cierre, cierre_ajustado)
-       select * from unnest($1::text[], $2::date[], $3::numeric[], $4::numeric[])
+      `insert into mercado_precios_us (symbol, fecha, cierre, cierre_ajustado, volumen)
+       select * from unnest($1::text[], $2::date[], $3::numeric[], $4::numeric[], $5::numeric[])
        on conflict (symbol, fecha) do update set
          cierre = excluded.cierre,
-         cierre_ajustado = coalesce(excluded.cierre_ajustado, mercado_precios_us.cierre_ajustado)`,
-      [t.map(() => symbol), t.map((f) => f.fecha), t.map((f) => f.cierre), t.map((f) => f.cierre_ajustado)]);
+         cierre_ajustado = coalesce(excluded.cierre_ajustado, mercado_precios_us.cierre_ajustado),
+         -- coalesce, igual que el ajustado: una corrida que viene sin volumen
+         -- no borra el que ya estaba. Que una fuente se calle hoy no hace
+         -- falso lo que dijo ayer.
+         volumen = coalesce(excluded.volumen, mercado_precios_us.volumen)`,
+      [t.map(() => symbol), t.map((f) => f.fecha), t.map((f) => f.cierre),
+       t.map((f) => f.cierre_ajustado), t.map((f) => f.volumen ?? null)]);
     escritas += t.length;
   }
   return escritas;
@@ -104,15 +109,17 @@ async function simbolosDelMapa(n = TOP_MAPA) {
 /** Estado de la tabla: última fecha y cuántos puntos por símbolo. */
 async function estadoTabla() {
   const filas = await sql(
-    `select symbol, max(fecha)::text as hasta, min(fecha)::text as desde, count(*)::int as puntos
+    `select symbol, max(fecha)::text as hasta, min(fecha)::text as desde, count(*)::int as puntos,
+            max(fecha) filter (where volumen is not null)::text as hasta_volumen
        from mercado_precios_us group by 1`).catch(() => []);
-  const yaTengo = new Map(), cuenta = new Map(), desde = new Map();
+  const yaTengo = new Map(), cuenta = new Map(), desde = new Map(), conVolumen = new Map();
   for (const f of filas) {
     yaTengo.set(f.symbol, f.hasta);
     cuenta.set(f.symbol, f.puntos);
     desde.set(f.symbol, f.desde);
+    if (f.hasta_volumen) conVolumen.set(f.symbol, f.hasta_volumen);
   }
-  return { yaTengo, cuenta, desde, filas };
+  return { yaTengo, cuenta, desde, conVolumen, filas };
 }
 
 async function jobUs({ ahora, dry, t0, tope }) {
@@ -125,9 +132,9 @@ async function jobUs({ ahora, dry, t0, tope }) {
     };
   }
 
-  const { yaTengo, cuenta } = await estadoTabla();
+  const { yaTengo, cuenta, conVolumen } = await estadoTabla();
   const hoy = ahora.toISOString().slice(0, 10);
-  const plan = planPreciosUs({ simbolos, yaTengo, cuenta, hasta: hoy, min_puntos: MIN_PUNTOS_SERIE });
+  const plan = planPreciosUs({ simbolos, yaTengo, cuenta, conVolumen, hasta: hoy, min_puntos: MIN_PUNTOS_SERIE });
 
   // La siembra primero: un símbolo sin serie no puede pintar NADA, mientras
   // que uno con la cola corta atrasada pinta casi todo bien.

@@ -697,3 +697,35 @@ test('y el verde/rojo de qdPctTag NO se lee sobre los pasos de su propio signo',
   assert.ok(contraste(verde, '#0a0a0a') > 4.5);
   assert.ok(contraste(rojo, '#0a0a0a') > 4.5);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// R3 · LO OPERADO LLEGA AL CUADRO
+//
+// Las tablas de "más operadas" salen del MISMO payload que el mapa, así que
+// `importe` tiene que viajar en cada cuadro. Si se queda en `empaquetaSerie` y
+// no llega al cuadro, la tabla sale vacía sin que nada falle.
+// ═══════════════════════════════════════════════════════════════════════
+test('el cuadro de EE.UU. lleva lo operado, despejado de volumen × cierre', () => {
+  const universo = [{ symbol: 'AAA', nombre: 'A', sector_etf: 'XLK', market_cap: 1e9, cap_moneda: 'USD',
+    cap_fuente: 'finnhub:metric', acciones_millones: 10 }];
+  const precios = [
+    { symbol: 'AAA', fecha: '2026-09-17', cierre: 99, cierre_ajustado: 99, volumen: 1_000_000 },
+    { symbol: 'AAA', fecha: '2026-09-18', cierre: 100, cierre_ajustado: 100, volumen: 2_000_000 },
+  ];
+  const { cuadros } = armaMapaUs({ universo, precios, ahora: AHORA });
+  assert.equal(cuadros[0].importe, 200_000_000);
+  assert.equal(cuadros[0].importe_fecha, '2026-09-18');
+  assert.equal(cuadros[0].importe_motivo, null);
+});
+
+test('y sin volumen el cuadro lleva la CAUSA, no un cero', () => {
+  const universo = [{ symbol: 'BBB', nombre: 'B', sector_etf: 'XLK', market_cap: 1e9, cap_moneda: 'USD',
+    cap_fuente: 'finnhub:metric', acciones_millones: 10 }];
+  const precios = [
+    { symbol: 'BBB', fecha: '2026-09-17', cierre: 99, cierre_ajustado: 99 },
+    { symbol: 'BBB', fecha: '2026-09-18', cierre: 100, cierre_ajustado: 100 },
+  ];
+  const { cuadros } = armaMapaUs({ universo, precios, ahora: AHORA });
+  assert.equal(cuadros[0].importe, null);
+  assert.match(cuadros[0].importe_motivo, /no trae volumen/);
+});

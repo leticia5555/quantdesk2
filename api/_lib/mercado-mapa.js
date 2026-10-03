@@ -68,6 +68,7 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
     .sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)))
     .pop() || null;
 
+  const imp = importeDeFilas(filas);
   return {
     serie: serie.slice(-recientes),
     ytd: a.cubre ? { t: serie[a.refIdx].t, c: a.refValue } : null,
@@ -76,6 +77,49 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
     puntos_sin_ajuste: puntos_sin_ajuste || undefined,
     precio: ultimaFila ? num(ultimaFila.cierre) : null,
     fecha_precio: ultimaFila ? String(ultimaFila.fecha).slice(0, 10) : null,
+    importe: imp.importe,
+    importe_fecha: imp.fecha,
+    importe_motivo: imp.motivo,
+  };
+}
+
+/**
+ * LO OPERADO EN DINERO, que es con lo que se ordena "más operadas".
+ *
+ * Las dos tablas guardan cosas distintas: `bmv_precios` trae `importe` —pesos
+ * operados, tal cual lo da la BMV— y `mercado_precios_us` trae `volumen`, que
+ * son ACCIONES. Ordenar México por pesos y EE.UU. por acciones sería que el
+ * toggle de país cambiara la pregunta: una acción de 500 dólares con un millón
+ * de títulos opera más dinero que una de 5 con diez millones, y las dos listas
+ * dirían "más operadas" señalando cosas distintas. Decisión de Lety
+ * (2026-10-02): los dos lados en IMPORTE, y el de EE.UU. se despeja acá
+ * (`volumen × cierre`) en vez de guardarse, porque un producto guardado deja de
+ * cuadrar en cuanto se corrige un cierre.
+ *
+ * Se toma la ÚLTIMA fila que tenga con qué, no la última a secas: si la cosecha
+ * de hoy no alcanzó a traer el volumen, lo honesto es el importe de ayer CON SU
+ * FECHA, no un hueco. Y si no hay ninguna, el motivo viaja: regla 2.
+ */
+export function importeDeFilas(filas = []) {
+  const ordenadas = filas
+    .filter((f) => f && f.fecha)
+    .sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)));
+  for (let i = ordenadas.length - 1; i >= 0; i--) {
+    const f = ordenadas[i];
+    const fecha = String(f.fecha).slice(0, 10);
+    // México: el importe viene medido, no se recalcula.
+    const directo = num(f.importe);
+    if (directo != null && directo >= 0) return { importe: directo, fecha, motivo: null };
+    // EE.UU.: acciones × cierre. Un volumen de 0 es un dato —día sin
+    // operaciones— y da importe 0, que es la verdad, no un hueco.
+    const v = num(f.volumen), c = num(f.cierre);
+    if (v != null && v >= 0 && c != null && c > 0) return { importe: v * c, fecha, motivo: null };
+  }
+  return {
+    importe: null, fecha: null,
+    motivo: ordenadas.length
+      ? 'la fuente no trae volumen para este símbolo'
+      : 'no hay serie con la que medir lo operado',
   };
 }
 

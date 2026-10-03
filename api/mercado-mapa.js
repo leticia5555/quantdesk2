@@ -93,7 +93,7 @@ export const SQL_MAPA_US = {
          select symbol from mercado_universo_us
           where sector_etf is not null and market_cap is not null
        ), r as (
-         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
+         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado, p.volumen,
                 p.fecha < $1::date as previa,
                 row_number() over (partition by p.symbol order by p.fecha desc) recientes,
                 -- El ancla YTD NO se saca con \`filter\`: \`FILTER\` sólo existe en
@@ -108,7 +108,7 @@ export const SQL_MAPA_US = {
                                    order by (p.fecha < $1::date) desc, p.fecha desc) ancla
            from mercado_precios_us p join top using (symbol)
        )
-       select symbol, fecha::text as fecha, cierre, cierre_ajustado
+       select symbol, fecha::text as fecha, cierre, cierre_ajustado, volumen
          from r
         where recientes <= $2 or (ancla = 1 and previa)
         order by symbol, fecha`,
@@ -205,7 +205,7 @@ async function mapaMx(ahora) {
     sql(SQL_G2.corte).catch(() => [{}]),
     sql(SQL_G2.periodos).catch(() => []),
     rango ? sql(SQL_G2.cierres_captura, [rango.desde, rango.hasta]).catch(() => []) : Promise.resolve([]),
-    sql(`select emisora_serie, fecha::text as fecha, cierre
+    sql(`select emisora_serie, fecha::text as fecha, cierre, importe
            from bmv_precios where fecha >= $1::date
           order by emisora_serie, fecha`, [desde]).catch(() => []),
   ]);
