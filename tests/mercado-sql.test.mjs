@@ -120,7 +120,45 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     // PREPARE es la prueba entera: parsea el texto Y liga cada columna contra
     // el esquema. El `filter` sobre row_number() moría acá, en el parser.
     psql(`prepare universo as ${SQL_MAPA_US.universo};`);
-    psql(`prepare precios(date, int) as ${SQL_MAPA_US.precios};`);
+    psql(`prepare precios(date, int) as ${SQL_MAPA_US.precios(true)};`);
+  });
+
+  await t.test('SIN la columna `volumen`, el mapa sigue leyendo', async () => {
+    // EL CASO QUE HABRÍA TUMBADO PRODUCCIÓN. `volumen` nació con R3(a) y la crea
+    // el job de precios; este endpoint sólo LEE y se despliega al mismo tiempo.
+    // En la ventana entre el deploy y la primera corrida del job, la consulta
+    // pedía una columna que nadie había creado y `/mercado` devolvía
+    // "column p.volumen does not exist" — la pantalla entera en blanco.
+    // Lo vio Lety en el preview, que comparte base con producción (2026-10-05).
+    //
+    // Se prueba con una base de verdad SIN la columna, que es como está prod
+    // antes del primer job.
+    // Cada `psql` abre su propia conexión, así que el `search_path` va en CADA
+    // llamada: si no, las tablas se crean en `public` y el caso no se prueba.
+    psql('create schema sincol;');
+    psql(`set search_path to sincol;
+          create table mercado_precios_us (
+            symbol text not null, fecha date not null,
+            cierre numeric, cierre_ajustado numeric,
+            primary key (symbol, fecha));
+          create table mercado_universo_us (
+            symbol text primary key, nombre text, sector_etf text, market_cap numeric);`);
+    // Con la columna nombrada: truena, que es el bug.
+    assert.throws(
+      () => psql(`set search_path to sincol; prepare p_con(date, int) as ${SQL_MAPA_US.precios(true)};`),
+      /volumen/,
+      'si esto deja de tronar, la prueba dejó de probar el caso');
+    // Sin nombrarla: pasa, y `volumen` llega como null para todas las filas.
+    psql(`set search_path to sincol; prepare p_sin(date, int) as ${SQL_MAPA_US.precios(false)};`);
+    psql(`set search_path to sincol;
+          insert into mercado_universo_us values ('AAA','A','XLK',1e9);
+          insert into mercado_precios_us values ('AAA','2026-09-18',100,100);`);
+    const filas = psql(`set search_path to sincol;
+      ${conLiterales(SQL_MAPA_US.precios(false))};`).trim().split('\n');
+    assert.equal(filas.length, 1);
+    // symbol|fecha|cierre|cierre_ajustado|volumen — el último campo, vacío.
+    assert.match(filas[0], /^AAA\|2026-09-18\|100\|100\|$/, filas[0]);
+    psql('set search_path to public; drop schema sincol cascade;');
   });
 
   await t.test('cada consulta de los jobs de cap PREPARA también', () => {
@@ -155,7 +193,7 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
          where extract(isodow from d) < 6;
     `);
     const filas = psql(`
-      create temp table r as ${conLiterales(SQL_MAPA_US.precios)};
+      create temp table r as ${conLiterales(SQL_MAPA_US.precios(true))};
       select symbol || '|' || count(*) || '|' || min(fecha) || '|' || max(fecha)
         from r group by symbol order by symbol;
     `).trim().split('\n');
@@ -183,7 +221,7 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
          where extract(isodow from d) < 6;
     `);
     const previas = psql(`
-      create temp table r2 as ${conLiterales(SQL_MAPA_US.precios)};
+      create temp table r2 as ${conLiterales(SQL_MAPA_US.precios(true))};
       select count(*) from r2 where symbol = 'NUEVA' and fecha < '2026-01-01';
     `).trim();
     assert.equal(previas, '0', 'ni una fila del año pasado: no hay, y no se inventa');
@@ -193,7 +231,7 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     // La razón de ser de las funciones de ventana. Con 300 símbolos, traer
     // todo desde diciembre eran ~60,000 filas por petición.
     const total = psql(`
-      create temp table r3 as ${conLiterales(SQL_MAPA_US.precios)};
+      create temp table r3 as ${conLiterales(SQL_MAPA_US.precios(true))};
       select count(*) from r3;
     `).trim();
     const enTabla = psql('select count(*) from mercado_precios_us;').trim();

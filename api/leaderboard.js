@@ -110,6 +110,15 @@ export function ordenarRanking({ agentes = [], bench = null } = {}) {
   let puesto = 0;
   const marca = (r, orden) => ({
     id: r.id, name: r.name, kind: r.kind || 'MODELO',
+    // `model` y `has_keys` viajan porque sin ellos un consumidor no puede
+    // decir NI QUÉ MODELO ES NI POR QUÉ le falta el retorno. La tarjeta de
+    // Arena en /mercado decía "el leaderboard no trajo el rendimiento" para
+    // cuatro de cinco agentes (Lety, 2026-10-05): el campo era el correcto
+    // —`return_pct` sólo se calcula cuando hay llaves de Alpaca— pero la causa
+    // real, "este agente no tiene llaves configuradas", se quedaba acá.
+    // Un null sin causa manda a buscar el bug donde no está.
+    model: r.model ?? null,
+    has_keys: r.has_keys === true,
     compite: r.compite !== false,
     orden, equity: eqOf(r),
     baseline_equity: r.baseline_equity ?? null,
