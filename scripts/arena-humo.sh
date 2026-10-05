@@ -57,17 +57,68 @@ mkdir -p "$OUT"
 # junto al resultado es un umbral que se puede haber elegido mirándolo.
 cat <<'CRIT'
 ── CRITERIO DE LA PUERTA (fijado antes de medir) ────────────────────
-  por agente, sobre sus 3 corridas:   3/3 → VERDE · 2/3 → ÁMBAR · ≤1/3 → ROJO
+  por agente, sobre sus 3 corridas:
+    3/3 entregados y al menos 1 SIN AYUDA  →  VERDE
+    3/3 entregados y 0 sin ayuda           →  ÁMBAR   (el piso, ver abajo)
+    2/3 entregados                         →  ÁMBAR
+    ≤1/3 entregados                        →  ROJO
   "entrega libro" = status NO empieza con `aborted` (rejected_rails CUENTA)
   abre sólo con los SIETE en VERDE y las cuatro puertas físicas en verde
 
   REINTENTO SOLO-JSON: es un riel y lo tienen los siete igual, así que un libro
-  rescatado CUENTA como entregado. Pero se reporta al lado (columna REINT y
-  SIN_AYUDA en el veredicto): "necesitó reintento" es un hallazgo del agente y
-  no se esconde. Un ÁMBAR con 3/3 entregados pero 1 rescatado se lee distinto
-  de un 3/3 limpio, y el criterio NO cambia por eso — lo decide Lety mirando.
+  rescatado CUENTA como entregado. PERO hay un piso:
+
+    SIN_AYUDA = entregó Y (sin rescate O el rescate fue por NUESTRO techo)
+    3/3 entregados con SIN_AYUDA 0/3  →  ÁMBAR, aunque el 3/3 se cumpla
+
+  Un agente que las tres veces entregó SÓLO con rescate no se puede leer igual
+  que un 3/3 limpio: abrir un mes sobre un agente que nunca cierra solo es una
+  decisión, no un detalle. Un rescate con causa `corte` NO cuenta contra él —
+  ése es nuestro techo de tokens apretado, no el agente.
+  Un rescate con causa `desconocida` (el proveedor no mandó finish_reason) SÍ
+  cuenta: no se regala un crédito que no se puede probar. Empuja a ÁMBAR, que
+  lo decidís vos, no a ROJO.
 CRIT
 echo
+
+# ── ¿QUÉ BUILD VAMOS A MEDIR? (2026-10-05) ───────────────────────────
+# El 2026-10-05 el commit con el diagnóstico nuevo estaba en una rama SIN
+# MERGEAR y producción seguía sirviendo el build del viernes. Era la TERCERA vez
+# que casi medimos el sistema anterior.
+#
+# Esto no se arregla con cuidado, se arregla con una comparación: el catálogo es
+# una llamada de 0 tokens y desde este commit devuelve `build.commit_full`. Si
+# no es el HEAD local, la tanda NO arranca. `IGNORAR_BUILD=1` la fuerza — hay
+# casos legítimos (medir a propósito el build anterior), y entonces se dice en
+# voz alta en vez de descubrirse después.
+if [ -z "${REUSAR:-}" ]; then
+  LOCAL=$(git rev-parse HEAD 2>/dev/null || echo "")
+  CAT=$(curl -s -H "x-admin-key: $ARENA_ADMIN_KEY" "$BASE/api/arena-smoke?catalog=1")
+  PROD=$(printf '%s' "$CAT" | jq -r '.build.commit_full // ""' 2>/dev/null || echo "")
+  PRODMSG=$(printf '%s' "$CAT" | jq -r '.build.mensaje // "—"' 2>/dev/null || echo "—")
+  echo "── QUÉ BUILD SE VA A MEDIR ──────────────────────────────────────"
+  echo "  local (HEAD) : ${LOCAL:0:7}  $(git log -1 --format=%s 2>/dev/null | cut -c1-70)"
+  echo "  producción   : ${PROD:0:7}  $(printf '%s' "$PRODMSG" | cut -c1-70)"
+  if [ -z "$PROD" ]; then
+    echo
+    echo "  NO SE PUDO LEER EL BUILD DE PRODUCCIÓN."
+    echo "  Si el catálogo no trae \`build\`, producción es anterior a este commit:"
+    echo "  eso YA responde la pregunta — no está sirviendo lo que vas a medir."
+    [ -n "${IGNORAR_BUILD:-}" ] || exit 3
+  elif [ "$PROD" != "$LOCAL" ]; then
+    echo
+    echo "  PRODUCCIÓN NO SIRVE ESTE COMMIT. La tanda mediría otro sistema."
+    echo "  Mergeá la rama, esperá el deploy, y verificá con:"
+    echo "    curl -s -H \"x-admin-key: \$ARENA_ADMIN_KEY\" \\"
+    echo "      \"$BASE/api/arena-smoke?catalog=1\" | jq '{build, cierre: .relojes.cierre_techo_ms}'"
+    echo "  (IGNORAR_BUILD=1 la corre igual, a propósito y declarado.)"
+    [ -n "${IGNORAR_BUILD:-}" ] || exit 3
+    echo "  IGNORAR_BUILD=1: se corre igual, midiendo ${PROD:0:7}."
+  else
+    echo "  COINCIDEN: la tanda mide el commit que tenés acá."
+  fi
+  echo
+fi
 
 TOTAL=$(( RONDAS * $(echo "$AGENTES" | wc -w) ))
 HECHAS=0
@@ -124,29 +175,16 @@ for a in $AGENTES; do
 done
 
 # ── EL VEREDICTO POR AGENTE ──────────────────────────────────────────
+# NO va en `jq`. Con el piso de SIN_AYUDA el criterio tiene tres dimensiones
+# por corrida (entregó × rescatado × causa del rescate), y jq es un mal lugar
+# para la lógica que decide si se abre una temporada de 22 sesiones. Vive en
+# `scripts/arena-puerta.mjs`, que se prueba con corridas de juguete —una por
+# caso— en `tests/arena-puerta.test.mjs`.
 echo
-echo "── VEREDICTO POR AGENTE (3/3 VERDE · 2/3 ÁMBAR · ≤1/3 ROJO) ─────"
-VEREDICTOS="$OUT/veredictos.tsv"
-: > "$VEREDICTOS"
-for a in $AGENTES; do
-  jq -s -r --arg a "$a" --argjson n "$RONDAS" '
-    [ .[] | (.agents[0] // {}) | {
-        entrego: (((.status // "sin_status") | startswith("aborted") | not) and (.status != null)),
-        rescatado: (((.reintento_json // {}).resuelto // false) == true),
-        status: (.status // "sin_status"),
-        error: ((.error // "") | .[0:120])
-      } ] as $c |
-    ([$c[] | select(.entrego)] | length) as $ok |
-    ([$c[] | select(.entrego and (.rescatado | not))] | length) as $limpios |
-    (if $ok == $n then "VERDE" elif $ok == ($n - 1) then "ÁMBAR" else "ROJO" end) as $v |
-    [ $a, ($ok|tostring) + "/" + ($n|tostring), $v,
-      ($limpios|tostring) + "/" + ($n|tostring),
-      ([$c[] | select(.entrego | not) | .status] | unique | join(",") | if . == "" then "—" else . end),
-      ([$c[] | select(.entrego | not) | .error] | first // "—")
-    ] | @tsv' "$OUT/$a"-r*.json >> "$VEREDICTOS"
-done
-awk -F'\t' 'BEGIN{printf "%-10s %6s %-7s %9s %-26s %s\n","AGENTE","LIBROS","PUERTA","SIN_AYUDA","ABORTÓ POR","PRIMER ERROR"}
-  {printf "%-10s %6s %-7s %9s %-26s %s\n",$1,$2,$3,$4,$5,$6}' "$VEREDICTOS"
+echo "── VEREDICTO POR AGENTE ─────────────────────────────────────────"
+AGENTES_CSV=$(echo "$AGENTES" | tr -s ' ' ',' | sed 's/^,//; s/,$//')
+node "$(dirname "$0")/arena-puerta.mjs" "$OUT" "$AGENTES_CSV" "$RONDAS"
+PUERTA=$?
 
 # ── LAS CUATRO PUERTAS FÍSICAS, SOBRE LAS 21 CORRIDAS ────────────────
 # Estas NO se promedian ni se votan: un solo desborde de reloj en una corrida
@@ -167,33 +205,6 @@ jq -s -r '
   "4 · cierre sin truncar    : " + (if ([$r[]|select(.trunc==true)]|length)==0 then (if ([$r[]|select(.trunc==null)]|length)==0 then "VERDE" else "VERDE con hueco → sin finish_reason en: " + ([$r[]|select(.trunc==null)|.a]|unique|join(", ")) end) else "ROJO → TRUNCADO en " + ([$r[]|select(.trunc==true)|.a]|unique|join(", ")) + " (eso es ARENA_MAX_TOKENS, no el modelo)" end)
 ' "$OUT"/*-r*.json
 
-# ── LA PUERTA ────────────────────────────────────────────────────────
-echo
-# ── PRIMERO: ¿SE EVALUÓ A TODOS? (2026-10-02) ────────────────────────
-# La primera prueba de este script contra respuestas de juguete falló el jq de
-# los veredictos (jq no acepta tildes en una clave desnuda), el archivo quedó
-# VACÍO — y el script imprimió "los siete en VERDE". Cero filas evaluadas se
-# leía como cero rojos.
-#
-# Es el patrón que Lety ya cazó dos veces: un chequeo que confirma la propiedad
-# débil ("no hay ROJO") y se lee como si confirmara la fuerte ("todos VERDE").
-# Acá se cuenta ANTES de opinar.
-ESPERADOS=$(echo "$AGENTES" | wc -w)
-EVALUADOS=$(grep -c . "$VEREDICTOS" 2>/dev/null || echo 0)
-ROJOS=$(awk -F'\t' '$3=="ROJO"{print $1}' "$VEREDICTOS" | paste -sd, -)
-AMBARES=$(awk -F'\t' '$3=="ÁMBAR"{print $1}' "$VEREDICTOS" | paste -sd, -)
-if [ "$EVALUADOS" -ne "$ESPERADOS" ]; then
-  echo "PUERTA DE APERTURA: NO SE PUEDE DECIR — se evaluaron $EVALUADOS de $ESPERADOS agentes."
-  echo "  Un agente sin veredicto NO es un agente en verde. Mirá los errores de jq de arriba y las respuestas en $OUT/."
-  exit 2
-elif [ -n "$ROJOS" ]; then
-  echo "PUERTA DE APERTURA: CERRADA — ROJO en: $ROJOS"
-elif [ -n "$AMBARES" ]; then
-  echo "PUERTA DE APERTURA: ÁMBAR en: $AMBARES — no abre sola. Mirá el 'PRIMER ERROR' de esa fila y la corrida cruda antes de decidir."
-else
-  echo "PUERTA DE APERTURA: los siete en VERDE. Revisá igual las cuatro puertas físicas de arriba."
-fi
-
 # ── CACHÉ: LA RONDA 2 Y LA 3 SON LA MEDICIÓN ─────────────────────────
 # En la ronda 1 `cache_read` es 0 y eso es lo esperado (el prefijo se escribe).
 # El ahorro aparece en las rondas siguientes, dentro del TTL — con una sola
@@ -205,7 +216,14 @@ for a in $AGENTES; do
     f="$OUT/$a-r$r.json"; [ -s "$f" ] || continue
     jq -r --arg a "$a" --arg r "$r" '(.agents[0] // {}) | [$a, $r, (.cost_usd // "null"), ((.loop // {}).herramientas // 0)] | @tsv' "$f"
   done
-done | awk -F'\t' 'BEGIN{printf "%-10s %s %10s %6s\n","AGENTE","R","USD","HTAS"}{printf "%-10s %s %10s %6s\n",$1,$2,$3,$4}'
+done | awk -F'\t' 'BEGIN{printf "%-10s %s %10s %6s\n","AGENTE","R","USD","HTAS"}
+  {printf "%-10s %s %10s %6s\n",$1,$2,$3,$4; if($3!="null"){t+=$3; n+=1} else nulos+=1}
+  END{printf "%-10s %s %10.4f %6s\n","TOTAL","·",t,n" corridas";
+      if(nulos>0) printf "  (%d corrida(s) sin costo reportado: el total SUBESTIMA)\n", nulos}'
 
 echo
 echo "respuestas crudas en $OUT/ ($TOTAL archivos) — mandámelas si algo sale rojo o ámbar"
+
+# El código de salida ES el veredicto: 0 los siete en verde · 1 ámbar o rojo ·
+# 2 tanda incompleta · 3 producción no sirve este commit.
+exit "${PUERTA:-0}"

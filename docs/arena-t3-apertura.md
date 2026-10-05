@@ -583,15 +583,72 @@ set -a && . ./.env.local && set +a      # ARENA_ADMIN_KEY, que nunca viaja en la
 bash scripts/arena-humo.sh              # 21 corridas, ~50 min, secuencial
 ```
 
+> #### ANTES DE LAS 21: ¿PRODUCCIÓN SIRVE ESTE COMMIT? (2026-10-05)
+>
+> El script lo pregunta solo, con la llamada de 0 tokens, y **no arranca si no
+> coinciden**: compara `build.commit_full` del catálogo contra el `HEAD` local y
+> sale con código 3. `IGNORAR_BUILD=1` la corre igual, a propósito y declarado.
+>
+> El 2026-10-05 el commit con el diagnóstico nuevo estaba en una rama sin
+> mergear y producción seguía sirviendo el build del viernes. Era la **tercera**
+> vez que casi medimos el sistema anterior, así que esto dejó de ser un
+> recordatorio y pasó a ser una comparación. A mano:
+>
+> ```bash
+> curl -s -H "x-admin-key: $ARENA_ADMIN_KEY" \
+>   "https://quantdesk2.vercel.app/api/arena-smoke?catalog=1" \
+>   | jq '{build, cierre: .relojes.cierre_techo_ms}'
+> ```
+>
+> Si el catálogo **no trae `build`**, producción es anterior a ese commit: eso
+> ya contesta la pregunta, no hace falta comparar nada.
+>
+> **Y la regla del handoff:** un push no es un deploy y una rama no es un
+> sistema. El reporte no dice "pusheado en X" — dice *"producción tiene que
+> servir X, verificalo"* y nombra **un campo nuevo** de ese commit. Lo único que
+> vale como evidencia de que producción cambió es un campo que sólo existe
+> después del cambio.
+
 **El criterio, fijado antes de medir** (y el script lo imprime antes de la
 primera fila — un umbral que aparece junto al resultado es un umbral que se
 puede haber elegido mirándolo):
 
-| libros entregados | puerta |
+| libros entregados | sin ayuda | puerta |
+|---|---|---|
+| 3 de 3 | ≥ 1 | **VERDE** |
+| 3 de 3 | 0 | **ÁMBAR** — el piso: nunca cerró solo |
+| 2 de 3 | — | **ÁMBAR** — no abre sola: la decide Lety mirando el error de esa corrida |
+| ≤ 1 de 3 | — | **ROJO** |
+
+> #### EL PISO DE SIN_AYUDA (2026-10-05)
+>
+> `SIN_AYUDA` = entregó **y** (no hubo rescate **o** el rescate fue por
+> **nuestro** techo de tokens).
+>
+> Un agente con 3/3 y `SIN_AYUDA 0/3` —las tres veces entregó **sólo** con
+> rescate— no se puede leer igual que un 3/3 limpio: abrir un mes sobre un
+> agente que nunca cierra solo es una decisión, no un detalle. Topa en ÁMBAR.
+>
+> | causa del rescate | ¿cuenta contra él? |
+> |---|---|
+> | `corte` | **no** — es nuestro `ARENA_MAX_TOKENS` apretado, no el agente |
+> | `formato` | sí — es un hallazgo sobre el modelo |
+> | `desconocida` | sí — el proveedor no mandó `finish_reason` y no se regala un crédito que no se puede probar. Empuja a ÁMBAR, que la decidís vos, nunca a ROJO |
+
+**Y la puerta clasifica por NOMBRE, no por prefijo.** `timeout` y `threw` no
+empiezan con `aborted` y son fallas; `halted`, `aborted_no_alpaca_keys` y
+`aborted_alpaca_read` son **nuestra infra** y mandan al agente a
+**INCOMPLETO**, no a ROJO — contarlos contra el modelo sería archivar nuestro
+bug como falla suya. Un status que la puerta no conoce también va a INCOMPLETO.
+
+**Códigos de salida**, porque mandan a lugares distintos:
+
+| código | qué pasó |
 |---|---|
-| 3 de 3 | **VERDE** |
-| 2 de 3 | **ÁMBAR** — no abre sola: la decide Lety mirando el error de esa corrida |
-| ≤ 1 de 3 | **ROJO** |
+| `0` | los siete en VERDE |
+| `1` | ÁMBAR o ROJO — lo decidís vos / se arregla el agente |
+| `2` | tanda **INCOMPLETA**: faltan corridas o no las pudimos medir |
+| `3` | **producción no sirve este commit** — mergeá y verificá antes de gastar |
 
 **"Entrega libro" = el `status` NO empieza con `aborted`.** Eso incluye
 `rejected_rails`: un objetivo que los rieles rechazan es un modelo que SÍ

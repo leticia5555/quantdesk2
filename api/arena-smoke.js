@@ -78,6 +78,7 @@ import {
   buildDiveSystemPrompt, buildDiveUserPrompt, resolveBaseUrl, PROMPT_VERSION,
 } from './arena-run.js';
 import { parseScanResponse, parsePlanResponse } from './_lib/arena-guard.js';
+import { buildInfo } from './_lib/build-info.js';
 import {
   callArenaLLM, providerKey, buildAnthropicPayload, buildOpenRouterBody, anthropicCostUsd, withDeadline,
   openRouterCostUsd, cachePrefixReport, diagnosticoDeCorte,
@@ -578,6 +579,16 @@ export default async function handler(req, res) {
 
   const out = {
     ran_at: new Date().toISOString(),
+    // ── QUÉ BUILD CONTESTÓ, EN LA LLAMADA GRATIS (2026-10-05) ───────
+    // `/api/arena-shadow` ya devolvía el commit; el catálogo NO, y el catálogo
+    // es la llamada de 0 tokens que se hace PRIMERO. Así que la única forma de
+    // saber qué build servía producción era gastar una corrida.
+    //
+    // El 2026-10-05 eso casi costó la tanda de 21: el commit estaba en una
+    // rama sin mergear y producción seguía sirviendo el build del viernes. Era
+    // la TERCERA vez que casi medimos el sistema anterior. Un número que
+    // decide si el resto de la respuesta significa algo va primero y gratis.
+    build: buildInfo(),
     prompt_version: PROMPT_VERSION,
     settings: { max_tokens: ARENA_MAX_TOKENS, effort: ARENA_EFFORT, temperature_default: ARENA_TEMPERATURE },
     // ── LOS RELOJES EFECTIVOS, CON SU ORIGEN ──────────────────────────

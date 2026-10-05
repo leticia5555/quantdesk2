@@ -746,6 +746,150 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B52 · RAZONÉ SOBRE UNA RAMA COMO SI FUERA PRODUCCIÓN (2026-10-05)
+
+Mi reporte del viernes terminaba en «**Pusheado en
+`claude/intelligent-planck-57jkl6`**». Los anteriores decían «en main». La rama
+no estaba mergeada, así que la puerta de 21 corridas habría medido **el build
+del viernes** — sin `lectura_cierre`, sin el bloque `loop` en los abortos, sin
+el reintento. Cincuenta minutos y dinero para medir el sistema que acabábamos
+de cambiar.
+
+Lo que lo frenó fue que Lety verificó antes de correr:
+
+```
+cierre_techo_ms  → ausente   (ese campo era de ESTE commit)
+una_llamada_ms   → 92500, sin exención del cierre
+enabled: false · halted: true · última corrida: 2026-09-29
+```
+
+**Tercera vez que casi medimos el sistema anterior.** Y es exactamente el error
+que yo le había corregido a ella en septiembre: razonar sobre una rama como si
+fuera producción.
+
+### EL ARREGLO DE PROCESO (sus palabras)
+
+> Vos no alcanzás producción; yo sí. Así que el handoff cambia: no digas
+> "pusheado en X" — decime "**producción tiene que servir X, verificalo**". Y
+> nombrá **UN campo nuevo de ese commit** que yo pueda pedir para comprobarlo,
+> como `cierre_techo_ms` hoy. Es una línea tuya y me ahorra la tanda.
+>
+> Lety mergea la rama; yo verifico el campo; después corro las 21. En ese orden.
+
+Queda como regla del handoff, y es más fuerte que un recordatorio: **un push no
+es un deploy, y una rama no es un sistema.** Lo único que vale como evidencia de
+que producción cambió es un campo que sólo existe después del cambio.
+
+### Y EL ARREGLO QUE NO DEPENDE DE QUE YO ME ACUERDE
+
+Una regla que necesita que yo la recuerde en cada handoff ya falló tres veces.
+Así que se mecaniza:
+
+1. **El catálogo ahora dice qué build contestó.** `/api/arena-shadow` ya
+   devolvía el commit; `/api/arena-smoke?catalog=1` **no** — y el catálogo es
+   justo la llamada de 0 tokens que se hace primero. La única forma de saber qué
+   build servía producción era gastar una corrida. Ahora `build` va **primero**
+   en la respuesta, porque es el número que decide si el resto significa algo.
+
+2. **`scripts/arena-humo.sh` no arranca si no coinciden.** Antes de la primera
+   de las 21 llamadas compara `build.commit_full` contra el `HEAD` local y, si
+   difieren, **sale con código 3** e imprime el comando de verificación.
+   `IGNORAR_BUILD=1` la corre igual — hay casos legítimos, como medir el build
+   anterior a propósito, y entonces se dice en voz alta en vez de descubrirse
+   después.
+
+El campo nuevo de este commit, para el handoff: **`build` en
+`?catalog=1`** — que es, apropiadamente, el campo que contesta "¿estás mirando
+el build que creés?".
+
+### EL PISO DE SIN_AYUDA
+
+Yo había publicado `SIN_AYUDA` al lado del veredicto y dejado el criterio sin
+tocar, con el argumento de que un libro rescatado es un libro y que la decisión
+quedaba a la vista. Lety marcó el caso que eso deja sin firmar:
+
+> «Un agente con 3/3 VERDE y SIN_AYUDA 0/3 —o sea que las tres veces entregó
+> SOLO con rescate— se lee igual que un 3/3 limpio. Abrir un mes sobre un agente
+> que nunca cierra solo es una decisión, no un detalle.»
+
+Tiene razón, y el patrón es el mío de siempre en este archivo: **publicar un
+dato no es lo mismo que hacer que el criterio lo use.** Un número al lado de un
+veredicto que no lo mira es un número que se lee cuando ya se decidió.
+
+```
+SIN_AYUDA = entregó  Y  (sin rescate  O  el rescate fue por NUESTRO techo)
+
+3/3 entregados y ≥1 sin ayuda  →  VERDE
+3/3 entregados y 0 sin ayuda   →  ÁMBAR   ← el piso
+2/3 entregados                 →  ÁMBAR
+≤1/3                           →  ROJO
+```
+
+La segunda mitad la derivó de la separación de causas que ya estaba: si el
+rescate fue por `causa: corte`, el agente **no necesitó ayuda** — nosotros le
+apretamos el techo. No cuenta contra él. Y `causa: desconocida` (el proveedor no
+mandó `finish_reason`) **sí** cuenta: no se regala un crédito que no se puede
+probar. Empuja a ÁMBAR, que es una decisión humana, nunca a ROJO.
+
+**Todo ÁMBAR dice por qué**, y los dos ÁMBAR no dicen lo mismo: `2/3 entregaron
+libro` y `nunca cerró solo` son dos problemas con dos respuestas distintas. Un
+veredicto que manda a decidir sin decir qué decidir no es un veredicto.
+
+### EL CRITERIO SALIÓ DEL `jq`, Y ESO ENCONTRÓ UN BUG
+
+Con dos ramas (entregó / no entregó) la expresión de `jq` aguantaba. Con el piso
+pasa a tres dimensiones por corrida —entregó × rescatado × causa— y ese mismo
+`jq` ya había fallado dos veces en silencio (leía `.status` de la raíz; y con el
+archivo de veredictos vacío imprimía "los siete en VERDE"). La lógica que decide
+una temporada de 22 sesiones se prueba caso por caso, así que vive en
+`scripts/arena-puerta.mjs` con `tests/arena-puerta.test.mjs` al lado.
+
+**Y el primer test que escribí lo rompió.** Yo tenía:
+
+```js
+const entrego = !String(status).startsWith('aborted');
+```
+
+**`timeout` no empieza con `aborted`.** Es el corte del harness a los 270s —el
+`withDeadline` del handler— y contaba como libro entregado. **Un prefijo de
+string no es una clasificación.** Lo mismo `threw`.
+
+Y clasificar en dos clases tampoco alcanzaba, por la razón de B44: no todo lo
+que no entregó es culpa del modelo.
+
+| clase | qué es | a dónde va |
+|---|---|---|
+| **entregó** | `ok_target` · `ejecutado_parcial` · `rejected_rails` | cuenta para la puerta |
+| **falló** | `rejected_tickers` · `timeout` · `threw` · los `aborted_*` del modelo | esto es lo que la puerta juzga |
+| **no medible** | `halted` · `aborted_no_alpaca_keys` · `aborted_alpaca_read` | **INCOMPLETO**: es nuestra infra |
+
+Contar un `aborted_no_alpaca_keys` como ROJO del agente sería archivar nuestro
+bug como falla del modelo — la tercera culpa de B44 otra vez, ahora en la puerta
+de apertura. Va a INCOMPLETO, que manda a un humano y **nombra la causa real**.
+
+`rejected_tickers` queda **afuera** de "entregó", y es una decisión y no un
+accidente del prefijo: el JSON parseó, pero con símbolos que no existen, y un
+portafolio de tickers inventados no es una decisión usable.
+
+Un status que no esté en ninguna lista sale como `desconocido` y manda la tanda
+a INCOMPLETO: **un estado nuevo nunca pasa en silencio, ni para bien ni para
+mal.** Y hay un test que lee `arena-shadow.js` y exige que todo status que el
+harness puede emitir esté en **exactamente una** de las tres listas — para que
+una lista vieja se vea en el commit que la deja vieja, y no en la tanda de 21.
+
+### Una tanda incompleta no es una puerta cerrada
+
+Tres salidas distintas, porque mandan a tres lugares:
+
+```
+0  los siete en VERDE
+1  ÁMBAR o ROJO        → lo decide Lety / se arregla el agente
+2  tanda INCOMPLETA    → faltan corridas o no las pudimos medir
+3  producción no sirve este commit  → mergeá y verificá antes de gastar
+```
+
+---
+
 ## B51 · UN JSON QUE MUERE EN EL CARÁCTER 771 NO ES "MAL JSON" (2026-10-02)
 
 Segunda tanda de humo, los siete, halt puesto (hora ET, ~10 am). **5 de 7**, y
