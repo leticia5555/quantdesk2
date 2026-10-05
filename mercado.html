@@ -1454,7 +1454,11 @@
     // los paneles sí va, porque el calendario y Arena no son de un mapa.
     var html = '';
     if(estado.mapa !== 'mundo'){
-      var t = tablasDeMercado(filasDeTablas(d));
+      // EL ERROR DEL MAPA VIAJA A LAS TABLAS. Sin esto, un mapa que no se pudo
+      // leer llega como cero filas y las tablas decían "ninguna subió en este
+      // periodo": una afirmación sobre el mercado que nadie midió, y que encima
+      // manda a mirar la bolsa en vez de la consulta.
+      var t = tablasDeMercado(filasDeTablas(d), { error: d.error || null });
       html += bloqueTabla('Más suben', t.suben, t.conteo, 'suben', 'pct');
       html += bloqueTabla('Más bajan', t.bajan, t.conteo, 'bajan', 'pct');
       html += bloqueTabla('Más operadas', t.operadas, t.conteo, 'operadas', 'importe');

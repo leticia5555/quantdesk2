@@ -1484,6 +1484,31 @@ try {
     !/cierre del/.test(roto.chip), roto.chip.trim());
   chequeo('y el chip dice por qué no lo nombra', /no viajó/.test(roto.titulo), roto.titulo);
 
+  // LAS TABLAS NO PUEDEN AFIRMAR NADA DEL MERCADO CUANDO NO HUBO DATO.
+  // Con el mapa roto llegan cero filas, y las frases decían "ninguna subieron
+  // en este periodo": una afirmación sobre la bolsa que nadie midió, y que
+  // encima manda a mirar el mercado en vez de la consulta. Lo vio Lety en el
+  // preview (2026-10-05) con el mapa caído por una columna inexistente.
+  const tablasRotas = await p.evaluate(() =>
+    [...document.querySelectorAll('#paneles h2')].slice(0, 3).map((h) => ({
+      titulo: h.textContent.trim(),
+      nota: (h.nextElementSibling && h.nextElementSibling.classList.contains('nota'))
+        ? h.nextElementSibling.textContent.trim() : null,
+      vacio: ((h.nextElementSibling && h.nextElementSibling.classList.contains('nota')
+        ? h.nextElementSibling.nextElementSibling : h.nextElementSibling) || {}).textContent || '',
+    })));
+  chequeo('con el mapa roto, las tres tablas dicen "sin dato" y la causa',
+    tablasRotas.length === 3
+      && tablasRotas.every((t) => /^sin dato: /.test(t.nota || '') && /no se pudieron leer/.test(t.nota || '')),
+    JSON.stringify(tablasRotas.map((t) => t.nota)));
+  chequeo('y NINGUNA dice "ninguna subió/bajó en este periodo", que sería inventar un día plano',
+    tablasRotas.every((t) => !/en este periodo/.test(t.nota || '') && !/en este periodo/.test(t.vacio || '')),
+    JSON.stringify(tablasRotas.map((t) => t.nota)));
+  // Y la concordancia, que es lo que hace dudar del número de al lado.
+  chequeo('nunca se escribe "ninguna subieron" ni "ninguna bajaron"',
+    !/ninguna (subieron|bajaron)/.test(JSON.stringify(tablasRotas)),
+    JSON.stringify(tablasRotas.map((t) => t.nota)));
+
   // ── UN MAPA GRIS POR FALTA DE CORRIDA SE EXPLICA SOLO ─────────────
   await fetch(`${BASE}/__sin-auditar?v=1`);
   await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
