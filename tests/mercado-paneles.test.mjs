@@ -10,7 +10,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { armaEstaSemana, armaArena, ventanaSemana, DIAS_SEMANA } from '../api/_lib/mercado-paneles.js';
+import { armaEstaSemana, armaArena, ventanaSemana, DIAS_SEMANA, DIAS_HORIZONTE } from '../api/_lib/mercado-paneles.js';
 
 const HOY = new Date('2026-10-02T15:00:00Z');   // viernes
 
@@ -167,4 +167,65 @@ test('una fuente lenta se cuelga SOLA: hay tope y se dice', async () => {
   const r = await enProceso(lento, {}, { topeMs: 60 });
   assert.match(r.error, /no contestó en 60 ms/);
   assert.ok(Date.now() - t0 < 1000, 'devolvió sin esperar al handler');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LO QUE CAE FUERA DE LA SEMANA SE CUENTA, NO SE TIRA
+// ═══════════════════════════════════════════════════════════════════════
+test('los 9 reportes que no caben en la semana se CUENTAN', () => {
+  // El caso exacto: `filas: 9`, `eventos: []` y la pantalla diciendo "sin
+  // eventos ni reportes". Los nueve estaban; el filtro los tiraba en silencio.
+  const r = armaEstaSemana({
+    macro: { filas: [] },
+    reportes: { filas: Array.from({ length: 9 }, (_, i) => ({ ticker: 'T' + i, date: '2026-10-20' })) },
+    ahora: HOY,
+  });
+  assert.equal(r.eventos.length, 0);
+  assert.equal(r.fuentes.reportes.filas, 9, 'lo que la fuente devolvió');
+  assert.equal(r.fuentes.reportes.en_ventana, 0, 'lo que se pinta');
+  assert.equal(r.fuentes.reportes.mas_adelante, 9, 'y la diferencia tiene nombre');
+});
+
+test('lo anterior a hoy no cuenta como "más adelante"', () => {
+  const r = armaEstaSemana({
+    reportes: { filas: [{ ticker: 'VIEJO', date: '2026-09-01' }] },
+    ahora: HOY,
+  });
+  assert.equal(r.fuentes.reportes.mas_adelante, 0);
+  assert.equal(r.fuentes.reportes.en_ventana, 1, 'devolvió 1 y 0 están más adelante');
+});
+
+test('cada fuente dice hasta dónde se miró', () => {
+  // Sin el horizonte, "no hay nada" no dice "nada ¿hasta cuándo?".
+  const r = armaEstaSemana({ macro: { filas: [] }, reportes: { filas: [] }, ahora: HOY });
+  assert.equal(r.fuentes.macro.horizonte_dias, DIAS_HORIZONTE);
+  assert.equal(r.fuentes.reportes.horizonte_dias, DIAS_HORIZONTE);
+  assert.ok(DIAS_HORIZONTE > r.ventana.dias, 'se pide más de lo que se pinta, a propósito');
+});
+
+// ── Arena: la causa REAL de un retorno que falta ──────────────────────
+test('sin llaves de Alpaca, la causa lo dice — no "el leaderboard no trajo"', () => {
+  // Cuatro de cinco agentes salían con la frase genérica (Lety, 2026-10-05).
+  // El campo era el correcto: `return_pct` sólo se calcula cuando hay llaves.
+  const a = armaArena({ agents: [
+    { id: 'claude', name: 'Claude', model: 'opus', has_keys: true, equity: 112400, return_pct: 12.4 },
+    { id: 'gpt', name: 'GPT', model: 'g', has_keys: false, equity: null, return_pct: null },
+  ] });
+  assert.equal(a.agentes[0].pct, 12.4);
+  assert.equal(a.agentes[0].pct_motivo, null);
+  assert.match(a.agentes[1].pct_motivo, /no tiene llaves de Alpaca/);
+  // Y el modelo llega: `ordenarRanking` lo dejaba fuera del shape público.
+  assert.equal(a.agentes[1].modelo, 'g');
+});
+
+test('con llaves pero sin cuenta legible, la causa es otra', () => {
+  const a = armaArena({ agents: [{ id: 'x', name: 'X', has_keys: true, equity: null, return_pct: null }] });
+  assert.match(a.agentes[0].pct_motivo, /no se pudo leer su cuenta de Alpaca/);
+});
+
+test('con cuenta pero sin capital inicial, otra más', () => {
+  const a = armaArena({ agents: [
+    { id: 'x', name: 'X', has_keys: true, equity: 100, baseline_equity: null, return_pct: null },
+  ] });
+  assert.match(a.agentes[0].pct_motivo, /no se pudo leer su capital inicial/);
 });

@@ -21,6 +21,16 @@ const num = (v) => {
 /** La ventana de "esta semana": de hoy a hoy+N, en fechas ISO. */
 export const DIAS_SEMANA = 7;
 
+/**
+ * Hasta dónde se PIDE, que no es lo mismo que hasta dónde se PINTA.
+ *
+ * `/api/earnings` sin fechas ya trae 30 días, y el calendario macro se pide con
+ * el mismo horizonte a propósito: así las dos mitades se miden igual y la
+ * pantalla puede decir "sin reportes esta semana · 9 más adelante" en vez de
+ * tirar nueve filas en silencio, que es lo que hacía.
+ */
+export const DIAS_HORIZONTE = 30;
+
 export function ventanaSemana(ahora = new Date(), dias = DIAS_SEMANA) {
   const hoy = ahora.toISOString().slice(0, 10);
   const fin = new Date(Date.parse(`${hoy}T12:00:00Z`) + dias * 86400000).toISOString().slice(0, 10);
@@ -38,15 +48,21 @@ export function ventanaSemana(ahora = new Date(), dias = DIAS_SEMANA) {
  * apertura" es un hecho del calendario, y "08:00 CT" sería una hora que
  * Finnhub no dio. Un `TBD` se dice TBD.
  */
-export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), dias = DIAS_SEMANA } = {}) {
+export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), dias = DIAS_SEMANA,
+  horizonte = DIAS_HORIZONTE } = {}) {
   const v = ventanaSemana(ahora, dias);
   const dentro = (f) => {
     const d = String(f || '').slice(0, 10);
     return d >= v.desde && d <= v.hasta;
   };
+  const despues = (f) => String(f || '').slice(0, 10) > v.hasta;
 
   const eventos = [];
+  let macroDespues = 0;
+  let reportesDespues = 0;
+
   for (const e of (macro.filas || [])) {
+    if (despues(e.event_date)) { macroDespues++; continue; }
     if (!dentro(e.event_date)) continue;
     eventos.push({
       tipo: 'macro',
@@ -59,6 +75,7 @@ export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), 
     });
   }
   for (const r of (reportes.filas || [])) {
+    if (despues(r.date)) { reportesDespues++; continue; }
     if (!dentro(r.date)) continue;
     eventos.push({
       tipo: 'reporte',
@@ -85,16 +102,33 @@ export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), 
     eventos,
     // POR SEPARADO, nunca fundidas: ver la cabecera del archivo.
     fuentes: {
-      macro: estadoFuente(macro, 'neon:macro_events'),
-      reportes: estadoFuente(reportes, 'finnhub:earnings-calendar'),
+      macro: estadoFuente(macro, 'neon:macro_events', macroDespues, horizonte),
+      reportes: estadoFuente(reportes, 'finnhub:earnings-calendar', reportesDespues, horizonte),
     },
   };
 }
 
-function estadoFuente(f, nombre) {
-  if (f && f.error) return { fuente: nombre, ok: false, motivo: String(f.error), filas: 0 };
+// La FRASE que acompaña a cada mitad no vive acá: está en `qd-tablas.js`, con
+// las de las tablas. Este módulo corre en el servidor (ESM) y el navegador no
+// lo puede cargar; además el reparto ya era ése — el servidor manda HECHOS y la
+// pantalla arma la oración, igual que con `faltanteDeTabla`.
+
+function estadoFuente(f, nombre, masAdelante = 0, horizonte = DIAS_HORIZONTE) {
+  if (f && f.error) {
+    return { fuente: nombre, ok: false, motivo: String(f.error), filas: 0, en_ventana: 0, mas_adelante: 0, horizonte_dias: horizonte };
+  }
   const n = (f && f.filas ? f.filas.length : 0);
-  return { fuente: nombre, ok: true, motivo: null, filas: n };
+  return {
+    fuente: nombre, ok: true, motivo: null,
+    // `filas` es lo que la fuente DEVOLVIÓ y `en_ventana` lo que se pinta. Que
+    // sean distintos es información, no un descuadre: es la respuesta a "¿dónde
+    // se perdieron los 9?".
+    filas: n,
+    en_ventana: n - masAdelante,
+    mas_adelante: masAdelante,
+    // Hasta dónde se miró: sin esto, "no hay nada" no dice "nada ¿hasta cuándo?".
+    horizonte_dias: horizonte,
+  };
 }
 
 /**
@@ -108,20 +142,39 @@ function estadoFuente(f, nombre) {
  */
 export function armaArena({ agents = [], error = null, n = 5 } = {}) {
   if (error) return { agentes: [], motivo: String(error), fuente: 'api:leaderboard' };
-  const filas = (Array.isArray(agents) ? agents : []).slice(0, n).map((a) => ({
-    id: a.id || null,
-    nombre: a.name || a.id || '—',
-    modelo: a.model || null,
-    casa: a.house || null,
-    // `return_pct` es como lo llama el leaderboard. Si no viene, va null con
-    // motivo: nunca se despeja de `equity` acá, que sería una segunda
-    // definición del mismo número.
-    pct: num(a.return_pct),
-    pct_motivo: num(a.return_pct) == null ? 'el leaderboard no trajo el rendimiento de este agente' : null,
-  }));
+  const filas = (Array.isArray(agents) ? agents : []).slice(0, n).map((a) => {
+    const pct = num(a.return_pct);
+    return {
+      id: a.id || null,
+      nombre: a.name || a.id || '—',
+      modelo: a.model || null,
+      casa: a.house || null,
+      // `return_pct` es como lo llama el leaderboard. Si no viene, va null con
+      // su CAUSA REAL: nunca se despeja de `equity` acá, que sería una segunda
+      // definición del mismo número.
+      pct,
+      pct_motivo: pct == null ? motivoSinRetorno(a) : null,
+    };
+  });
   return {
     agentes: filas,
     motivo: filas.length ? null : 'el leaderboard no devolvió agentes',
     fuente: 'api:leaderboard',
   };
+}
+
+/**
+ * POR QUÉ A ESTE AGENTE LE FALTA EL RENDIMIENTO.
+ *
+ * Son tres causas distintas y se arreglan distinto, así que decir una sola
+ * —"el leaderboard no trajo el rendimiento"— manda a revisar el leaderboard
+ * cuando el problema puede estar en las llaves o en el baseline. Cuatro de
+ * cinco agentes salían con esa frase genérica (Lety, 2026-10-05) y la verdad
+ * era la primera: no tienen cuenta de Alpaca conectada.
+ */
+function motivoSinRetorno(a) {
+  if (a && a.has_keys === false) return 'este agente no tiene llaves de Alpaca configuradas';
+  if (num(a && a.equity) == null) return 'no se pudo leer su cuenta de Alpaca';
+  if (num(a && a.baseline_equity) == null) return 'no se pudo leer su capital inicial';
+  return 'el leaderboard no trajo el rendimiento de este agente';
 }

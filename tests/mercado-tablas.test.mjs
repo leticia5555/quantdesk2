@@ -221,3 +221,52 @@ test('las filas llegan desordenadas y manda la FECHA, no la posición', () => {
   assert.equal(r.fecha, '2026-10-01');
   assert.equal(r.importe, 303_000_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// "ESTA SEMANA": TRES ESTADOS QUE SE CONFUNDÍAN EN UNO
+//
+// La pantalla decía "sin eventos ni reportes" mientras el endpoint traía
+// `reportes.filas: 9`. Los nueve caían después de los siete días que se pintan
+// y el filtro los tiraba sin contarlos (Lety, 2026-10-05).
+// ═══════════════════════════════════════════════════════════════════════
+const { fraseDeFuente } = require(join(ROOT, 'qd-tablas.js'));
+
+test('"¿dónde se perdieron los 9?": se dice cuántos caen más adelante', () => {
+  const f = fraseDeFuente('reportes', {
+    reportes: { ok: true, en_ventana: 0, mas_adelante: 9, horizonte_dias: 30 },
+  });
+  assert.equal(f, 'sin reportes esta semana · 9 más adelante');
+});
+
+test('la tabla macro vacía dice "sin cargar", no "sin eventos"', () => {
+  // `macro_events` se carga A MANO desde el admin: cero eventos significa que
+  // nadie la cargó, no que no vaya a pasar nada. Mandar a mirar otra semana
+  // cuando hace falta abrir el admin es mandar al lugar equivocado.
+  const f = fraseDeFuente('macro', {
+    macro: { ok: true, en_ventana: 0, mas_adelante: 0, horizonte_dias: 30 },
+  });
+  assert.match(f, /calendario macro sin cargar/);
+  assert.match(f, /próximos 30 días/, 'y dice hasta dónde se miró');
+});
+
+test('una fuente caída manda sobre todo lo demás', () => {
+  const f = fraseDeFuente('reportes', {
+    reportes: { ok: false, motivo: 'el handler respondió 401', en_ventana: 0, mas_adelante: 0 },
+  });
+  assert.match(f, /no respondió: el handler respondió 401/);
+});
+
+test('con eventos en la ventana no hay nada que explicar', () => {
+  assert.equal(fraseDeFuente('macro', { macro: { ok: true, en_ventana: 2, mas_adelante: 7 } }), null);
+});
+
+test('las dos mitades se explican por separado', () => {
+  // Si se funden, un Finnhub en 429 se lee igual que "no hay reportes", y la
+  // semana más cargada del trimestre sale como una pantalla tranquila.
+  const fuentes = {
+    macro: { ok: true, en_ventana: 3, mas_adelante: 1 },
+    reportes: { ok: false, motivo: 'HTTP 429' },
+  };
+  assert.equal(fraseDeFuente('macro', fuentes), null, 'macro llenó lo suyo');
+  assert.match(fraseDeFuente('reportes', fuentes), /429/);
+});

@@ -24,7 +24,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { armaEstaSemana, armaArena, ventanaSemana } from './_lib/mercado-paneles.js';
+import { armaEstaSemana, armaArena, ventanaSemana, DIAS_HORIZONTE } from './_lib/mercado-paneles.js';
 import earningsHandler from './earnings.js';
 import leaderboardHandler from './leaderboard.js';
 
@@ -89,6 +89,12 @@ export default async function handler(req, res) {
   const t0 = Date.now();
   const ahora = new Date();
   const v = ventanaSemana(ahora);
+  // EL HORIZONTE, NO LA VENTANA. Se pide un mes y se pinta una semana: así la
+  // pantalla puede decir "sin eventos esta semana · 9 más adelante" en vez de
+  // tirar nueve filas en silencio. `/api/earnings` sin fechas ya trae 30 días,
+  // y el calendario macro se pide con el mismo horizonte para que las dos
+  // mitades se midan igual.
+  const horizonte = ventanaSemana(ahora, DIAS_HORIZONTE);
 
   const [macro, reportes, arena] = await Promise.all([
     // El calendario macro es una tabla nuestra: se lee directo.
@@ -96,7 +102,7 @@ export default async function handler(req, res) {
            from macro_events
           where event_date >= $1::date and event_date <= $2::date
           order by event_date asc, importance desc, title asc
-          limit 60`, [v.desde, v.hasta])
+          limit 200`, [horizonte.desde, horizonte.hasta])
       .then((filas) => ({ filas }))
       .catch((e) => ({ error: String((e && e.message) || e) })),
     enProceso(earningsHandler, { mega: '1' })

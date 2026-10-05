@@ -115,6 +115,46 @@ function faltanteDeTabla(bloque, conteo, { n = FILAS_TABLA } = {}) {
   return `sólo ${hay} ${verbo} en este periodo`;
 }
 
+/**
+ * LA FRASE DE UNA FUENTE DE "ESTA SEMANA" QUE NO LLENÓ SU PARTE.
+ * Devuelve null cuando no hay nada que explicar: una explicación que sobra es
+ * ruido, y la pantalla no la pinta.
+ *
+ * TRES ESTADOS QUE SE CONFUNDÍAN EN UNO. La pantalla decía "sin eventos ni
+ * reportes" mientras `/api/mercado-paneles` traía `reportes.filas: 9` (Lety,
+ * 2026-10-05). Los nueve existían: caían DESPUÉS de los siete días que se
+ * pintan, y el filtro los tiraba sin contarlos. Un conteo que no describe lo
+ * que se ve es peor que no tenerlo.
+ *
+ *   · la fuente falló                          → se dice el error;
+ *   · contestó y está vacía de verdad          → "sin cargar" / "sin nada";
+ *   · tiene cosas, pero más adelante           → se dice CUÁNTAS.
+ *
+ * El caso vacío de macro no es igual al de los reportes: `macro_events` es una
+ * tabla CURADA A MANO, así que cero eventos significa que nadie la cargó, no
+ * que no vaya a pasar nada. Mandar a "mirar otra semana" cuando lo que hace
+ * falta es abrir el admin es mandar al lugar equivocado.
+ */
+function fraseDeFuente(cual, fuentes) {
+  const f = fuentes && fuentes[cual];
+  if (!f) return null;
+  const quien = cual === 'macro' ? 'macro' : 'de reportes';
+  if (!f.ok) return `el calendario ${quien} no respondió: ${f.motivo}`;
+  if (f.en_ventana > 0) return null;
+  if (f.mas_adelante > 0) {
+    return cual === 'macro'
+      ? `sin eventos macro esta semana · ${f.mas_adelante} más adelante`
+      : `sin reportes esta semana · ${f.mas_adelante} más adelante`;
+  }
+  // `horizonte_dias` lo manda el servidor: sin él, "no hay nada" no dice
+  // "nada ¿hasta cuándo?". El 30 es sólo el piso por si llegara una respuesta
+  // vieja, no una segunda definición del horizonte.
+  const d = f.horizonte_dias || 30;
+  return cual === 'macro'
+    ? `calendario macro sin cargar: ningún evento en los próximos ${d} días`
+    : `el calendario no trae reportes de mega-caps en los próximos ${d} días`;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { FILAS_TABLA, tablasDeMercado, faltanteDeTabla };
+  module.exports = { FILAS_TABLA, tablasDeMercado, faltanteDeTabla, fraseDeFuente };
 }
