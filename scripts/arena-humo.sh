@@ -106,12 +106,33 @@ if [ -z "${REUSAR:-}" ]; then
     echo "  eso YA responde la pregunta — no está sirviendo lo que vas a medir."
     [ -n "${IGNORAR_BUILD:-}" ] || exit 3
   elif [ "$PROD" != "$LOCAL" ]; then
+    # ── EL SHA SOLO NO ALCANZA, Y HAY QUE DECIRLO ────────────────────
+    # Un merge commit, un squash o un rebase le dan a producción un SHA que no
+    # es el HEAD local aunque sirva EL MISMO código. Un candado que grita en
+    # ese caso es un candado que se aprende a ignorar — y entonces no frena el
+    # caso de verdad.
+    #
+    # Así que se mira además un TESTIGO DE CONTENIDO: un campo que sólo existe
+    # después del cambio. `cierre_techo_ms` es exactamente eso, y es el campo
+    # con el que Lety cazó esto a mano el 2026-10-05. `has("…")` y no un valor,
+    # porque su valor correcto ES `null`: comparar contra null no distingue
+    # "está y vale null" de "no está".
+    TESTIGO=$(printf '%s' "$CAT" | jq -r 'if (.relojes // {}) | has("cierre_techo_ms") then "si" else "no" end' 2>/dev/null || echo "no")
     echo
-    echo "  PRODUCCIÓN NO SIRVE ESTE COMMIT. La tanda mediría otro sistema."
-    echo "  Mergeá la rama, esperá el deploy, y verificá con:"
-    echo "    curl -s -H \"x-admin-key: \$ARENA_ADMIN_KEY\" \\"
-    echo "      \"$BASE/api/arena-smoke?catalog=1\" | jq '{build, cierre: .relojes.cierre_techo_ms}'"
-    echo "  (IGNORAR_BUILD=1 la corre igual, a propósito y declarado.)"
+    echo "  EL SHA NO COINCIDE. Dos causas distintas, y se distinguen:"
+    if [ "$TESTIGO" = "si" ]; then
+      echo "  · el testigo de contenido SÍ está (relojes.cierre_techo_ms existe)."
+      echo "    Producción conoce los campos de este commit: lo más probable es"
+      echo "    un merge/squash, que le cambia el SHA sirviendo el mismo código."
+      echo "    Revisá \`build.mensaje\` de arriba y, si es tu merge, corré con:"
+      echo "      IGNORAR_BUILD=1 bash scripts/arena-humo.sh"
+    else
+      echo "  · el testigo de contenido NO está (relojes.cierre_techo_ms falta)."
+      echo "    Producción NO sirve este commit. La tanda mediría otro sistema."
+      echo "    Mergeá, esperá el deploy, y verificá con:"
+      echo "      curl -s -H \"x-admin-key: \$ARENA_ADMIN_KEY\" \\"
+      echo "        \"$BASE/api/arena-smoke?catalog=1\" | jq '{build, cierre: .relojes.cierre_techo_ms}'"
+    fi
     [ -n "${IGNORAR_BUILD:-}" ] || exit 3
     echo "  IGNORAR_BUILD=1: se corre igual, midiendo ${PROD:0:7}."
   else
