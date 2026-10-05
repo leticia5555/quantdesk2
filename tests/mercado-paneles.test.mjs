@@ -113,3 +113,58 @@ test('sin agentes, el motivo lo dice', () => {
   const a = armaArena({ agents: [] });
   assert.match(a.motivo, /no devolvió agentes/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LOS OTROS ENDPOINTS SE LLAMAN EN PROCESO, NO POR HTTP
+//
+// Pedir `https://<host>/api/earnings?mega=1` con fetch devolvía 401 en el
+// preview: Vercel protege los despliegues y el servidor se topaba con su propia
+// puerta al llamarse a sí mismo. Lo encontró Lety (2026-10-05).
+// ═══════════════════════════════════════════════════════════════════════
+import { enProceso } from '../api/mercado-paneles.js';
+
+test('enProceso corre el handler y devuelve su JSON, sin red', async () => {
+  const handler = async (req, res) => {
+    assert.equal(req.method, 'GET');
+    assert.equal(req.query.mega, '1');     // la query llega tal cual
+    res.setHeader('Cache-Control', 'x');   // el handler real pone headers
+    return res.status(200).json({ earnings: [{ ticker: 'NVDA', date: '2026-10-06' }] });
+  };
+  const r = await enProceso(handler, { mega: '1' });
+  assert.equal(r.error, undefined);
+  assert.equal(r.json.earnings[0].ticker, 'NVDA');
+});
+
+test('un código que no es 200 es un ERROR con su número, no una lista vacía', async () => {
+  // Es el caso del 401: si se leyera como "no hay reportes", la semana más
+  // cargada del trimestre saldría como una pantalla tranquila.
+  const handler = async (req, res) => res.status(401).json({ error: 'no' });
+  const r = await enProceso(handler);
+  assert.equal(r.json, undefined);
+  assert.match(r.error, /401/);
+});
+
+test('un handler que LANZA tampoco tumba el panel', async () => {
+  const handler = async () => { throw new Error('Finnhub se cayó'); };
+  const r = await enProceso(handler);
+  assert.match(r.error, /Finnhub se cayó/);
+});
+
+test('y ese error llega hasta la pantalla con su texto', async () => {
+  const handler = async (req, res) => res.status(401).json({});
+  const r = await enProceso(handler);
+  const s = armaEstaSemana({ macro: { filas: [] }, reportes: r, ahora: HOY });
+  assert.equal(s.fuentes.reportes.ok, false);
+  assert.match(s.fuentes.reportes.motivo, /401/);
+});
+
+test('una fuente lenta se cuelga SOLA: hay tope y se dice', async () => {
+  // El `fetch` que se fue traía un AbortController de 5s. Sin tope, el
+  // leaderboard colgado contra Alpaca se llevaría la pantalla entera hasta el
+  // timeout de la función.
+  const lento = () => new Promise(() => {});          // nunca resuelve
+  const t0 = Date.now();
+  const r = await enProceso(lento, {}, { topeMs: 60 });
+  assert.match(r.error, /no contestó en 60 ms/);
+  assert.ok(Date.now() - t0 < 1000, 'devolvió sin esperar al handler');
+});

@@ -90,6 +90,52 @@ test('un día plano: cero suben y cero bajan, y se dice', () => {
   assert.match(faltanteDeTabla('bajan', t.conteo), /ninguna bajó|ninguna bajaron/);
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// SIN DATO NO ES CERO
+//
+// Con el mapa roto no llega ninguna fila, los conteos quedan todos en 0 y las
+// frases decían "ninguna subieron en este periodo": una afirmación SOBRE EL
+// MERCADO que nadie midió, y que encima manda a mirar la bolsa en vez de la
+// consulta que falló. Lo vio Lety en el preview (2026-10-05) con el mapa caído
+// por una columna que no existía.
+// ═══════════════════════════════════════════════════════════════════════
+test('con el mapa roto, cada tabla dice "sin dato" y la causa', () => {
+  const t = tablasDeMercado([], { error: 'no se pudieron leer los datos del mapa' });
+  for (const b of ['suben', 'bajan', 'operadas']) {
+    const f = faltanteDeTabla(b, t.conteo);
+    assert.match(f, /^sin dato: no se pudieron leer los datos del mapa$/, b);
+    // Y NUNCA la frase del día plano, que es la que afirmaba de más.
+    assert.doesNotMatch(f, /en este periodo/, b);
+  }
+});
+
+test('sin una sola emisora tampoco se afirma nada del periodo', () => {
+  const t = tablasDeMercado([]);
+  assert.match(faltanteDeTabla('suben', t.conteo), /sin dato: el mapa no trajo ninguna emisora/);
+});
+
+test('el error le gana a cualquier otra explicación', () => {
+  // Con error Y con filas —una lectura parcial— manda el error: lo que se
+  // pinta es incompleto y decir "sólo 2 subieron" lo daría por completo.
+  const t = tablasDeMercado([{ symbol: 'A', pct: 1 }], { error: 'timeout de Neon' });
+  assert.match(faltanteDeTabla('suben', t.conteo), /^sin dato: timeout de Neon$/);
+});
+
+test('las frases concuerdan en número: "ninguna subió", "sólo 1 bajó"', () => {
+  // "ninguna subieron" se lee como un error de la pantalla y hace dudar del
+  // número que está al lado.
+  const uno = tablasDeMercado([{ symbol: 'A', pct: 1 }, { symbol: 'B', pct: -1 }]);
+  assert.match(faltanteDeTabla('suben', uno.conteo), /^sólo 1 subió en este periodo$/);
+  assert.match(faltanteDeTabla('bajan', uno.conteo), /^sólo 1 bajó en este periodo$/);
+
+  const dos = tablasDeMercado([{ symbol: 'A', pct: 1 }, { symbol: 'B', pct: 2 }]);
+  assert.match(faltanteDeTabla('suben', dos.conteo), /^sólo 2 subieron en este periodo$/);
+  assert.match(faltanteDeTabla('bajan', dos.conteo), /^ninguna bajó en este periodo$/);
+
+  const unoOperado = tablasDeMercado([{ symbol: 'A', pct: 1, importe: 5 }, { symbol: 'B', pct: 2 }]);
+  assert.match(faltanteDeTabla('operadas', unoOperado.conteo), /^sólo 1 de 2 trae lo operado$/);
+});
+
 test('con la tabla llena, no hay nada que explicar', () => {
   // Una explicación que sobra es ruido: la pantalla no la pinta.
   const t = tablasDeMercado(universo(40));
@@ -146,6 +192,13 @@ test('sin volumen en ninguna fila, null CON MOTIVO — nunca un cero', () => {
   const r = importeDeFilas([{ fecha: '2026-10-01', cierre: 100 }]);
   assert.equal(r.importe, null);
   assert.match(r.motivo, /no trae volumen/);
+
+  // Y cuando el llamador SABE que la causa es otra —la columna todavía no
+  // existe— la dice él: mandar a revisar Yahoo en vez de correr el job es
+  // exactamente el gris que parece resuelto y no lo está.
+  const sinColumna = importeDeFilas([{ fecha: '2026-10-01', cierre: 100 }],
+    { motivoSinDato: 'la columna de volumen todavía no existe en la tabla: corré /api/mercado-precios?job=us' });
+  assert.match(sinColumna.motivo, /la columna de volumen todavía no existe/);
 
   const vacia = importeDeFilas([]);
   assert.equal(vacia.importe, null);
