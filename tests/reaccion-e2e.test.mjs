@@ -165,6 +165,13 @@ function mockFetch(opciones = {}) {
     if (u.includes('finnhub.io/api/v1/calendar/earnings')) {
       const sym = decodeURIComponent((u.match(/symbol=([^&]+)/) || [])[1]);
       if (opciones.finnhubCaido) return resp(401, { error: 'Invalid API key.' });
+      // La cicatriz del PEAD: el plan gratis solo sirve una ventana reciente.
+      // Responde para TODOS los símbolos, con las dos cifras, pero solo filas de
+      // hace un mes — fuera de la ventana de los eventos.
+      if (opciones.finnhubSoloReciente) {
+        return resp(200, { earningsCalendar: [{ date: '2026-09-25', epsActual: 1, epsEstimate: 0.9, hour: 'bmo', quarter: 4,
+          revenueActual: 18.1e9, revenueEstimate: 18e9, symbol: sym, year: 2026 }] });
+      }
       const lista = REPORTES.filter((x) => x.symbol === sym && (!opciones.finnhubParcial || opciones.finnhubParcial.includes(sym)))
         .map((x) => ({ date: x.report_date, epsActual: x.reported_eps, epsEstimate: x.estimated_eps, hour: 'amc', quarter: 1,
           revenueActual: x.rev_est * (1 + x.rev_surpr), revenueEstimate: x.rev_est, symbol: sym, year: 2026 }));
@@ -329,6 +336,25 @@ let censoI;
   ok(/Fuente elegida: \*\*Finnhub/.test(md.text), 'y la fuente elegida');
   ok(/Los ingresos REPORTADOS solos no hacen una sorpresa/.test(md.text), 'y por qué EDGAR solo no alcanza');
   ok(!md.text.includes('fmp-key-de-test'), 'el md tampoco filtra keys');
+
+  // ¿HECHO O BUG? Con la cobertura completa, el diagnóstico lo confirma.
+  ok(fh.diagnostico && fh.diagnostico.causa === 'completa', 'con Finnhub completo, el diagnóstico dice "completa"', fh.diagnostico && fh.diagnostico.causa);
+
+  // El caso que motivó el diagnóstico: Finnhub responde 6 de 6 con las dos
+  // cifras y aun así cubre 0. El diagnóstico tiene que decir POR QUÉ.
+  global.fetch = mockFetch({ finnhubSoloReciente: true });
+  const reciente = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', frente: 'ingresos' }), reciente);
+  const fhR = reciente.body.frentes.ingresos.estimados.cobertura_por_fuente.find((c) => /Finnhub/.test(c.fuente));
+  ok(fhR.cobertura === 0, 'Finnhub con solo filas recientes cubre 0 eventos', fhR.cobertura);
+  ok(fhR.diagnostico.causa === 'ventana_de_la_fuente', 'y el diagnóstico dice que es la VENTANA de la fuente, no el cruce', fhR.diagnostico.causa);
+  ok(fhR.diagnostico.filas_con_dos_cifras === SIMS.length && fhR.diagnostico.filas_con_dos_cifras_en_ventana === 0,
+    'todas las filas traen las dos cifras, ninguna cae en la ventana', JSON.stringify({ d: fhR.diagnostico.filas_con_dos_cifras, v: fhR.diagnostico.filas_con_dos_cifras_en_ventana }));
+  ok(fhR.diagnostico.rango_fuente.desde === '2026-09-25', 'con el rango que devolvió la fuente', JSON.stringify(fhR.diagnostico.rango_fuente));
+  const mdR = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', frente: 'ingresos', format: 'md' }), mdR);
+  ok(/¿el 0 es un hecho o un bug\?/.test(mdR.text) && /ventana_de_la_fuente/.test(mdR.text), 'el markdown imprime el diagnóstico por fuente');
+  ok(/Rango de fechas que devolvió: \*\*2026-09-25 → 2026-09-25\*\*/.test(mdR.text), 'con el rango, en letras');
 
   // Si Finnhub se cae y FMP cubre 50%, entra con FMP (justo en el borde).
   global.fetch = mockFetch({ finnhubCaido: true });

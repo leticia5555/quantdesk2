@@ -247,6 +247,35 @@ Los ingresos reportados **solos no hacen una sorpresa**: sin el estimado anterio
 no hay contra qué compararlos. Por eso este conteo es una **auditoría** de la
 fuente elegida (¿su ingreso real coincide con el de EDGAR, ±1%?), no la señal.
 
+### ¿Un 0 de cobertura es un hecho o un bug?
+
+Nació de Finnhub: respondió **75 de 75 símbolos**, la muestra traía estimado y
+real, y aun así cubrió **0 de 240 eventos**. Hay dos explicaciones y se arreglan
+distinto:
+
+- la fuente sirve una **ventana de fechas** que no se solapa con los eventos (la
+  cicatriz del PEAD: fechas futuras sí, ventanas históricas cero) → el 0 es un
+  **hecho**, y el NO ENTRA queda confirmado;
+- las filas sí están en la ventana pero el **cruce** (símbolo, fecha ±1) falla →
+  el 0 es un **bug**, y el frente entraría.
+
+Así que cada fuente barrida publica un `diagnostico` (`diagnosticaCobertura`, pura
+y testeada) con lo necesario para distinguirlas: el **rango de fechas** que
+devolvió, cuántas filas traen **las dos cifras**, cuántas caen **dentro de la
+ventana de los eventos**, y la **distancia** de cada evento a la fila más cercana
+de su símbolo (0–1, 2–7, 8–31, 32+ días, o sin filas). La `causa` sale de esos
+números:
+
+| Causa | Qué dice |
+|---|---|
+| `ventana_de_la_fuente` | ninguna fila con las dos cifras cae en la ventana: **hecho** de la fuente |
+| `emparejamiento_sospechoso` | hay filas en la ventana y 0 cruces: apunta al **cruce** |
+| `sin_dos_cifras` / `sin_filas` | no hay con qué cruzar |
+| `parcial` / `completa` | cruzan algunos / todos |
+
+Los ejemplos muestran primero los eventos que quedaron **cerca sin cruzar** (si
+hay un bug de cruce, está ahí).
+
 ### 2. Guía
 
 10 símbolos (NKE primero si está entre los eventos — es el caso que lo motiva —,
