@@ -110,6 +110,12 @@ export const SCHEMA_UNIVERSO_US = [
   `alter table mercado_universo_us add column if not exists acciones_edgar_presentada date`,
   `alter table mercado_universo_us add column if not exists acciones_edgar_form text`,
   `alter table mercado_universo_us add column if not exists edgar_cik text`,
+  // VARIAS CLASES DE ACCIONES (BX). `acciones_edgar_millones` se queda vacía a
+  // propósito —ningún conteo suelto vale cuando hay varias clases— y la SUMA
+  // viaja aparte, como candidata. Dos columnas y no una: el número de clases es
+  // lo que explica por qué la suma está ahí y el conteo normal no.
+  `alter table mercado_universo_us add column if not exists acciones_edgar_clases int`,
+  `alter table mercado_universo_us add column if not exists acciones_edgar_suma_millones numeric`,
   // CUÁNDO se le preguntó a EDGAR y QUÉ contestó. Sin estas dos columnas, una
   // `acciones_edgar_millones` vacía no distingue "no se preguntó" de "se
   // preguntó y no había", y el mapa acaba inventando la causa (#260).
@@ -750,6 +756,26 @@ async function jobGfnorte() {
 // descubría con el job devolviendo 500. Exportadas, el mismo PREPARE las mide.
 // ═══════════════════════════════════════════════════════════════════════
 export const SQL_CAP_US = {
+  // LAS ESCRITURAS DEL JOB DE EDGAR VIVEN ACÁ, no en línea donde se usan, para
+  // que `tests/mercado-sql.test.mjs` las PREPARE contra un Postgres de verdad.
+  // Una columna mal escrita en un `update` suelto no la ve nadie hasta que el
+  // job corre contra producción y devuelve un 500.
+  edgar_conteo: `update mercado_universo_us
+        set acciones_edgar_millones = $2, acciones_edgar_portada = $3::date,
+            acciones_edgar_presentada = $4::date, acciones_edgar_form = $5, edgar_cik = $6,
+            edgar_consultada_en = now(), edgar_consulta_motivo = null,
+            -- Un conteo limpio BORRA la suma de clases de una corrida anterior:
+            -- si la emisora dejó de reportar varias, la suma vieja seguiría ahí
+            -- contestando una pregunta que ya no existe.
+            acciones_edgar_clases = null, acciones_edgar_suma_millones = null
+      where symbol = $1`,
+  // BX: varias clases en la portada. El conteo normal queda vacío a propósito y
+  // la suma se guarda como CANDIDATA — el veredicto del mapa la confronta con
+  // el conteo de Finnhub antes de pintarla.
+  edgar_clases: `update mercado_universo_us
+        set acciones_edgar_clases = $2, acciones_edgar_suma_millones = $3,
+            acciones_edgar_portada = $4::date
+      where symbol = $1`,
   // El universo con su último cierre. Sin parámetros: el filtro por sector se
   // agrega según el llamador (los conteos de cabecera usan la MISMA población
   // que el mapa; la auditoría completa, todas).
@@ -761,6 +787,7 @@ export const SQL_CAP_US = {
        )
        select u.symbol, u.nombre, u.industria, u.sector_etf, u.market_cap, u.cap_fuente, u.cap_moneda,
               u.acciones_millones, u.acciones_edgar_millones, u.acciones_edgar_portada::text as acciones_edgar_portada,
+              u.acciones_edgar_clases, u.acciones_edgar_suma_millones,
               u.edgar_consultada_en::text as edgar_consultada_en, u.edgar_consulta_motivo,
               p.cierre as precio_usd, p.fecha::text as fecha_precio
          from mercado_universo_us u
@@ -1014,6 +1041,14 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
           muestra_cruda: muestraCruda(r.json),
         });
         escrituras.push(registroConsulta(sym, acc.motivo, cik));
+        // La suma de clases se guarda aunque el conteo normal quede vacío: es
+        // la candidata que el veredicto del mapa confrontará con Finnhub. Si
+        // no concuerda, el cuadro queda gris con su causa — guardarla no la
+        // da por buena, sólo la pone donde se la puede juzgar.
+        if (acc.clases > 1 && acc.suma_clases > 0) {
+          escrituras.push([SQL_CAP_US.edgar_clases,
+            [sym, acc.clases, acc.suma_clases / 1e6, acc.fecha_portada || null]]);
+        }
         continue;
       }
       cuenta.ok++;
@@ -1021,14 +1056,8 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
         symbol: sym, acciones: acc.acciones, portada: acc.fecha_portada,
         presentada: acc.presentado_en, form: acc.form, unidad: acc.unidad || null,
       });
-      escrituras.push([
-        `update mercado_universo_us
-            set acciones_edgar_millones = $2, acciones_edgar_portada = $3::date,
-                acciones_edgar_presentada = $4::date, acciones_edgar_form = $5, edgar_cik = $6,
-                edgar_consultada_en = now(), edgar_consulta_motivo = null
-          where symbol = $1`,
-        [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik],
-      ]);
+      escrituras.push([SQL_CAP_US.edgar_conteo,
+        [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik]]);
     } catch (e) {
       // UN SÍMBOLO NO SE LLEVA EL JOB. El 2026-09-26 el primero de los 21 tiró
       // `TypeError: unidades.filter is not a function` y los otros 20 nunca se

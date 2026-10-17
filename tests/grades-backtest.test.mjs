@@ -25,7 +25,11 @@ import {
   advertenciaDeSeleccion, ARTEFACTOS_DEL_PLAN,
 } from '../api/_lib/grades-backtest.js';
 import {
-  normalizaGrades, interpretaSmoke, mencionaParametro,
+  FMP_402_LIMIT, FMP_402_SYMBOL, FMP_402_PERIOD, PROCEDENCIA,
+} from './fixtures/fmp-402-reales.mjs';
+import { clasificaFallo } from '../api/_lib/reaccion-fuentes.js';
+import {
+  normalizaGrades, interpretaSmoke, mencionaParametro, clasifica402Fmp,
   LIMIT_POR_DEFECTO, LIMIT_MAXIMO_DEL_PLAN,
 } from '../api/_lib/fmp-grades.js';
 
@@ -253,9 +257,9 @@ ok(mencionaParametro("Premium Query Parameter: This value set for 'symbol' is no
 // LOS DOS MENSAJES, CON LA COLA DE PLAN. Es el caso donde los dos bugs se
 // tocan: un mensaje de PARÁMETRO que además termina en "…subscription page to
 // upgrade your plan". El nombre entre comillas tiene que ganarle a `page`/`to`.
-// OJO: estos textos reproducen el formato de FMP ("Premium Query Parameter: This
-// value set for '<p>' …"), no son copias literales de lo que contestó en
-// producción. Las respuestas reales están en el `body_sample` del smoke.
+// SINTÉTICOS: estos textos reproducen el formato de FMP con variaciones (sin la
+// etiqueta "Special …", con la cola de plan) para probar robustez. Las
+// respuestas REALES están ancladas más abajo, en el bloque de los fixtures.
 const COLA = ' is not available under your current subscription please visit our subscription page to upgrade your plan';
 for (const prm of ['limit', 'period', 'symbol']) {
   const r = mencionaParametro(`Premium Query Parameter: This value set for '${prm}'` + COLA);
@@ -302,6 +306,56 @@ ok(interpretaSmoke([
   { id: 'a', limit: 1000, ok: false, status: 402, motivo: 'parametro_fuera_de_rango' },
   { id: 'b', limit: 10, ok: false, status: 402, motivo: 'parametro_fuera_de_rango' },
 ]).causa !== 'auth_error', 'un 402 nunca se lee como auth_error');
+
+console.log('las respuestas REALES de FMP (fixtures verbatim)');
+
+// Tres respuestas copiadas TAL CUAL de producción (tests/fixtures/fmp-402-reales.mjs).
+// Lo que se verifica: que la ETIQUETA de FMP decide el TIPO, que el nombre entre
+// comillas decide CUÁL, y que las comillas desbalanceadas y el corte del
+// body_sample no rompen nada.
+const rl = clasifica402Fmp(FMP_402_LIMIT, { symbol: 'NKE' });
+ok(rl.etiqueta_fmp === 'Special Parameters', 'LIMIT real: FMP lo etiqueta "Special Parameters"', rl.etiqueta_fmp);
+ok(rl.tipo === 'rango_de_parametro' && rl.motivo === 'parametro_fuera_de_rango' && rl.parametro === 'limit',
+  'LIMIT real: rango del parámetro `limit` — se arregla con un valor dentro del rango', `${rl.tipo}/${rl.motivo}/${rl.parametro}`);
+ok(rl.rango && rl.rango.min === 0 && rl.rango.max === 10, 'y el rango 0..10 sale del mensaje real', JSON.stringify(rl.rango));
+ok(/SIN mandarlo/.test(rl.detalle) && /TODA la historia/.test(rl.detalle),
+  'el detalle recuerda el hallazgo: para limit, la salida es NO mandarlo', rl.detalle);
+ok(!/plan NO cubre/.test(rl.detalle) && /No es la key/.test(rl.detalle), 'no dice que el plan no cubre la empresa, y no culpa a la key');
+
+const rs = clasifica402Fmp(FMP_402_SYMBOL, { symbol: 'ABNB' });
+ok(rs.etiqueta_fmp === 'Special Endpoint', 'SYMBOL real: "Special Endpoint"', rs.etiqueta_fmp);
+ok(rs.motivo === 'sin_acceso_al_simbolo' && rs.parametro === 'symbol', 'SYMBOL real: el plan no cubre la empresa', rs.motivo);
+ok(/el plan NO cubre a ABNB/.test(rs.detalle), 'nombrando la empresa', rs.detalle);
+ok(/financialmo$/.test(FMP_402_SYMBOL), 'el fixture está CORTADO como lo corta el body_sample — y se clasifica igual');
+
+const rp = clasifica402Fmp(FMP_402_PERIOD);
+ok(rp.etiqueta_fmp === 'Special Endpoint', 'PERIOD real: "Special Endpoint"', rp.etiqueta_fmp);
+ok(rp.tipo === 'valor_no_disponible' && rp.motivo === 'parametro_de_pago' && rp.parametro === 'period',
+  'PERIOD real: valor de pago — no hay un valor más chico que lo arregle', `${rp.tipo}/${rp.motivo}`);
+
+// LA ETIQUETA SEPARA LO QUE EL NOMBRE NO: symbol y period comparten "Special
+// Endpoint" pero se leen distinto; limit es "Special Parameters".
+ok(rs.etiqueta_fmp === rp.etiqueta_fmp && rs.motivo !== rp.motivo,
+  'symbol y period comparten la etiqueta y NO el motivo: hace falta el nombre además de la etiqueta');
+ok(rl.etiqueta_fmp !== rp.etiqueta_fmp && rl.tipo !== rp.tipo,
+  'limit y period tienen etiqueta y tipo distintos: rango vs. valor no disponible');
+
+// LAS DOS FRONTERAS DICEN LO MISMO. Antes no: el 402 real por `limit` salía
+// `parametro_fuera_de_rango` en grades y `parametro_de_pago` en reaccion.
+for (const [nombre, cuerpo] of [['LIMIT', FMP_402_LIMIT], ['SYMBOL', FMP_402_SYMBOL], ['PERIOD', FMP_402_PERIOD]]) {
+  const g = clasifica402Fmp(cuerpo);
+  const r = clasificaFallo({ status: 402, body_sample: cuerpo }, 'x');
+  ok(g.motivo === r.motivo, `${nombre} real: grades y reaccion dan el MISMO motivo (${g.motivo})`, `${g.motivo} vs ${r.motivo}`);
+}
+ok(Object.keys(PROCEDENCIA).length === 3, 'cada fixture real lleva su procedencia escrita');
+
+// Las comillas desbalanceadas de FMP ("'Special Parameters : … 'limit' …") no
+// confunden la detección: el nombre entre comillas se encuentra igual.
+ok(mencionaParametro(FMP_402_LIMIT).parametro === 'limit', 'las comillas desbalanceadas del mensaje real no rompen la detección');
+// Y una forma NUEVA de FMP no se fuerza a una conocida.
+const nueva = clasifica402Fmp("Premium Query Parameter: 'Special Something : The value for 'period' is weird");
+ok(nueva.motivo === 'parametro_nombrado' && /no es una de las conocidas/.test(nueva.detalle),
+  'SINTÉTICO — una etiqueta desconocida se admite como desconocida, no se fuerza', nueva.detalle);
 
 console.log('interpretaSmoke: nombra la causa, y cuando no la sabe lo dice');
 

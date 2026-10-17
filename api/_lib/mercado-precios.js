@@ -39,6 +39,15 @@ export const SCHEMA_PRECIOS_US = [
      cierre_ajustado  numeric,
      primary key (symbol, fecha)
    )`,
+  // EL VOLUMEN, PARA "MÁS OPERADAS". Viene en el MISMO payload que el cierre
+  // (`indicators.quote[0].volume`), así que no cuesta ni una petición más: lo
+  // único que faltaba era la columna. `alter … if not exists` porque la tabla
+  // ya existe en producción con un año de historia.
+  //
+  // Se guardan ACCIONES, no pesos: el importe es `volumen × cierre` y se
+  // calcula al leer. Guardar el producto sería guardar un dato derivado que
+  // deja de cuadrar en cuanto se corrige un cierre.
+  `alter table mercado_precios_us add column if not exists volumen numeric`,
   `create index if not exists mercado_precios_us_symbol_idx
      on mercado_precios_us (symbol, fecha desc)`,
 ];
@@ -74,11 +83,17 @@ export function aplanarChartYahoo(json) {
     const c = num(q.close && q.close[i]);
     if (t == null || c == null || c <= 0) { descartadas++; continue; }
     const a = Array.isArray(adj) ? num(adj[i]) : null;
+    // El volumen es OPCIONAL y su ausencia no descarta la fila: un cierre sin
+    // volumen sigue sirviendo para el %, que es para lo que nació esta tabla.
+    // Un volumen de 0 es un dato (día sin operaciones), no un hueco, así que
+    // sólo se descarta el negativo, que no existe.
+    const v = Array.isArray(q.volume) ? num(q.volume[i]) : null;
     filas.push({
       fecha: new Date(t * 1000).toISOString().slice(0, 10),
       t,
       cierre: c,
       cierre_ajustado: a != null && a > 0 ? a : null,
+      volumen: v != null && v >= 0 ? v : null,
     });
   }
   // Yahoo manda el día en curso como último punto con el precio VIVO. Para
@@ -89,6 +104,10 @@ export function aplanarChartYahoo(json) {
     filas, descartadas,
     motivo: filas.length ? null : 'la respuesta no traía ningún cierre utilizable',
     sin_adjclose: !Array.isArray(adj),
+    // Igual que `sin_adjclose`: separa "la fuente no manda volumen para este
+    // símbolo" de "mandó y lo descartamos". El job lo reporta por símbolo, y
+    // ésa es la causa que el cuadro enseña cuando no tiene importe.
+    sin_volumen: !Array.isArray(q.volume),
     ultima_fecha: hoy ? hoy.fecha : null,
   };
 }
@@ -183,9 +202,15 @@ export function serieDesdeFilas(filas = [], { base = 'ajustado' } = {}) {
  */
 export function planPreciosUs({
   simbolos = [], yaTengo = new Map(), hasta, min_puntos = MIN_PUNTOS_SERIE, cuenta = new Map(),
+  conVolumen = new Map(), dias_volumen = DIAS_VOLUMEN,
 } = {}) {
   const siembra = [], cola = [];
   const alDia = [];
+  // La fecha a partir de la cual queremos volumen. "Más operadas" mira el
+  // último día, pero se pide un mes para que el ranking no dependa de que la
+  // cosecha de HOY haya corrido: con la ventana, un festivo o un cron caído no
+  // dejan la tabla sin dato.
+  const desdeVol = hasta ? menosDias(hasta, dias_volumen) : null;
   for (const raw of simbolos) {
     const sym = up(raw);
     if (!sym) continue;
@@ -193,10 +218,36 @@ export function planPreciosUs({
     const n = num(cuenta.get(sym)) ?? 0;
     // Sin serie, o con una demasiado corta para anclar YTD: se siembra entera.
     if (!ultima || n < min_puntos) { siembra.push({ symbol: sym, motivo: !ultima ? 'sin serie' : `serie corta (${n} puntos)` }); continue; }
-    if (hasta && ultima >= hasta) { alDia.push(sym); continue; }
+    if (hasta && ultima >= hasta) {
+      // AL DÍA EN CIERRES PERO SIN VOLUMEN. La columna nació después que la
+      // tabla, así que un símbolo con un año de cierres no tiene ni un día de
+      // volumen y, por el criterio de arriba, nunca se volvería a pedir: se
+      // quedaría fuera de "más operadas" para siempre.
+      //
+      // El mismo `range=1mo` que ya se pide trae el volumen histórico, así que
+      // el relleno no cuesta una petición nueva ni un job aparte: es un motivo
+      // más para entrar a la cola, y se apaga solo en cuanto la columna se
+      // llena. Lo pidió Lety (2026-10-02): "que funcione desde el primer día".
+      const volHasta = conVolumen.get(sym) || null;
+      if (desdeVol && (!volHasta || volHasta < desdeVol)) {
+        cola.push({ symbol: sym, desde: volHasta, hasta: hasta || null, motivo: volHasta ? `volumen sólo hasta ${volHasta}` : 'sin volumen' });
+        continue;
+      }
+      alDia.push(sym); continue;
+    }
     cola.push({ symbol: sym, desde: ultima, hasta: hasta || null });
   }
   return { siembra, cola, al_dia: alDia.length, al_dia_simbolos: alDia.slice(0, 20) };
+}
+
+/** Cuántos días de volumen se quieren tener siempre cubiertos. */
+export const DIAS_VOLUMEN = 30;
+
+/** Una fecha ISO menos N días, en ISO. Sin librerías ni husos: es una fecha. */
+export function menosDias(fechaIso, n) {
+  const t = Date.parse(`${String(fechaIso).slice(0, 10)}T12:00:00Z`);
+  if (!Number.isFinite(t)) return null;
+  return new Date(t - n * 86400000).toISOString().slice(0, 10);
 }
 
 /**

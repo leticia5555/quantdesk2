@@ -93,6 +93,79 @@ function mencionaParametro(texto) {
   return { menciona: true, parametro: encontrado, rango };
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// LA CLASIFICACIÓN DE UN 402 DE FMP — una sola, para todas las fronteras
+//
+// Hubo DOS clasificadores (este archivo y reaccion-fuentes.js) y con la misma
+// respuesta real de FMP decían cosas distintas: el 402 por `limit` salía
+// `parametro_fuera_de_rango` acá y `parametro_de_pago` allá. Ahora hay uno.
+//
+// Las respuestas REALES (tests/fixtures/fmp-402-reales.mjs) traen una
+// ETIQUETA de FMP antes del texto, y esa etiqueta dice el TIPO de restricción:
+//
+//   'Special Parameters : The values for 'limit' must be between 0 and 10 …'
+//       → el valor está fuera del RANGO que el plan acepta. Se arregla con un
+//         valor dentro del rango.
+//   'Special Endpoint : This value set for 'symbol' is not available …'
+//   'Special Endpoint : This value set for 'period' is not available …'
+//       → ESE valor no está disponible en el plan. No hay un valor "más chico"
+//         que lo arregle.
+//
+// La etiqueta dice QUÉ TIPO; el nombre entre comillas dice CUÁL parámetro. Hacen
+// falta los dos: `symbol` y `period` comparten "Special Endpoint" y se leen
+// distinto — una empresa fuera del plan es un artefacto POR EMPRESA (cubeta
+// sin_acceso_al_simbolo), y `period=quarter` es una función de pago.
+//
+// Lo que NO se sabe, se dice: hay UN ejemplo real de cada forma. Si llega una
+// etiqueta o una forma nueva, se clasifica por lo que se pueda leer y el
+// `detalle` lo admite en vez de forzarla a una de las conocidas.
+const RE_ETIQUETA_FMP = /special\s+(parameters?|endpoint)\b/i;
+
+function clasifica402Fmp(texto, { symbol = null } = {}) {
+  const t = String(texto || '');
+  const p = mencionaParametro(t);
+  // Cualquier "Special <Palabra> :" es una etiqueta de FMP. Las dos conocidas se
+  // normalizan; una desconocida se conserva TAL CUAL, para que el detalle pueda
+  // decir "esta etiqueta no la conocemos" en vez de "no trae etiqueta".
+  const mE = t.match(/special\s+([a-z]+)\s*:/i) || t.match(RE_ETIQUETA_FMP);
+  const etiqueta = !mE ? null
+    : /^parameters?$/i.test(mE[1]) ? 'Special Parameters'
+      : /^endpoint$/i.test(mE[1]) ? 'Special Endpoint'
+        : `Special ${mE[1]}`;
+  const base = { etiqueta_fmp: etiqueta, parametro: p.parametro, rango: p.rango };
+  const quien = symbol ? ` a ${symbol}` : ' a esta empresa';
+
+  // `symbol` primero, venga con la etiqueta que venga: es la empresa.
+  if (p.menciona && p.parametro === 'symbol') {
+    return { ...base, tipo: 'valor_no_disponible', motivo: 'sin_acceso_al_simbolo',
+      detalle: `HTTP 402${etiqueta ? ` (FMP: "${etiqueta}")` : ''} y el cuerpo nombra \`symbol\`: el plan NO cubre${quien}. Es una restricción del plan sobre ESTA empresa — un artefacto, no un dato. No es la key ni el limit.` };
+  }
+  if (etiqueta === 'Special Parameters' && p.menciona) {
+    const r = p.rango ? ` (${p.rango.min ?? '?'}..${p.rango.max})` : '';
+    return { ...base, tipo: 'rango_de_parametro', motivo: 'parametro_fuera_de_rango',
+      detalle: `HTTP 402 (FMP: "Special Parameters"): el valor de \`${p.parametro}\` está fuera del rango que el plan acepta${r}. Se arregla con un valor dentro del rango${p.parametro === 'limit' ? ' — o, para `limit`, SIN mandarlo: sin el parámetro FMP devuelve TODA la historia' : ''}. No es la key.` };
+  }
+  if (etiqueta === 'Special Endpoint' && p.menciona && /value set for/i.test(t)) {
+    return { ...base, tipo: 'valor_no_disponible', motivo: 'parametro_de_pago',
+      detalle: `HTTP 402 (FMP: "Special Endpoint"): el valor pedido para \`${p.parametro}\` no está disponible en este plan. No hay un valor más chico que lo arregle: es una función de pago. No es la key.` };
+  }
+  if (etiqueta === 'Special Endpoint' && /this endpoint is not available/i.test(t)) {
+    return { ...base, tipo: 'endpoint_no_disponible', motivo: 'endpoint_de_pago',
+      detalle: 'HTTP 402 (FMP: "Special Endpoint") y el texto dice que el ENDPOINT entero no está en el plan. No es la key ni un parámetro. (Esta forma no tiene todavía una respuesta real anclada en los fixtures.)' };
+  }
+  // Sin etiqueta, o con una forma que no se conoce: se clasifica por lo que se
+  // pueda leer, y se dice que la forma es nueva.
+  if (p.menciona) {
+    return { ...base, tipo: p.rango ? 'rango_de_parametro' : 'parametro_sin_forma_conocida',
+      motivo: p.rango ? 'parametro_fuera_de_rango' : 'parametro_nombrado',
+      detalle: p.rango
+        ? `HTTP 402: el cuerpo nombra \`${p.parametro}\` y su rango (${p.rango.min ?? '?'}..${p.rango.max}). Se arregla con un valor dentro del rango, no con la key.`
+        : `HTTP 402: el cuerpo nombra \`${p.parametro}\` pero${etiqueta ? ` la forma ("${etiqueta}") no es una de las conocidas` : ' no trae la etiqueta de FMP'}, así que no se afirma si es un rango o un valor de pago. El cuerpo va completo.` };
+  }
+  return { ...base, tipo: 'desconocido', motivo: 'pago_requerido',
+    detalle: 'HTTP 402 y el cuerpo no nombra ningún parámetro. Puede ser el plan, pero NO se afirma: el cuerpo va completo arriba y lo lee una persona.' };
+}
+
 // Una sola forma de fila, con los cinco conteos numéricos y la fecha en ISO.
 // Lo que no se puede leer se descarta CONTADO, no en silencio.
 function normalizaGrades(crudo) {
@@ -169,23 +242,11 @@ async function gradesHistorical(symbol, {
     // Ahora el CUERPO decide, y cuando el cuerpo no alcanza para decidir, se
     // dice que no alcanza en vez de elegir una de las dos.
     if (r.status === 402) {
-      const p = mencionaParametro(muestra);
-      // `symbol` NO es "un valor fuera de rango": es una empresa que el plan no
-      // cubre. La versión anterior lo metía en `parametro_fuera_de_rango` con el
-      // texto "NO es un problema de plan" — falso justo en este caso, que es el
-      // que apareció en el censo de 35 de 75. Tres salidas, cada una con un texto
-      // que el dato sostiene:
-      if (p.menciona && p.parametro === 'symbol') {
-        return { ok: false, symbol: sym, url_sin_key: url, status: 402, ms, ...cuerpo,
-          motivo: 'sin_acceso_al_simbolo', parametro: 'symbol', rango: null,
-          detalle: `HTTP 402 y el cuerpo nombra \`symbol\`: el plan NO cubre a ${sym}. Es una restricción del plan sobre ESTA empresa — un artefacto, no un dato sobre la serie. No es la key y no es el limit.` };
-      }
+      // UNA clasificación para todas las fronteras: ver `clasifica402Fmp`.
+      const c = clasifica402Fmp(muestra, { symbol: sym });
       return { ok: false, symbol: sym, url_sin_key: url, status: 402, ms, ...cuerpo,
-        motivo: p.menciona ? 'parametro_fuera_de_rango' : 'pago_requerido',
-        parametro: p.parametro, rango: p.rango,
-        detalle: p.menciona
-          ? `HTTP 402, pero el cuerpo nombra el parámetro \`${p.parametro}\`${p.rango ? ` y su rango aceptado (${p.rango.min}..${p.rango.max})` : ''}: ese VALOR del parámetro no está en el plan. Se arregla cambiando el valor, no la key.`
-          : 'HTTP 402 y el cuerpo no nombra ningún parámetro. Puede ser el plan, pero NO se afirma: el cuerpo va completo arriba y lo lee una persona.' };
+        motivo: c.motivo, tipo_402: c.tipo, etiqueta_fmp: c.etiqueta_fmp,
+        parametro: c.parametro, rango: c.rango, detalle: c.detalle };
     }
     if (!r.ok) {
       return { ok: false, symbol: sym, url_sin_key: url, motivo: 'http_error', status: r.status, ms, ...cuerpo };
@@ -314,6 +375,6 @@ function interpretaSmoke(variantes, { key = null } = {}) {
 }
 
 export {
-  gradesHistorical, normalizaGrades, interpretaSmoke, mencionaParametro,
+  gradesHistorical, normalizaGrades, interpretaSmoke, mencionaParametro, clasifica402Fmp, RE_ETIQUETA_FMP,
   BASE, LIMIT_POR_DEFECTO, LIMIT_MAXIMO_DEL_PLAN, LIMIT_SMOKE_ALTO, VALID_TICKER,
 };

@@ -36,6 +36,7 @@ process.env.CRON_SECRET = SECRET;
 process.env.FMP_API_KEY = 'fake-key-para-el-test';
 
 const { default: handler } = await import('../api/grades-backtest.js');
+const { FMP_402_LIMIT, FMP_402_SYMBOL } = await import('./fixtures/fmp-402-reales.mjs');
 const { V0_UNIVERSE } = await import('../api/_lib/pead-universe.js');
 
 // ═══════════════════ fixture ═══════════════════
@@ -133,6 +134,8 @@ function mockFetch(fx, { forzar429Desde = null, httpError = null, todos = null }
       if (todosLimitTope !== null && lim !== undefined && Number(lim) > todosLimitTope) {
         // 402 con el rango en el cuerpo: es lo que FMP contestó de verdad.
         return { ok: false, status: 402,
+          // SINTÉTICO: el tope es parametrizable para probar distintos rangos.
+          // La forma real (con "Special Parameters") está en el fixture verbatim.
           text: async () => JSON.stringify({ 'Error Message': 'Limit must be between 0 and ' + todosLimitTope }),
           headers: { get: () => 'application/json' } };
       }
@@ -525,23 +528,25 @@ console.log('el censo NO manda limit: es el parámetro que RECORTA');
 
 console.log('un 402 por limit NO se clasifica como auth_error');
 {
-  global.fetch = mockFetch(FX, { todos: { status: 402, body: '{"Error Message":"Limit must be between 0 and 10"}' } });
+  // La respuesta REAL de FMP (fixture verbatim del smoke de NKE con limit=1000).
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: FMP_402_LIMIT } });
   const r = mockRes();
   await handler(GET({ secret: SECRET, fase: '0' }), r);
   const f = r.body.cobertura.simbolos_sin_grades[0];
   ok(f.motivo === 'parametro_fuera_de_rango', 'el motivo es el parámetro, no auth', f.motivo);
-  ok(f.status === 402 && /between 0 and 10/.test(f.body_sample || ''), 'con el status y el cuerpo que lo dicen');
-  // El texto dice lo que el dato sostiene: el VALOR no está en el plan, y se
-  // arregla cambiando el valor, no la key. La versión anterior decía "NO es un
-  // problema de plan", que es falso para `period=quarter` (un valor de pago).
-  ok(/ese VALOR del parámetro no está en el plan/.test(f.detalle || '') && /no la key/.test(f.detalle || ''),
-    'el detalle dice que es el VALOR y que no se toca la key — sin afirmar que "no es el plan"', f.detalle);
+  ok(f.status === 402 && /between 0 and 10/.test(f.body_sample || ''), 'con el status y el cuerpo REAL que lo dicen');
+  // Lo dice la ETIQUETA de FMP ("Special Parameters"): es un rango. El texto lo
+  // dice, y no culpa ni al plan entero ni a la key.
+  ok(/Special Parameters/.test(f.detalle || '') && /fuera del rango que el plan acepta \(0\.\.10\)/.test(f.detalle || ''),
+    'el detalle cita la etiqueta de FMP y el rango real', f.detalle);
+  ok(/No es la key/.test(f.detalle || ''), 'y que no es la key');
   ok(!/NO un problema de plan/.test(f.detalle || ''), 'y ya no afirma "NO es un problema de plan"');
   ok(!/auth/.test(f.motivo), 'en ninguna forma dice auth');
 
   // Un 402 de `symbol` — el del censo de 35 de 75 — NO es "un valor fuera de
   // rango, no es el plan": es justamente el plan, sobre esa empresa.
-  global.fetch = mockFetch(FX, { todos: { status: 402, body: "Premium Query Parameter: This value set for 'symbol' is not available under your current subscription please visit our subscription page to upgrade your plan" } });
+  // La respuesta REAL (fixture verbatim: el primer fallo del censo, ABNB).
+  global.fetch = mockFetch(FX, { todos: { status: 402, body: FMP_402_SYMBOL } });
   const sym = mockRes();
   await handler(GET({ secret: SECRET, fase: '0' }), sym);
   const fs = sym.body.cobertura.simbolos_sin_grades[0];

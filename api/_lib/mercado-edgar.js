@@ -238,19 +238,34 @@ export function accionesDeCompanyConcept(json, {
   const u = orden[0];
   const portada = String(u.end);
 
-  // ── VARIAS CLASES DE ACCIONES: NO SE ELIGE UNA ───────────────────────
+  // ── VARIAS CLASES DE ACCIONES ────────────────────────────────────────
   // BX presenta una línea de portada por clase, y la API de companyconcept no
   // dice de qué clase es cada hecho —la clase vive en el contexto XBRL, que acá
-  // no viaja—. Así que varios conteos DISTINTOS para la MISMA portada significa
-  // que tomar el primero cuenta de menos, y sumarlos es adivinar que están
-  // todos y sin repetir. Ninguna de las dos: gris con la causa.
+  // no viaja—. Tomar el primero cuenta de menos, así que `acciones` sigue en
+  // null y el conteo NO entra por la puerta de siempre.
+  //
+  // LO QUE SÍ SE PUEDE: la SUMA viaja aparte, como candidata. Sumar es adivinar
+  // que están todas y sin repetir —dos clases con el MISMO conteo se colapsan
+  // acá y la suma quedaría corta—, y por eso la suma no se pinta sola: sólo se
+  // acepta si un conteo INDEPENDIENTE (el de Finnhub) la confirma dentro del
+  // mismo techo del 5% que Lety fijó el 2026-09-28 para MNST/APH/VMRK. Si la
+  // suma se comió una clase o contó una de más, no concuerda y se queda gris
+  // con su causa. Es la misma regla de siempre: dos mediciones que coinciden
+  // valen; una sola que podría estar incompleta, no.
+  //
+  // NO SE PUDO COMPROBAR CONTRA EDGAR DE VERDAD: este contenedor no tiene
+  // salida a sec.gov (403 del proxy), así que la forma viene de la respuesta
+  // que el job ya guardó y la aritmética se prueba con fixtures. Lo que
+  // protege al mapa no es que yo haya visto el JSON de BX: es el acuerdo.
   const mismaPortada = orden.filter((x) => String(x.end) === portada && String(x.filed || '') === String(u.filed || ''));
   const valores = [...new Set(mismaPortada.map((x) => num(x.val)))];
   if (valores.length > 1) {
+    const conteos = valores.slice().sort((a, b) => b - a);
     return {
       ...base, fecha_portada: portada, presentado_en: u.filed ? String(u.filed) : null, form: String(u.form),
-      clases: valores.length, conteos: valores.sort((a, b) => b - a),
-      motivo: `EDGAR reporta ${valores.length} conteos distintos para la portada del ${portada} (${valores.join(' / ')}): son varias clases de acciones y la API no dice cuál es cuál, así que tomar uno contaría de menos y sumarlos sería adivinar`,
+      clases: conteos.length, conteos,
+      suma_clases: conteos.reduce((a, b) => a + b, 0),
+      motivo: `EDGAR reporta ${conteos.length} conteos distintos para la portada del ${portada} (${conteos.join(' / ')}): son varias clases de acciones y la API no dice cuál es cuál, así que tomar uno contaría de menos; la suma (${conteos.reduce((a, b) => a + b, 0)}) sólo vale si otro conteo la confirma`,
     };
   }
 
@@ -300,6 +315,7 @@ export function mesesEntre(fechaIso, hoy = new Date()) {
  */
 export function veredictoCapEdgar({
   symbol, declarada_usd, acciones_edgar, acciones_finnhub, precio_usd, fecha_portada,
+  suma_clases_edgar = null, clases_edgar = null,
 }, umbral = UMBRAL_EDGAR_PCT) {
   const dec = num(declarada_usd);
   const acc = num(acciones_edgar);
@@ -309,6 +325,41 @@ export function veredictoCapEdgar({
   const accF = num(acciones_finnhub);
   const px = num(precio_usd);
   const base = { symbol, via: 'edgar', fecha_portada: fecha_portada || null, umbral_pct: umbral };
+
+  const suma = num(suma_clases_edgar);
+  const clases = num(clases_edgar);
+
+  // ── LA SUMA DE CLASES, SÓLO SI OTRO CONTEO LA CONFIRMA (BX) ──────────
+  // Va ANTES del descarte por falta de `acciones`: para una emisora de varias
+  // clases, `acciones` siempre es null a propósito —ningún conteo suelto vale—
+  // y la suma es lo único que puede sostener un tamaño. Nunca se contrasta
+  // contra la cap DECLARADA: en una emisora de varias clases la declarada es
+  // justo el número del que se sospecha, así que arbitrar con ella sería
+  // preguntarle al sospechoso. Sólo el acuerdo con un conteo independiente.
+  if ((acc == null || acc <= 0) && suma != null && suma > 0 && px != null && px > 0) {
+    const dif = accF != null && accF > 0 ? errorPct(accF, suma) : null;
+    if (dif != null && Math.abs(dif) <= UMBRAL_ACUERDO_ACCIONES_PCT) {
+      const capSuma = suma * px;
+      return {
+        ...base, estado: 'verificada', auditable: true,
+        cap_usd: capSuma,
+        fuente: 'calc: edgar×neon',
+        via: 'edgar_suma_clases',
+        clases, acciones_acuerdo_pct: dif, umbral_acuerdo_pct: UMBRAL_ACUERDO_ACCIONES_PCT,
+        error_pct: dec != null && dec > 0 ? errorPct(dec, capSuma) : null,
+        multiplo: dec != null && dec > 0 ? dec / capSuma : null,
+        motivo: null,
+        nota: `acciones sumadas de las ${clases} clases de la portada (${(suma / 1e6).toFixed(1)}M): Finnhub cuenta ${(accF / 1e6).toFixed(1)}M, ${Math.abs(dif).toFixed(1)}% de diferencia, techo ${UMBRAL_ACUERDO_ACCIONES_PCT}%`,
+      };
+    }
+    return {
+      ...base, estado: 'gris_punteado', auditable: true, cap_usd: null, error_pct: null, multiplo: null,
+      fuente: null, clases,
+      motivo: dif == null
+        ? `EDGAR da ${clases} clases de acciones y no hay un segundo conteo con el que confirmar la suma (${(suma / 1e6).toFixed(1)}M)`
+        : `la suma de las ${clases} clases (${(suma / 1e6).toFixed(1)}M) no concuerda con el conteo de Finnhub (${(accF / 1e6).toFixed(1)}M): ${Math.abs(dif).toFixed(1)}% de diferencia, techo ${UMBRAL_ACUERDO_ACCIONES_PCT}% — o falta una clase o sobra`,
+    };
+  }
 
   if (acc == null || acc <= 0 || px == null || px <= 0) {
     return {

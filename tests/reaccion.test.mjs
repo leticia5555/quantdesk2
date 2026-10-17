@@ -22,7 +22,7 @@ import {
   CRITERIOS_REACCION, retornoVentana, retornoSaltoNocturno, sorpresaEps, sorpresaIngresos,
   clasificaFuenteEstimado, ingresosTrimestralesXbrl, ingresoDelEvento,
   htmlATexto, parrafosDeGuia, eligeExhibit991, pValorT, pearson, ols,
-  analizaReaccion, aciertoDireccional, advertenciasFijas, renderCensoMd, renderAnalisisMd, SENALES,
+  analizaReaccion, aciertoDireccional, advertenciasFijas, renderCensoMd, renderAnalisisMd, SENALES, diagnosticaCobertura,
 } from '../api/_lib/reaccion.js';
 import { CRITERIOS_F2 } from '../api/_lib/earnings-beat-analyze.js';
 import { readFileSync } from 'node:fs';
@@ -231,6 +231,42 @@ ok(Math.abs(m.beta[0] - 1) < 1e-6 && Math.abs(m.beta[1] - 2) < 1e-6 && Math.abs(
 const m1 = ols(xs.map((x) => [x]), ys);
 ok(Math.abs(m1.r2 - pr.r * pr.r) < 1e-9, 'con una sola variable, R² de la regresión = r²');
 ok(ols([[1, 1], [2, 2], [3, 3], [4, 4]], [1, 2, 3, 4]).motivo === 'colinealidad', 'columnas colineales: motivo');
+
+console.log('DIAGNÓSTICO DE COBERTURA: ¿el 0 es un hecho o un bug?');
+
+const EVS = [
+  { symbol: 'ACN', report_date: '2025-12-18' }, { symbol: 'ACN', report_date: '2026-03-19' },
+  { symbol: 'NKE', report_date: '2025-12-18' }, { symbol: 'NKE', report_date: '2026-06-26' },
+];
+const fila = (date, conReal = true) => ({ date, revenueEstimate: 10e9, revenueActual: conReal ? 10.1e9 : null });
+
+// 1. La cicatriz del PEAD: la fuente solo sirve el último mes → HECHO.
+const ventana = diagnosticaCobertura(EVS, new Map([['ACN', [fila('2026-09-25')]], ['NKE', [fila('2026-10-01')]]]));
+ok(ventana.causa === 'ventana_de_la_fuente', 'filas solo FUERA de la ventana de los eventos → el 0 es un hecho de la fuente', ventana.causa);
+ok(ventana.rango_fuente.desde === '2026-09-25' && ventana.rango_fuente.hasta === '2026-10-01', 'publica el rango de fechas que devolvió la fuente');
+ok(ventana.ventana_eventos.desde === '2025-12-18' && ventana.ventana_eventos.hasta === '2026-06-26', 'y la ventana de los eventos');
+ok(ventana.filas_con_dos_cifras === 2 && ventana.filas_con_dos_cifras_en_ventana === 0, 'con las dos cifras, pero ninguna dentro');
+ok(/El 0 es un HECHO de la fuente, no del emparejamiento/.test(ventana.lectura), 'y lo dice en letras', ventana.lectura);
+
+// 2. Las filas SÍ están en la ventana, corridas 3 días → el cruce falla → BUG.
+const corridas = diagnosticaCobertura(EVS, new Map([
+  ['ACN', [fila('2025-12-21'), fila('2026-03-22')]], ['NKE', [fila('2025-12-21'), fila('2026-06-29')]],
+]));
+ok(corridas.causa === 'emparejamiento_sospechoso', 'filas DENTRO de la ventana y 0 cruces → apunta al emparejamiento', corridas.causa);
+ok(corridas.distancia_a_la_fila_mas_cercana['2-7'] === 4, 'con los 4 eventos a 2–7 días de su fila: la firma de un cruce corrido', JSON.stringify(corridas.distancia_a_la_fila_mas_cercana));
+ok(corridas.ejemplos[0].dias === 3 && corridas.ejemplos[0].fila_mas_cercana, 'los ejemplos muestran primero los que quedaron CERCA sin cruzar');
+
+// 3. Las filas están, pero sin el real → no es la ventana ni el cruce.
+const sinReal = diagnosticaCobertura(EVS, new Map([['ACN', [fila('2025-12-18', false)]]]));
+ok(sinReal.causa === 'sin_dos_cifras', 'filas sin el real: ni ventana ni cruce, faltan las cifras', sinReal.causa);
+ok(diagnosticaCobertura(EVS, new Map()).causa === 'sin_filas', 'sin filas: lo dice');
+
+// 4. Parcial y completa.
+const parcialD = diagnosticaCobertura(EVS, new Map([['ACN', [fila('2025-12-18'), fila('2026-03-20')]]]));
+ok(parcialD.causa === 'parcial' && parcialD.eventos_cruzados === 2, 'ACN cruza (±1 día incluido) y NKE no tiene filas: parcial', `${parcialD.causa} ${parcialD.eventos_cruzados}`);
+ok(parcialD.distancia_a_la_fila_mas_cercana.sin_filas_del_simbolo === 2, 'y los de NKE se cuentan como "sin filas del símbolo"');
+const completaD = diagnosticaCobertura(EVS, new Map([['ACN', [fila('2025-12-18'), fila('2026-03-19')]], ['NKE', [fila('2025-12-18'), fila('2026-06-26')]]]));
+ok(completaD.causa === 'completa' && completaD.eventos_cruzados === 4, 'si cruzan todos, la causa es "completa", no "parcial"', completaD.causa);
 
 console.log('el VEREDICTO: cobertura → candado → números');
 

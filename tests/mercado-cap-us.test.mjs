@@ -614,3 +614,46 @@ test('el acuerdo entre conteos llega al veredicto con las unidades correctas', (
   assert.equal(v.cap_usd, 2_080_000_000 * 57.7);
   assert.match(v.nota, /dos conteos de acciones coinciden/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// BX: LA SUMA DE CLASES, DE LA TABLA AL CUADRO
+//
+// `acciones_edgar_millones` se queda vacía a propósito cuando hay varias
+// clases, así que esto comprueba que la fila NO se va por el camino de "EDGAR
+// no dio acciones" y que las unidades sobreviven el viaje: la tabla guarda
+// millones y el árbitro compara acciones.
+// ═══════════════════════════════════════════════════════════════════════
+const BX = {
+  symbol: 'BX', nombre: 'Blackstone', cap_moneda: 'USD', cap_fuente: 'finnhub:metric',
+  market_cap: 170_000, acciones_millones: 1_225,
+  acciones_edgar_millones: null, acciones_edgar_portada: '2026-07-31',
+  acciones_edgar_clases: 2, acciones_edgar_suma_millones: 1_210,
+  edgar_consultada_en: '2026-10-02T00:00:00Z', edgar_consulta_motivo: 'varias clases',
+};
+
+test('BX: la suma de clases llega al veredicto y se verifica con el acuerdo', () => {
+  const f = filaVeredictoCapUs(BX, { precio_usd: 140 });
+  assert.equal(f.edgar, null, 'ningún conteo suelto: la puerta normal sigue cerrada');
+  assert.deepEqual(f.edgar_clases, { clases: 2, suma: 1_210_000_000, fecha_portada: '2026-07-31' });
+
+  const v = veredictoCapUs(f);
+  assert.equal(v.estado, 'verificada', v.motivo);
+  assert.equal(v.via, 'edgar_suma_clases');
+  assert.equal(v.cap_usd, 1_210_000_000 * 140);
+  assert.match(v.nota, /acciones sumadas de las 2 clases/);
+});
+
+test('BX: con la suma lejos del conteo de Finnhub, el cuadro se queda gris', () => {
+  const f = filaVeredictoCapUs({ ...BX, acciones_edgar_suma_millones: 720 }, { precio_usd: 140 });
+  const v = veredictoCapUs(f);
+  assert.equal(v.estado, 'gris_punteado');
+  assert.equal(v.cap_usd, null);
+  assert.match(v.motivo, /no concuerda con el conteo de Finnhub/);
+});
+
+test('una clase sola no abre la puerta de la suma', () => {
+  // `acciones_edgar_clases = 1` no es "varias clases": es el caso normal, y la
+  // suma de una sola clase sería el conteo suelto que justamente no vale.
+  const f = filaVeredictoCapUs({ ...BX, acciones_edgar_clases: 1 }, { precio_usd: 140 });
+  assert.equal(f.edgar_clases, null);
+});

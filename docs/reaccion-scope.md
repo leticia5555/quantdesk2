@@ -247,6 +247,35 @@ Los ingresos reportados **solos no hacen una sorpresa**: sin el estimado anterio
 no hay contra qué compararlos. Por eso este conteo es una **auditoría** de la
 fuente elegida (¿su ingreso real coincide con el de EDGAR, ±1%?), no la señal.
 
+### ¿Un 0 de cobertura es un hecho o un bug?
+
+Nació de Finnhub: respondió **75 de 75 símbolos**, la muestra traía estimado y
+real, y aun así cubrió **0 de 240 eventos**. Hay dos explicaciones y se arreglan
+distinto:
+
+- la fuente sirve una **ventana de fechas** que no se solapa con los eventos (la
+  cicatriz del PEAD: fechas futuras sí, ventanas históricas cero) → el 0 es un
+  **hecho**, y el NO ENTRA queda confirmado;
+- las filas sí están en la ventana pero el **cruce** (símbolo, fecha ±1) falla →
+  el 0 es un **bug**, y el frente entraría.
+
+Así que cada fuente barrida publica un `diagnostico` (`diagnosticaCobertura`, pura
+y testeada) con lo necesario para distinguirlas: el **rango de fechas** que
+devolvió, cuántas filas traen **las dos cifras**, cuántas caen **dentro de la
+ventana de los eventos**, y la **distancia** de cada evento a la fila más cercana
+de su símbolo (0–1, 2–7, 8–31, 32+ días, o sin filas). La `causa` sale de esos
+números:
+
+| Causa | Qué dice |
+|---|---|
+| `ventana_de_la_fuente` | ninguna fila con las dos cifras cae en la ventana: **hecho** de la fuente |
+| `emparejamiento_sospechoso` | hay filas en la ventana y 0 cruces: apunta al **cruce** |
+| `sin_dos_cifras` / `sin_filas` | no hay con qué cruzar |
+| `parcial` / `completa` | cruzan algunos / todos |
+
+Los ejemplos muestran primero los eventos que quedaron **cerca sin cruzar** (si
+hay un bug de cruce, está ahí).
+
 ### 2. Guía
 
 10 símbolos (NKE primero si está entre los eventos — es el caso que lo motiva —,
@@ -354,17 +383,43 @@ regresión con el mensaje real de plan y con *"from 2019 to 2026"*.
    causa (`sin_acceso_al_simbolo`), y el texto del caso uniforme afirma solo lo
    probado: el limit sí (falla igual con y sin él), el símbolo no (se probó uno).
 
-### Lo que los tests cubren, y lo que no
+### Los fixtures REALES, y la etiqueta de FMP
 
-Los tests cubren **los dos mensajes**: el de PLAN y el de PARÁMETRO, **con y sin**
-la cola *"…subscription page to upgrade your plan"* — que es el caso donde los dos
-bugs se tocan, porque un mensaje de parámetro con esa cola tiene `page` y `to`
-además del nombre entre comillas. Para `limit`, `period` y `symbol`.
+Las tres respuestas 402 de FMP están ahora **verbatim** en
+`tests/fixtures/fmp-402-reales.mjs`, con su procedencia (el smoke de NKE con
+`limit=1000`, el primer fallo del censo —ABNB— y una corrida a mano con
+`period=quarter`). Se copian tal cual, con sus rarezas: comillas desbalanceadas
+(`'Special Parameters : The values for 'limit'…`) y el de `symbol` cortado en
+`https://financialmo`, que es como lo corta el `body_sample`.
 
-**Pero esos textos reproducen el formato de FMP, no son copias literales** de lo
-que contestó en producción. Las respuestas verbatim están en el `body_sample` de
-los smokes que ya corrió quien lee esto; pegadas como fixtures, el test queda
-anclado a lo que FMP dice de verdad y no a mi reconstrucción.
+**La pista que trajeron:** FMP antepone una ETIQUETA, y la etiqueta dice el
+**tipo** de restricción:
+
+| Respuesta real | Etiqueta | Tipo | Motivo |
+|---|---|---|---|
+| `limit` | **Special Parameters** | el valor está fuera del RANGO del plan (0..10) | `parametro_fuera_de_rango` |
+| `symbol` | **Special Endpoint** | ese valor no está en el plan — esa empresa | `sin_acceso_al_simbolo` |
+| `period` | **Special Endpoint** | ese valor no está en el plan — función de pago | `parametro_de_pago` |
+
+La etiqueta sola **no alcanza**: `symbol` y `period` comparten "Special Endpoint"
+y se leen distinto (una empresa fuera del plan es un artefacto por empresa;
+`period=quarter` es una función de pago). La regla usa la **etiqueta para el
+tipo y el nombre entre comillas para el cuál**.
+
+**Lo que destapó anclar los fixtures:** había DOS clasificadores de 402 (uno en
+la frontera de grades, otro en la de reaccion) y con la respuesta real por
+`limit` **decían cosas distintas** — `parametro_fuera_de_rango` en uno,
+`parametro_de_pago` en el otro. Ahora hay uno solo, `clasifica402Fmp`
+(`api/_lib/fmp-grades.js`), y un test verifica que las dos fronteras dan el mismo
+motivo para cada respuesta real. Y los mocks de los tests end-to-end usaban mis
+reconstrucciones, a las que les faltaba la etiqueta: con la regla nueva, una
+reconstrucción sin etiqueta ya no pasaba por real. Ahora los mocks usan el texto
+verbatim.
+
+Lo que sigue SIN respuesta real anclada se dice: el 402 de "endpoint entero no
+disponible" (`endpoint_de_pago`) y los casos sin etiqueta son **sintéticos**, y
+una etiqueta desconocida se conserva tal cual y se declara como desconocida en
+vez de forzarse a una de las tres.
 
 ---
 

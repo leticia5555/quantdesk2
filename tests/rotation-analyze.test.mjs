@@ -55,8 +55,22 @@ function rng(seed) {
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
 }
 
-const HOY = new Date();
-const AYER = new Date(HOY.getTime() - 86400000).toISOString().slice(0, 10);
+// ── EL CALENDARIO DEL FIXTURE VA CLAVADO, NO PEGADO AL RELOJ ─────
+// Era `new Date() - 1 día`, así que el calendario hábil del fixture se corría un
+// día cada día: cambiaban qué fechas caen en fin de semana y, con ellas, qué
+// ventana de 756 sesiones entra al backtest. La serie de precios es
+// determinista (RNG con semilla), pero la MUESTRA no lo era, y un t-stat que
+// queda cerca del corte lo cruza solo.
+//
+// El 2026-10-02 la suite amaneció en rojo —dos asserts de "GO FRÁGIL"— sin que
+// nadie hubiera tocado el código: el mismo commit estaba en verde el 29 de
+// septiembre. Una prueba que depende del día en que se corre no distingue un
+// bug de un martes.
+//
+// Se clava la fecha y deja de pasar. No se pierde cobertura: nada en
+// `dualmom-analyze.js` mira el reloj —el único `new Date()` de ese lado es el
+// `generado_en` de la respuesta de `api/rotation-analyze.js`—.
+const AYER = '2026-09-28';
 
 function calendarioHabil(n, fin) {
   const out = [];

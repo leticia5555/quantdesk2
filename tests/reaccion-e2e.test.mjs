@@ -45,6 +45,7 @@ process.env.SEC_REQ_POR_SEGUNDO = '10';   // el techo de la SEC: el test no tien
 process.env.REACCION_FINNHUB_PAUSA_MS = '0';  // la red es simulada: la pausa de 60/min no aplica
 
 const { default: handler } = await import('../api/reaccion-analyze.js');
+const { FMP_402_PERIOD, FMP_402_SYMBOL } = await import('./fixtures/fmp-402-reales.mjs');
 
 // ═══════════════════ fixture ═══════════════════
 // 6 empresas × 20 reportes trimestrales = 120 reportes. NKE va adentro porque
@@ -147,13 +148,13 @@ function mockFetch(opciones = {}) {
       return resp(200, chart(sym));
     }
     if (u.includes('financialmodelingprep.com/stable/analyst-estimates')) {
-      // El 402 REAL de FMP por un parámetro de pago: nombra `period` entre comillas.
-      return resp(402, "Premium Query Parameter: This value set for 'period' is not available under your current subscription please visit our subscription page to upgrade your plan");
+      // El 402 REAL de FMP por `period=quarter` (fixture verbatim): "Special Endpoint".
+      return resp(402, FMP_402_PERIOD);   // la respuesta REAL, verbatim
     }
     if (u.includes('financialmodelingprep.com/stable/earnings')) {
       const sym = decodeURIComponent((u.match(/symbol=([^&]+)/) || [])[1]);
       if ((opciones.fmpBloqueados || ['KO', 'PEP', 'XOM']).includes(sym)) {
-        return resp(402, "Premium Query Parameter: This value set for 'symbol' is not available under your current subscription");
+        return resp(402, FMP_402_SYMBOL);   // la respuesta REAL, verbatim (cortada como la corta el body_sample)
       }
       return resp(200, REPORTES.filter((x) => x.symbol === sym).map((x) => ({
         symbol: sym, date: x.report_date, epsActual: x.reported_eps, epsEstimated: x.estimated_eps,
@@ -164,6 +165,13 @@ function mockFetch(opciones = {}) {
     if (u.includes('finnhub.io/api/v1/calendar/earnings')) {
       const sym = decodeURIComponent((u.match(/symbol=([^&]+)/) || [])[1]);
       if (opciones.finnhubCaido) return resp(401, { error: 'Invalid API key.' });
+      // La cicatriz del PEAD: el plan gratis solo sirve una ventana reciente.
+      // Responde para TODOS los símbolos, con las dos cifras, pero solo filas de
+      // hace un mes — fuera de la ventana de los eventos.
+      if (opciones.finnhubSoloReciente) {
+        return resp(200, { earningsCalendar: [{ date: '2026-09-25', epsActual: 1, epsEstimate: 0.9, hour: 'bmo', quarter: 4,
+          revenueActual: 18.1e9, revenueEstimate: 18e9, symbol: sym, year: 2026 }] });
+      }
       const lista = REPORTES.filter((x) => x.symbol === sym && (!opciones.finnhubParcial || opciones.finnhubParcial.includes(sym)))
         .map((x) => ({ date: x.report_date, epsActual: x.reported_eps, epsEstimate: x.estimated_eps, hour: 'amc', quarter: 1,
           revenueActual: x.rev_est * (1 + x.rev_surpr), revenueEstimate: x.rev_est, symbol: sym, year: 2026 }));
@@ -283,6 +291,10 @@ let censoI;
     'FMP analyst-estimates period=quarter: 402 por el PARÁMETRO `period`, confirmado — no asumido', JSON.stringify(ae && { s: ae.status, m: ae.motivo, p: ae.parametro }));
   ok(!/auth/.test(ae.motivo) && !/rotar/.test(ae.detalle || ''), 'y NO se dice auth ni se manda a tocar la key');
   ok(/No es la key/.test(ae.detalle), 'se dice explícitamente que no es la key', ae.detalle);
+  // Con la respuesta REAL: FMP lo etiqueta "Special Endpoint" — un valor de pago,
+  // no un rango. Es lo que separa `period` de `limit` ("Special Parameters").
+  ok(/Special Endpoint/.test(ae.detalle) && /función de pago/.test(ae.detalle),
+    'y con la respuesta real, el detalle cita la etiqueta de FMP: es un valor de pago, no un rango', ae.detalle);
 
   // AV: UNA llamada, y la trampa del 200 con Note detectada.
   const av = sondas.find((s) => /Alpha Vantage/.test(s.fuente));
@@ -324,6 +336,25 @@ let censoI;
   ok(/Fuente elegida: \*\*Finnhub/.test(md.text), 'y la fuente elegida');
   ok(/Los ingresos REPORTADOS solos no hacen una sorpresa/.test(md.text), 'y por qué EDGAR solo no alcanza');
   ok(!md.text.includes('fmp-key-de-test'), 'el md tampoco filtra keys');
+
+  // ¿HECHO O BUG? Con la cobertura completa, el diagnóstico lo confirma.
+  ok(fh.diagnostico && fh.diagnostico.causa === 'completa', 'con Finnhub completo, el diagnóstico dice "completa"', fh.diagnostico && fh.diagnostico.causa);
+
+  // El caso que motivó el diagnóstico: Finnhub responde 6 de 6 con las dos
+  // cifras y aun así cubre 0. El diagnóstico tiene que decir POR QUÉ.
+  global.fetch = mockFetch({ finnhubSoloReciente: true });
+  const reciente = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', frente: 'ingresos' }), reciente);
+  const fhR = reciente.body.frentes.ingresos.estimados.cobertura_por_fuente.find((c) => /Finnhub/.test(c.fuente));
+  ok(fhR.cobertura === 0, 'Finnhub con solo filas recientes cubre 0 eventos', fhR.cobertura);
+  ok(fhR.diagnostico.causa === 'ventana_de_la_fuente', 'y el diagnóstico dice que es la VENTANA de la fuente, no el cruce', fhR.diagnostico.causa);
+  ok(fhR.diagnostico.filas_con_dos_cifras === SIMS.length && fhR.diagnostico.filas_con_dos_cifras_en_ventana === 0,
+    'todas las filas traen las dos cifras, ninguna cae en la ventana', JSON.stringify({ d: fhR.diagnostico.filas_con_dos_cifras, v: fhR.diagnostico.filas_con_dos_cifras_en_ventana }));
+  ok(fhR.diagnostico.rango_fuente.desde === '2026-09-25', 'con el rango que devolvió la fuente', JSON.stringify(fhR.diagnostico.rango_fuente));
+  const mdR = mockRes();
+  await handler(GET({ secret: SECRET, fase: '0', frente: 'ingresos', format: 'md' }), mdR);
+  ok(/¿el 0 es un hecho o un bug\?/.test(mdR.text) && /ventana_de_la_fuente/.test(mdR.text), 'el markdown imprime el diagnóstico por fuente');
+  ok(/Rango de fechas que devolvió: \*\*2026-09-25 → 2026-09-25\*\*/.test(mdR.text), 'con el rango, en letras');
 
   // Si Finnhub se cae y FMP cubre 50%, entra con FMP (justo en el borde).
   global.fetch = mockFetch({ finnhubCaido: true });

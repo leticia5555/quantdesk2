@@ -19,7 +19,7 @@
 //           SEC_USER_AGENT (opcional, edgar.js trae uno por defecto)
 // ═══════════════════════════════════════════════════════════════════
 
-import { mencionaParametro } from './fmp-grades.js';
+import { clasifica402Fmp } from './fmp-grades.js';
 import {
   crearCliente, bajarTickerMap, bajarSubmissionsCompleto, urlIndice, urlDocumento, pad10,
 } from './edgar.js';
@@ -61,16 +61,11 @@ function clasificaFallo(r, fuente) {
     return { motivo: 'auth_error', detalle: `HTTP ${r.status}: la key fue rechazada. Se arregla en las env vars, no en el código.` };
   }
   if (r.status === 402) {
-    const p = mencionaParametro(r.body_sample);
-    if (p.menciona && p.parametro === 'symbol') {
-      return { motivo: 'sin_acceso_al_simbolo', parametro: 'symbol',
-        detalle: 'HTTP 402 y el cuerpo nombra `symbol`: el plan no cubre esta empresa. Es un ARTEFACTO del plan, no un dato.' };
-    }
-    if (p.menciona) {
-      return { motivo: 'parametro_de_pago', parametro: p.parametro,
-        detalle: `HTTP 402 y el cuerpo nombra \`${p.parametro}\`: ese valor del parámetro es de pago en este plan. No es la key.` };
-    }
-    return { motivo: 'pago_requerido', detalle: 'HTTP 402 y el cuerpo no nombra ningún parámetro: puede ser el plan, pero NO se afirma. El cuerpo va completo.' };
+    // La MISMA clasificación que la frontera de grades. Antes había dos, y con
+    // la respuesta real del 402 por `limit` una decía `parametro_fuera_de_rango`
+    // y la otra `parametro_de_pago`.
+    const c = clasifica402Fmp(r.body_sample, { symbol: r.symbol || null });
+    return { motivo: c.motivo, parametro: c.parametro, tipo_402: c.tipo, etiqueta_fmp: c.etiqueta_fmp, detalle: c.detalle };
   }
   if (r.status === 429) return { motivo: 'rate_limit', detalle: 'HTTP 429: cuota agotada.' };
   return { motivo: 'http_error', detalle: `HTTP ${r.status}.` };
@@ -91,7 +86,7 @@ async function fmpAnalystEstimatesTrimestral(symbol, { apiKey = process.env.FMP_
   const url = `${FMP}/analyst-estimates?symbol=${encodeURIComponent(symbol)}&period=quarter&apikey=${encodeURIComponent(apiKey)}`;
   const r = await pedir(url, { fetchImpl });
   const base = { fuente, status: r.status, ms: r.ms, body_sample: r.body_sample, url_sin_key: sinKey(url) };
-  if (!r.ok) return { ...base, ok: false, ...clasificaFallo(r, fuente) };
+  if (!r.ok) return { ...base, ok: false, ...clasificaFallo({ ...r, symbol }, fuente) };
   if (!Array.isArray(r.json)) {
     const msg = r.json && (r.json['Error Message'] || r.json.error || r.json.message);
     return { ...base, ok: false, motivo: msg ? 'fmp_error_message' : 'cuerpo_no_es_lista', detalle: msg || null };
@@ -107,7 +102,7 @@ async function fmpEarnings(symbol, { apiKey = process.env.FMP_API_KEY, fetchImpl
   const url = `${FMP}/earnings?symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(apiKey)}`;
   const r = await pedir(url, { fetchImpl });
   const base = { fuente, symbol, status: r.status, ms: r.ms, body_sample: r.body_sample, url_sin_key: sinKey(url) };
-  if (!r.ok) return { ...base, ok: false, ...clasificaFallo(r, fuente) };
+  if (!r.ok) return { ...base, ok: false, ...clasificaFallo({ ...r, symbol }, fuente) };
   if (!Array.isArray(r.json)) {
     const msg = r.json && (r.json['Error Message'] || r.json.error || r.json.message);
     return { ...base, ok: false, motivo: msg ? 'fmp_error_message' : 'cuerpo_no_es_lista', detalle: msg || null };
@@ -124,7 +119,7 @@ async function finnhubCalendario(symbol, { desde, hasta, apiKey = process.env.FI
   const url = `${FINNHUB}/calendar/earnings?from=${desde}&to=${hasta}&symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(apiKey)}`;
   const r = await pedir(url, { fetchImpl });
   const base = { fuente, symbol, status: r.status, ms: r.ms, body_sample: r.body_sample, url_sin_key: sinKey(url) };
-  if (!r.ok) return { ...base, ok: false, ...clasificaFallo(r, fuente) };
+  if (!r.ok) return { ...base, ok: false, ...clasificaFallo({ ...r, symbol }, fuente) };
   const lista = r.json && Array.isArray(r.json.earningsCalendar) ? r.json.earningsCalendar : null;
   if (!lista) {
     const msg = r.json && (r.json.error || r.json.message);
@@ -144,7 +139,7 @@ async function avEarningsEstimates(symbol, { apiKey = process.env.ALPHAVANTAGE_A
   const url = `${AV}?function=EARNINGS_ESTIMATES&symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(apiKey)}`;
   const r = await pedir(url, { fetchImpl });
   const base = { fuente, symbol, status: r.status, ms: r.ms, body_sample: r.body_sample, url_sin_key: sinKey(url) };
-  if (!r.ok) return { ...base, ok: false, ...clasificaFallo(r, fuente) };
+  if (!r.ok) return { ...base, ok: false, ...clasificaFallo({ ...r, symbol }, fuente) };
   // La trampa de AV: 200 con {"Note"} o {"Information"} cuando te limita.
   if (r.json && (r.json.Note || r.json.Information)) {
     return { ...base, ok: false, motivo: 'rate_limit_av', detalle: String(r.json.Note || r.json.Information).slice(0, 200) };

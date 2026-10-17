@@ -53,7 +53,7 @@ export const MOTIVOS = {
  * cuadro pinta "—" en gris y la hoja dice por qué. Nunca se estima con 252
  * sesiones — ese es justo el bug que `qdPctTag` existe para hacer imposible.
  */
-export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIERRES_RECIENTES } = {}) {
+export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIERRES_RECIENTES, motivoSinImporte = null } = {}) {
   const { serie, puntos_sin_ajuste } = serieDesdeFilas(filas);
   if (!serie.length) {
     return { serie: [], ytd: null, ytd_motivo: 'no_hay_serie', puntos: 0, precio: null, fecha_precio: null };
@@ -68,6 +68,7 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
     .sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)))
     .pop() || null;
 
+  const imp = importeDeFilas(filas, { motivoSinDato: motivoSinImporte });
   return {
     serie: serie.slice(-recientes),
     ytd: a.cubre ? { t: serie[a.refIdx].t, c: a.refValue } : null,
@@ -76,6 +77,53 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
     puntos_sin_ajuste: puntos_sin_ajuste || undefined,
     precio: ultimaFila ? num(ultimaFila.cierre) : null,
     fecha_precio: ultimaFila ? String(ultimaFila.fecha).slice(0, 10) : null,
+    importe: imp.importe,
+    importe_fecha: imp.fecha,
+    importe_motivo: imp.motivo,
+  };
+}
+
+/**
+ * LO OPERADO EN DINERO, que es con lo que se ordena "más operadas".
+ *
+ * Las dos tablas guardan cosas distintas: `bmv_precios` trae `importe` —pesos
+ * operados, tal cual lo da la BMV— y `mercado_precios_us` trae `volumen`, que
+ * son ACCIONES. Ordenar México por pesos y EE.UU. por acciones sería que el
+ * toggle de país cambiara la pregunta: una acción de 500 dólares con un millón
+ * de títulos opera más dinero que una de 5 con diez millones, y las dos listas
+ * dirían "más operadas" señalando cosas distintas. Decisión de Lety
+ * (2026-10-02): los dos lados en IMPORTE, y el de EE.UU. se despeja acá
+ * (`volumen × cierre`) en vez de guardarse, porque un producto guardado deja de
+ * cuadrar en cuanto se corrige un cierre.
+ *
+ * Se toma la ÚLTIMA fila que tenga con qué, no la última a secas: si la cosecha
+ * de hoy no alcanzó a traer el volumen, lo honesto es el importe de ayer CON SU
+ * FECHA, no un hueco. Y si no hay ninguna, el motivo viaja: regla 2.
+ */
+export function importeDeFilas(filas = [], { motivoSinDato = null } = {}) {
+  const ordenadas = filas
+    .filter((f) => f && f.fecha)
+    .sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)));
+  for (let i = ordenadas.length - 1; i >= 0; i--) {
+    const f = ordenadas[i];
+    const fecha = String(f.fecha).slice(0, 10);
+    // México: el importe viene medido, no se recalcula.
+    const directo = num(f.importe);
+    if (directo != null && directo >= 0) return { importe: directo, fecha, motivo: null };
+    // EE.UU.: acciones × cierre. Un volumen de 0 es un dato —día sin
+    // operaciones— y da importe 0, que es la verdad, no un hueco.
+    const v = num(f.volumen), c = num(f.cierre);
+    if (v != null && v >= 0 && c != null && c > 0) return { importe: v * c, fecha, motivo: null };
+  }
+  return {
+    importe: null, fecha: null,
+    // `motivoSinDato` lo manda el llamador cuando sabe algo que esta función no
+    // puede ver — hoy, que la columna todavía no existe. Decir "la fuente no
+    // trae volumen" en ese caso mandaría a revisar Yahoo en vez de correr el
+    // job, y una causa falsa es peor que ninguna.
+    motivo: ordenadas.length
+      ? (motivoSinDato || 'la fuente no trae volumen para este símbolo')
+      : 'no hay serie con la que medir lo operado',
   };
 }
 
@@ -87,7 +135,7 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
  * sin-cap contados aparte. Se respeta tal cual: afirmar un porcentaje que no
  * se midió es el mismo error que el mapa evita en todo lo demás.
  */
-export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new Date(), referencias = new Map() }) {
+export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new Date(), referencias = new Map(), motivoSinImporte = null }) {
   const porSymbol = new Map();
   for (const p of precios) {
     const s = String(p.symbol || '').toUpperCase();
@@ -99,7 +147,7 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
   const faltantes = [];
   for (const u of (recorte ? recorte.dentro : universo)) {
     const sym = String(u.symbol || '').toUpperCase();
-    const paq = empaquetaSerie(porSymbol.get(sym) || [], { ahora });
+    const paq = empaquetaSerie(porSymbol.get(sym) || [], { ahora, motivoSinImporte });
     if (!paq.serie.length) faltantes.push({ symbol: sym, motivo: MOTIVOS.SIN_SERIE });
     else if (paq.serie.length < 2) faltantes.push({ symbol: sym, motivo: MOTIVOS.SERIE_CORTA });
     else if (!paq.ytd) faltantes.push({ symbol: sym, motivo: MOTIVOS.SIN_ANCLA_YTD, detalle: paq.ytd_motivo });

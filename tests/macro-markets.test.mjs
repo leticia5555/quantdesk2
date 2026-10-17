@@ -74,15 +74,32 @@ console.log('extractMacro: FX NO se aplasta a 2 decimales (bug de escalones cuad
   ok(m && m.series[0].c === 1.085, 'preserva 1.0850 → 1.085 (no 1.08)', m && m.series[0].c);
 }
 
-console.log('extractMacro: descarta cierres/timestamps inválidos y toma últimos 70');
+console.log('extractMacro: descarta cierres/timestamps inválidos y guarda un año');
 {
   const ts = seq(90, 1000);
   const closes = seq(90, 1).map(x => x); // 1..90
   closes[3] = null; closes[7] = 0; closes[9] = 'x';
   const m = extractMacro(chart({ regularMarketPrice: 90 }, ts, closes));
-  ok(m && m.series.length === 70, 'serie acotada a 70 puntos', m && m.series.length);
+  // Era `slice(-70)`, y eso dejaba sin efecto el `range=1y`: el fetch pedía un
+  // año y el recorte devolvía 70 puntos, con los que el ancla de fin de año no
+  // existe y YTD sale "—". Ahora el tope es 280 (~252 sesiones + margen), así
+  // que una serie de 87 puntos útiles pasa entera.
+  ok(m && m.series.length === 87, 'la serie no se recorta por debajo del año', m && m.series.length);
+  const largo = extractMacro(chart({ regularMarketPrice: 1 }, seq(400, 1000), seq(400, 1)));
+  ok(largo && largo.series.length === 280, 'y el tope es 280', largo && largo.series.length);
   ok(m && m.series.every(p => Number.isFinite(p.c) && p.c > 0 && Number.isFinite(p.t)),
     'sin nulls/ceros ni timestamps rotos', JSON.stringify(m && m.series.slice(0, 3)));
+}
+
+console.log('extractMacro: la FECHA del precio viaja, o se dice que no hay');
+{
+  // Sin esto no hay manera de saber si `price` es más nuevo que el último
+  // cierre de la serie, y el cliente termina pintando el precio de hoy con el
+  // % de ayer — el KOSPI en 6,870.81 con el −2.70% del lunes.
+  const conT = extractMacro(chart({ regularMarketPrice: 9, regularMarketTime: 1759000000 }, seq(5, 1000), seq(5, 1)));
+  ok(conT && conT.precio_t === 1759000000, 'precio_t sale de regularMarketTime', conT && conT.precio_t);
+  const sinT = extractMacro(chart({ regularMarketPrice: 9 }, seq(5, 1000), seq(5, 1)));
+  ok(sinT && sinT.precio_t === null, 'y si Yahoo no lo manda, es null y no se inventa', sinT && sinT.precio_t);
 }
 
 console.log('extractMacro: nunca inventa un dato');
