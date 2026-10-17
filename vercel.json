@@ -39,6 +39,9 @@
     "api/pead-analyze.js": {
       "maxDuration": 300
     },
+    "api/fuga-analyze.js": {
+      "maxDuration": 300
+    },
     "api/pead-harvest.js": {
       "maxDuration": 300
     },
