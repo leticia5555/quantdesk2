@@ -77,6 +77,38 @@ export function cacheDeRespuesta(out, status = 200) {
 // `filter` sobre `row_number()`, que ni siquiera es un error de lógica: es un
 // error de sintaxis, el más barato de atrapar y el que más caro salió.
 // `tests/mercado-sql.test.mjs` las prepara contra un Postgres de verdad.
+// ═══════════════════════════════════════════════════════════════════════
+// UNA COLUMNA QUE TODAVÍA NO EXISTE NO PUEDE TUMBAR EL MAPA
+//
+// `volumen` nació con R3(a) y la crea el job de precios (`SCHEMA_PRECIOS_US`).
+// Pero este endpoint sólo LEE —no corre DDL a propósito— y se despliega AL
+// MISMO TIEMPO que el job: entre el deploy y la primera corrida del job hay una
+// ventana en la que el código pide una columna que nadie creó todavía.
+//
+// En esa ventana el mapa entero devolvía `column p.volumen does not exist` y
+// `/mercado` se quedaba en blanco. Lo encontró Lety en el preview (2026-10-05),
+// que comparte base con producción: mergearlo así tumbaba prod.
+//
+// La regla que sale de esto: UN CAMPO NUEVO NO PUEDE SER REQUISITO DE UNA
+// LECTURA QUE YA FUNCIONABA. Se pregunta si la columna está y se arma el select
+// con ella o sin ella; sin ella, el importe sale null CON SU CAUSA —que es
+// "falta correr el job", no "la fuente no manda volumen"— y el mapa se pinta
+// igual, que es lo que la pantalla necesita.
+//
+// El caché es asimétrico a propósito: el SÍ se guarda (ya no cambia) y el NO se
+// vuelve a preguntar, porque la columna puede aparecer en cualquier momento y
+// una instancia caliente se quedaría diciendo que no para siempre.
+let hayVolumen = false;
+
+async function columnaVolumenExiste() {
+  if (hayVolumen) return true;
+  const r = await sql(
+    `select 1 from information_schema.columns
+      where table_name = 'mercado_precios_us' and column_name = 'volumen' limit 1`).catch(() => null);
+  hayVolumen = Array.isArray(r) && r.length > 0;
+  return hayVolumen;
+}
+
 export const SQL_MAPA_US = {
   universo:
       `select symbol, nombre, sector_etf, market_cap, cap_fuente, cap_actualizado, cap_moneda, acciones_millones,
@@ -88,12 +120,15 @@ export const SQL_MAPA_US = {
   // cierres de cada símbolo más su ancla YTD. Traer la ventana entera desde
   // diciembre eran ~60,000 filas por petición — el orden de magnitud en el
   // que una lectura deja de ser barata y empieza a fallar.
-  precios:
+  // `conVolumen` NO es un detalle de estilo: ver el comentario de arriba. Con
+  // la columna ausente, la consulta no la nombra y el mapa sigue cargando.
+  precios: (conVolumen = true) =>
       `with top as (
          select symbol from mercado_universo_us
           where sector_etf is not null and market_cap is not null
        ), r as (
-         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado, p.volumen,
+         select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
+                ${conVolumen ? 'p.volumen' : 'null::numeric as volumen'},
                 p.fecha < $1::date as previa,
                 row_number() over (partition by p.symbol order by p.fecha desc) recientes,
                 -- El ancla YTD NO se saca con \`filter\`: \`FILTER\` sólo existe en
@@ -124,9 +159,10 @@ async function mapaUs(ahora) {
     try { return await sql(q, params); } catch (e) { errores[nombre] = String((e && e.message) || e); return []; }
   };
 
+  const conVolumen = await columnaVolumenExiste();
   const [universo, precios] = await Promise.all([
     leer('mercado_universo_us', SQL_MAPA_US.universo),
-    leer('mercado_precios_us', SQL_MAPA_US.precios,
+    leer('mercado_precios_us', SQL_MAPA_US.precios(conVolumen),
       [anio, CIERRES_RECIENTES + 1]),
   ]);
 
@@ -149,7 +185,14 @@ async function mapaUs(ahora) {
     };
   }
 
-  const { cuadros, faltantes } = armaMapaUs({ universo, precios, ahora, referencias: REFS_US });
+  const { cuadros, faltantes } = armaMapaUs({
+    universo, precios, ahora, referencias: REFS_US,
+    // La causa correcta: mientras la columna no exista, lo que falta es correr
+    // el job, no un dato de Yahoo. Mandar a revisar la fuente equivocada es el
+    // peor gris que hay — el que parece resuelto.
+    motivoSinImporte: conVolumen ? null
+      : 'la columna de volumen todavía no existe en la tabla: corré /api/mercado-precios?job=us',
+  });
 
   // EL CIERRE QUE SE ESTÁ PINTANDO, que no es el que el calendario dice que
   // debería haber NI el más nuevo que aparezca. Un lunes a las 17:00, con la

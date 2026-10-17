@@ -53,7 +53,7 @@ export const MOTIVOS = {
  * cuadro pinta "—" en gris y la hoja dice por qué. Nunca se estima con 252
  * sesiones — ese es justo el bug que `qdPctTag` existe para hacer imposible.
  */
-export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIERRES_RECIENTES } = {}) {
+export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIERRES_RECIENTES, motivoSinImporte = null } = {}) {
   const { serie, puntos_sin_ajuste } = serieDesdeFilas(filas);
   if (!serie.length) {
     return { serie: [], ytd: null, ytd_motivo: 'no_hay_serie', puntos: 0, precio: null, fecha_precio: null };
@@ -68,7 +68,7 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
     .sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)))
     .pop() || null;
 
-  const imp = importeDeFilas(filas);
+  const imp = importeDeFilas(filas, { motivoSinDato: motivoSinImporte });
   return {
     serie: serie.slice(-recientes),
     ytd: a.cubre ? { t: serie[a.refIdx].t, c: a.refValue } : null,
@@ -100,7 +100,7 @@ export function empaquetaSerie(filas = [], { ahora = new Date(), recientes = CIE
  * de hoy no alcanzó a traer el volumen, lo honesto es el importe de ayer CON SU
  * FECHA, no un hueco. Y si no hay ninguna, el motivo viaja: regla 2.
  */
-export function importeDeFilas(filas = []) {
+export function importeDeFilas(filas = [], { motivoSinDato = null } = {}) {
   const ordenadas = filas
     .filter((f) => f && f.fecha)
     .sort((x, y) => String(x.fecha).localeCompare(String(y.fecha)));
@@ -117,8 +117,12 @@ export function importeDeFilas(filas = []) {
   }
   return {
     importe: null, fecha: null,
+    // `motivoSinDato` lo manda el llamador cuando sabe algo que esta función no
+    // puede ver — hoy, que la columna todavía no existe. Decir "la fuente no
+    // trae volumen" en ese caso mandaría a revisar Yahoo en vez de correr el
+    // job, y una causa falsa es peor que ninguna.
     motivo: ordenadas.length
-      ? 'la fuente no trae volumen para este símbolo'
+      ? (motivoSinDato || 'la fuente no trae volumen para este símbolo')
       : 'no hay serie con la que medir lo operado',
   };
 }
@@ -131,7 +135,7 @@ export function importeDeFilas(filas = []) {
  * sin-cap contados aparte. Se respeta tal cual: afirmar un porcentaje que no
  * se midió es el mismo error que el mapa evita en todo lo demás.
  */
-export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new Date(), referencias = new Map() }) {
+export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new Date(), referencias = new Map(), motivoSinImporte = null }) {
   const porSymbol = new Map();
   for (const p of precios) {
     const s = String(p.symbol || '').toUpperCase();
@@ -143,7 +147,7 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
   const faltantes = [];
   for (const u of (recorte ? recorte.dentro : universo)) {
     const sym = String(u.symbol || '').toUpperCase();
-    const paq = empaquetaSerie(porSymbol.get(sym) || [], { ahora });
+    const paq = empaquetaSerie(porSymbol.get(sym) || [], { ahora, motivoSinImporte });
     if (!paq.serie.length) faltantes.push({ symbol: sym, motivo: MOTIVOS.SIN_SERIE });
     else if (paq.serie.length < 2) faltantes.push({ symbol: sym, motivo: MOTIVOS.SERIE_CORTA });
     else if (!paq.ytd) faltantes.push({ symbol: sym, motivo: MOTIVOS.SIN_ANCLA_YTD, detalle: paq.ytd_motivo });

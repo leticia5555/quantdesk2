@@ -113,6 +113,21 @@ function cuadrosUs() {
     cap_nota: 'cap declarada de Finnhub descartada: dos conteos de acciones coinciden (EDGAR 2080.0M y Finnhub 2075.0M, 0.2% de diferencia, techo 5%)',
     serie: serie(57.7, 21, 0.005), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 50 },
     ytd_motivo: null, puntos: 180, precio: 57.7, fecha_precio: '2026-09-18' });
+  // UNA GRIS CON SITIO PARA VERSE. El tamaño de una gris es PRESTADO —el del
+  // cuadro verificado más chico de su sector— y en XLK, con 91 nombres, eso son
+  // 9px: ahí no cabe ni una letra y la regla "la gris lleva su %" no se puede
+  // medir. En XLP el único verificado es MNST, así que la gris hereda un cuadro
+  // grande y el número se ve. El fixture existe para poder mirar la regla, no
+  // para que dé el resultado que uno quiere.
+  cs.push({ symbol: 'GRISXL', nombre: 'Gris con sitio', sector: 'XLP', cap: null,
+    cap_fuente: null, estado: 'gris_punteado', cap_auditable: true, cap_moneda: 'USD',
+    motivo: 'la cap declarada viene en TWD, no en USD',
+    // Cae más que cualquier otra del fixture a propósito: así entra a "más
+    // bajan" y se puede comparar el número del mapa con el de la tabla, que es
+    // la contradicción que hay que impedir.
+    serie: serie(80, 21, -0.06), ytd: { t: Math.floor(Date.parse('2025-12-31T00:00:00Z') / 1000), c: 95 },
+    ytd_motivo: null, puntos: 180, precio: 78, fecha_precio: '2026-09-18',
+    importe: 4.2e9, importe_fecha: '2026-09-18', importe_motivo: null });
   cs.push({ symbol: 'XNDU', nombre: 'Xanadu Quantum (sin moneda)', sector: 'XLK', cap: null,
     cap_fuente: null, estado: 'gris_punteado', cap_auditable: false, cap_moneda: null,
     motivo: 'sin moneda declarada por Finnhub (la cap viene de neon:arena_market_cap)',
@@ -299,8 +314,8 @@ const server = createServer(async (req, res) => {
           { tipo: 'reporte', fecha: '2026-09-24', titulo: 'NVDA', detalle: 'Nvidia', cuando: 'AMC', eps_estimado: 1.2, fuente: 'finnhub:earnings-calendar' },
         ],
         fuentes: {
-          macro: { fuente: 'neon:macro_events', ok: true, motivo: null, filas: 1 },
-          reportes: { fuente: 'finnhub:earnings-calendar', ok: false, motivo: 'HTTP 429', filas: 0 },
+          macro: { fuente: 'neon:macro_events', ok: true, motivo: null, filas: 1, en_ventana: 1, mas_adelante: 0, horizonte_dias: 30 },
+          reportes: { fuente: 'finnhub:earnings-calendar', ok: false, motivo: 'HTTP 429', filas: 0, en_ventana: 0, mas_adelante: 0, horizonte_dias: 30 },
         },
       },
       arena: {
@@ -890,27 +905,46 @@ try {
   chequeo('la hoja de una cap sin verificar dice su causa', /TWD/.test(hojaGris), hojaGris.slice(0, 80).replace(/\n/g, ' '));
   await p.locator('#cerrar').tap();
 
-  const gris = await p.evaluate(() => {
+  const grisCap = await p.evaluate(() => {
     const e = [...document.querySelectorAll('.cuadro')].find((x) => x.getAttribute('aria-label') === 'TSMG');
     if (!e) return { existe: false };
+    const r = e.getBoundingClientRect();
     return {
       existe: true,
       punteado: e.classList.contains('punteado'),
+      fondo: getComputedStyle(e).backgroundColor,
       ticker: ((e.querySelector('.sym') || {}).textContent || ''),
       valor: ((e.querySelector('.val') || {}).textContent || ''),
-      ancho: Math.round(e.getBoundingClientRect().width),
+      ancho: Math.round(r.width), alto: Math.round(r.height),
     };
   });
   chequeo('una cap sin verificar se DIBUJA gris punteada, no desaparece',
-    gris.existe === true && gris.punteado === true, JSON.stringify(gris));
-  // El tamaño de una gris es PRESTADO: el del cuadro verificado más chico de su
-  // sector. Con el universo a escala real ese cuadro mide ~15px a 390px, así
-  // que la gris es de las más chicas del mapa y su ticker de 4 letras no entra
-  // ni a 6px. Lo que NO puede pasar es que lleve un % —un número sobre un
-  // tamaño prestado sería afirmar algo que no se midió—, y eso se comprueba
-  // acá; que lleve su ticker se comprueba en escritorio, donde tiene sitio.
-  chequeo('la gris nunca lleva un % sobre un tamaño prestado',
-    gris.valor === '' || gris.valor === '—', JSON.stringify(gris));
+    grisCap.existe === true && grisCap.punteado === true, JSON.stringify(grisCap));
+
+  // ── EL GRIS ES DEL TAMAÑO, NO DEL NÚMERO ──────────────────────────
+  // ESTA COMPROBACIÓN EXIGÍA LO CONTRARIO: "la gris nunca lleva un % sobre un
+  // tamaño prestado". La idea era que un número sobre un cuadro de tamaño no
+  // afirmado lo haría pasar por entero. Medido contra la pantalla, salió al
+  // revés: WDC decía −10.2% en "más bajan" y "—" en el mapa, con los dos
+  // números sacados de la MISMA serie (Lety, 2026-10-05). Dos partes de la
+  // misma app contradiciéndose es peor que lo que el silencio prevenía.
+  //
+  // Lo que no se afirma es el TAMAÑO, y para eso están el gris y el punteado,
+  // que es justo la pieza que un cuadro tiene y una fila de tabla no. El %
+  // se mide igual que el de cualquier otro cuadro, así que se pinta.
+  //
+  // Se mira DENTRO del sector, donde la gris tiene sitio: en el primer nivel
+  // mide pocos píxeles y la ausencia del número sería por falta de espacio, no
+  // por la regla.
+  // A 390px la gris mide 9px —su tamaño es PRESTADO: el del cuadro verificado
+  // más chico de su sector— y ahí no cabe ni una letra, así que la regla no se
+  // puede medir en esta pantalla. Lo que sí se exige acá es que NUNCA salga el
+  // guion: un "—" sobre un cuadro que sí tiene % es la contradicción. La
+  // comprobación con sitio de sobra va en escritorio, más abajo.
+  chequeo('la gris nunca pinta "—" teniendo un % medido',
+    grisCap.valor !== '—', JSON.stringify(grisCap));
+  chequeo('y sigue gris y punteada, que es lo que dice que el tamaño es prestado',
+    grisCap.fondo === 'rgb(36, 36, 36)' && grisCap.punteado === true, JSON.stringify(grisCap));
 
   // ── EL PIE CUENTA CUADROS ──────────────────────────────────────────
   await p.goto(`${BASE}/mercado?mapa=us`, { waitUntil: 'networkidle' });
@@ -1484,6 +1518,31 @@ try {
     !/cierre del/.test(roto.chip), roto.chip.trim());
   chequeo('y el chip dice por qué no lo nombra', /no viajó/.test(roto.titulo), roto.titulo);
 
+  // LAS TABLAS NO PUEDEN AFIRMAR NADA DEL MERCADO CUANDO NO HUBO DATO.
+  // Con el mapa roto llegan cero filas, y las frases decían "ninguna subieron
+  // en este periodo": una afirmación sobre la bolsa que nadie midió, y que
+  // encima manda a mirar el mercado en vez de la consulta. Lo vio Lety en el
+  // preview (2026-10-05) con el mapa caído por una columna inexistente.
+  const tablasRotas = await p.evaluate(() =>
+    [...document.querySelectorAll('#paneles h2')].slice(0, 3).map((h) => ({
+      titulo: h.textContent.trim(),
+      nota: (h.nextElementSibling && h.nextElementSibling.classList.contains('nota'))
+        ? h.nextElementSibling.textContent.trim() : null,
+      vacio: ((h.nextElementSibling && h.nextElementSibling.classList.contains('nota')
+        ? h.nextElementSibling.nextElementSibling : h.nextElementSibling) || {}).textContent || '',
+    })));
+  chequeo('con el mapa roto, las tres tablas dicen "sin dato" y la causa',
+    tablasRotas.length === 3
+      && tablasRotas.every((t) => /^sin dato: /.test(t.nota || '') && /no se pudieron leer/.test(t.nota || '')),
+    JSON.stringify(tablasRotas.map((t) => t.nota)));
+  chequeo('y NINGUNA dice "ninguna subió/bajó en este periodo", que sería inventar un día plano',
+    tablasRotas.every((t) => !/en este periodo/.test(t.nota || '') && !/en este periodo/.test(t.vacio || '')),
+    JSON.stringify(tablasRotas.map((t) => t.nota)));
+  // Y la concordancia, que es lo que hace dudar del número de al lado.
+  chequeo('nunca se escribe "ninguna subieron" ni "ninguna bajaron"',
+    !/ninguna (subieron|bajaron)/.test(JSON.stringify(tablasRotas)),
+    JSON.stringify(tablasRotas.map((t) => t.nota)));
+
   // ── UN MAPA GRIS POR FALTA DE CORRIDA SE EXPLICA SOLO ─────────────
   await fetch(`${BASE}/__sin-auditar?v=1`);
   await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
@@ -1531,6 +1590,48 @@ try {
   }));
   chequeo('escritorio: el mapa cabe en 1440×900 sin scroll, y las tablas van debajo',
     escD.pantalla === escD.ventana && !escD.horizontal, JSON.stringify(escD));
+
+  // ── EL GRIS ES DEL TAMAÑO, NO DEL NÚMERO (con sitio para verlo) ────
+  // En escritorio la gris sí tiene espacio, así que acá la regla se mide de
+  // verdad. Esta comprobación exigía LO CONTRARIO —"la gris nunca lleva un %
+  // sobre un tamaño prestado"— hasta que se vio que WDC decía −10.2% en "más
+  // bajan" y "—" en el mapa, con los dos números de la MISMA serie (Lety,
+  // 2026-10-05). Lo que no se afirma es el tamaño, y para eso están el gris y
+  // el punteado; el % se midió igual que el de cualquier otro cuadro.
+  await d.goto(`${BASE}/mercado?mapa=us&sector=XLP&periodo=1D`, { waitUntil: 'networkidle' });
+  await d.waitForSelector('.cuadro');
+  const grisEsc = await d.evaluate(() => {
+    const e = document.querySelector('.cuadro[aria-label="GRISXL"]');
+    if (!e) return { existe: false };
+    const r = e.getBoundingClientRect();
+    return {
+      existe: true, punteado: e.classList.contains('punteado'),
+      fondo: getComputedStyle(e).backgroundColor,
+      valor: ((e.querySelector('.val') || {}).textContent || ''),
+      ancho: Math.round(r.width), alto: Math.round(r.height),
+    };
+  });
+  chequeo('en escritorio la gris lleva su %, y sigue gris y punteada',
+    grisEsc.existe && /%/.test(grisEsc.valor)
+      && grisEsc.punteado === true && grisEsc.fondo === 'rgb(36, 36, 36)',
+    JSON.stringify(grisEsc));
+
+  // Y EL MAPA Y LA TABLA DICEN EL MISMO NÚMERO. Es la contradicción exacta que
+  // ella encontró: el mismo ticker con dos valores en la misma pantalla.
+  const mismoNumero = await d.evaluate(() => {
+    const limpia = (t) => Number(String(t || '').replace(/[^\-0-9.]/g, ''));
+    const c = document.querySelector('.cuadro[aria-label="GRISXL"]');
+    const f = [...document.querySelectorAll('#paneles .fila')].find((x) => x.dataset.sym === 'GRISXL');
+    if (!c || !f) return { enMapa: !!c, enTabla: !!f };
+    const a = limpia((c.querySelector('.val') || {}).textContent);
+    const b = limpia((f.querySelector('.val') || {}).textContent);
+    return { enMapa: true, enTabla: true, mapa: a, tabla: b, difiere: Math.abs(a - b) };
+  });
+  chequeo('y la gris dice el MISMO número en el mapa y en la tabla',
+    mismoNumero.enMapa === true && mismoNumero.enTabla === true && mismoNumero.difiere < 0.051,
+    JSON.stringify(mismoNumero));
+  await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await d.waitForSelector('.cuadro');
 
   await d.locator('.cuadro').first().hover();
   await d.waitForTimeout(120);

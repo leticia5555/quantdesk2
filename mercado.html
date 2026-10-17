@@ -728,10 +728,22 @@
   }
 
   function pintaCuadro(div, it, x, y, w, h){
-    // Dos motivos distintos para el mismo punteado, y los dos son "falta un
-    // dato": sin % no se puede colorear, y sin cap verificada el TAMAÑO es
-    // prestado. En el segundo caso el % se calla a propósito: pintarlo sobre
-    // un cuadro cuyo tamaño no afirmamos lo haría pasar por un cuadro entero.
+    // UN DATO QUE FALTA NO PUEDE ESCONDER OTRO QUE SÍ ESTÁ.
+    //
+    // Hay dos motivos distintos para el mismo punteado y NO son lo mismo:
+    //   · sin % no se puede colorear — el cuadro no dice nada del día;
+    //   · sin cap verificada el TAMAÑO es prestado — el cuadro no dice nada
+    //     del tamaño, pero su % es un número medido como cualquier otro.
+    //
+    // El segundo caso se callaba el %, por miedo a que un cuadro de tamaño no
+    // afirmado "pasara por entero". Estaba mal: WDC salía −10.2% en "más
+    // bajan" y "—" en el mapa, con los dos números sacados de la MISMA serie
+    // (Lety, 2026-10-05). Dos pantallas de la misma app contradiciéndose es
+    // peor que cualquier cosa que el silencio pudiera prevenir.
+    //
+    // Lo que afirma el tamaño ya lo desmiente el gris y el borde punteado, que
+    // es justo la pieza que ESTE cuadro tiene y una fila de tabla no. Así que
+    // el fondo se queda gris —el tamaño sigue sin afirmarse— y el % se pinta.
     var capGris = it.cap_verificada === false;
     var incompleto = capGris || !Number.isFinite(it.pct);
     div.className = 'cuadro' + (incompleto ? ' punteado' : '');
@@ -740,7 +752,7 @@
     div.setAttribute('aria-label', it.key);
 
     var txt = '—';
-    if(!capGris && Number.isFinite(it.pct)){
+    if(Number.isFinite(it.pct)){
       var r1 = Math.round(it.pct*10)/10;
       txt = r1===0 ? '0.0%' : ((r1>0?'+':'')+r1.toFixed(1)+'%');
     }
@@ -1398,17 +1410,21 @@
     if(!paneles){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
     var s = paneles.esta_semana || {};
     var fu = s.fuentes || {};
-    // Las dos mitades por separado: un Finnhub caído no se puede leer como
-    // "no hay reportes", que es la semana tranquila que nunca existió.
-    var avisos = [];
-    if(fu.macro && !fu.macro.ok) avisos.push('el calendario macro no respondió: ' + fu.macro.motivo);
-    if(fu.reportes && !fu.reportes.ok) avisos.push('el calendario de reportes no respondió: ' + fu.reportes.motivo);
+    // CADA MITAD DICE LO SUYO. Si se funden, un Finnhub en 429 se lee igual
+    // que "no hay reportes esta semana", y la semana de resultados más cargada
+    // del trimestre aparece como una pantalla tranquila. Las frases las arma
+    // `fraseDeFuente`, que distingue tres estados que acá se confundían en uno:
+    // la fuente falló / está vacía de verdad / tiene cosas pero más adelante.
+    var avisos = ['macro', 'reportes']
+      .map(function(k){ return fraseDeFuente(k, fu); })
+      .filter(Boolean);
     if(avisos.length) html += '<p class="nota">' + esc(avisos.join(' · ')) + '</p>';
     var ev = s.eventos || [];
     html += '<div class="tabla">';
     if(!ev.length){
-      html += '<div class="vacio">' + esc(avisos.length
-        ? 'no se pudo leer el calendario'
+      // Sin nada que pintar, la causa ES el contenido. Repetirla arriba y
+      // abajo sería ruido, pero dejar el cuadro vacío sería un hueco mudo.
+      html += '<div class="vacio">' + esc(avisos.length ? avisos.join(' · ')
         : 'sin eventos ni reportes en los próximos ' + ((s.ventana && s.ventana.dias) || 7) + ' días') + '</div>';
     } else {
       html += ev.slice(0, 12).map(function(e){
@@ -1454,7 +1470,11 @@
     // los paneles sí va, porque el calendario y Arena no son de un mapa.
     var html = '';
     if(estado.mapa !== 'mundo'){
-      var t = tablasDeMercado(filasDeTablas(d));
+      // EL ERROR DEL MAPA VIAJA A LAS TABLAS. Sin esto, un mapa que no se pudo
+      // leer llega como cero filas y las tablas decían "ninguna subió en este
+      // periodo": una afirmación sobre el mercado que nadie midió, y que encima
+      // manda a mirar la bolsa en vez de la consulta.
+      var t = tablasDeMercado(filasDeTablas(d), { error: d.error || null });
       html += bloqueTabla('Más suben', t.suben, t.conteo, 'suben', 'pct');
       html += bloqueTabla('Más bajan', t.bajan, t.conteo, 'bajan', 'pct');
       html += bloqueTabla('Más operadas', t.operadas, t.conteo, 'operadas', 'importe');
