@@ -67,7 +67,35 @@ function normal(u) {
   return Math.sqrt(-2 * Math.log(a)) * Math.cos(2 * Math.PI * b);
 }
 
-const HOY = new Date();
+// ── EL CALENDARIO DEL FIXTURE VA CLAVADO, NO PEGADO AL RELOJ ─────
+// Mismo arreglo que `tests/rotation-analyze.test.mjs` recibió el 2026-10-16, y
+// la misma fecha, para que las dos pruebas hermanas corran sobre el MISMO
+// calendario hábil. Acá se había quedado sin aplicar, y por eso la suite
+// amaneció en rojo el 2026-10-17 (ayer = 2026-10-16) sin que nadie tocara el
+// código.
+//
+// Era `new Date() - 1 día`, así que la ventana de sesiones que entra al
+// backtest se corría un día cada día. La serie de precios es determinista
+// (LCG con semilla), pero la MUESTRA no lo era.
+//
+// ── Y LO QUE EL ARREGLO *NO* ARREGLA, MEDIDO ─────────────────────
+// Barrí 20 calendarios consecutivos (2026-09-20 … 2026-10-09) cambiando sólo
+// esta fecha:
+//
+//     rotation-analyze   19 verdes / 1 rojo   (el rojo: 2026-10-01)
+//     dualmom-analyze    14 verdes / 6 rojos  (2026-09-20..23, 09-30, 10-09)
+//
+// O sea: clavar la fecha vuelve ESTA prueba determinista, y NO la vuelve
+// robusta. Las aserciones de abajo —un GO que el candado pre-registrado marca
+// FRÁGIL, con motivo— sólo se cumplen en ~70% de los calendarios posibles,
+// porque el t-stat del fixture queda cerca del corte y qué fechas son fin de
+// mes decide el rebalanceo. El arreglo de verdad es construir el fixture para
+// que el escenario se cumpla por construcción (parámetros que dejen el t-stat
+// lejos del corte), no elegir el día en que se cumple.
+//
+// Queda así —con el número a la vista— porque la alternativa es una suite roja
+// que no distingue este hallazgo de un bug nuevo. Es un hueco DECLARADO.
+const HOY = new Date('2026-09-28T00:00:00Z');
 const AYER = new Date(HOY.getTime() - 86400000).toISOString().slice(0, 10);
 
 function calendarioHabil(n, fin) {
