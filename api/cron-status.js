@@ -65,6 +65,10 @@ export const EXPECTED = [
   // se coma el presupuesto del descubrimiento, y deja que cada uno late por su
   // cuenta: si el que se muere es `precios`, la tabla sigue creciendo y se ve.
   { job: 'earnings-beat:mercados', path: '/api/earnings-beat-harvest?job=mercados', schedule: '0 23 * * *',  cadence: '1×/día (Polymarket)', stale_after_h: 30 },
+  // LIBRO (cuenta real, Fase 0): foto diaria de equity después del cierre.
+  // Late aunque el libro esté en sombra o en cash: el latido dice "la foto se
+  // tomó", no "operó". Sin esta fila el reporte de 3 números no tiene datos.
+  { job: 'libro:equity',    path: '/api/libro?equity=1',             schedule: '5 21 * * 1-5',          cadence: 'días hábiles ~21:05', stale_after_h: 80 },
   { job: 'earnings-beat:precios',  path: '/api/earnings-beat-harvest?job=precios',  schedule: '40 23 * * *', cadence: '1×/día (CLOB)',       stale_after_h: 30 },
   { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30

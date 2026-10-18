@@ -34,6 +34,7 @@ al final.
 | `screener:refresh` | `/api/arena-screener?job=refresh`     | `0 */4 * * *` (cada 4h) | **GitHub Actions** → `.github/workflows/external-crons.yml` |
 | `mercado:universo` | `/api/mercado-r0?job=universo`        | `30,45 13-21 * * 1-5`  | **vercel.json** |
 | `bmv:precios`      | `/api/bmv-harvest?job=precios`        | `10 22 * * 1-5`        | **vercel.json** |
+| `libro:equity`     | `/api/libro?equity=1`                 | `5 21 * * 1-5`         | **vercel.json** |
 | *(sin latido)*     | `/api/xbrl-capture?run=1`             | `0 13 * * 1`           | **vercel.json** — exento con motivo en `SIN_VIGILANCIA` |
 
 `tests/crons-declarados.test.mjs` exige que cada cron de `vercel.json` esté en
