@@ -83,6 +83,12 @@
     },
     "api/*.js": {
       "maxDuration": 60
+    },
+    "api/libro.js": {
+      "maxDuration": 60
+    },
+    "api/libro-report.js": {
+      "maxDuration": 120
     }
   },
   "rewrites": [
@@ -97,7 +103,8 @@
     {
       "source": "/mercado",
       "destination": "/mercado.html"
-    },    {
+    },
+    {
       "source": "/hoy",
       "destination": "/hoy.html"
     },
@@ -206,6 +213,10 @@
     {
       "path": "/api/mercado-precios?job=us",
       "schedule": "20,35,50 21 * * 1-5"
+    },
+    {
+      "path": "/api/libro?equity=1",
+      "schedule": "5 21 * * 1-5"
     }
   ]
 }
