@@ -33,6 +33,18 @@
 # saltearía en una línea — y entonces el CI dejaría pasar justo el bug que esa
 # prueba cerró. No se usa acá.
 #
+# ── LO PRIMERO QUE ENCONTRÓ, EN SU PROPIO PR ────────────────────────
+# `tests/arena-universo.test.mjs` pasaba por la razón equivocada. Su fábrica de
+# dependencias no inyectaba `fetchDesdeEtf`, cuyo default sale a buscar el CSV
+# de tenencias de iShares POR RED. Con red, el escalón 1 contesta 502 nombres y
+# gana; nueve aserciones que dicen "gana FMP" / "se usa la lista guardada" /
+# "gana el JSON del repo" reciben `source: 'etf'`. Sin red —los sandboxes donde
+# la suite se corría a mano— devuelve null y todo pasa.
+#
+# O sea: la suite estaba verde porque nunca había corrido en una máquina con
+# internet. Que el primer rojo de este workflow haya sido eso, en su propio PR,
+# es el argumento entero a favor de que exista.
+#
 # ── Y LAS FALLAS SE PUBLICAN DONDE SE PUEDEN LEER ───────────────────
 # La primera corrida de este workflow salió roja y el log crudo de Actions vive
 # en otro host, así que desde una sesión sin acceso a ese host el único dato era

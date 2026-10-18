@@ -54,7 +54,28 @@ const catalogoTodoComun = {
 const conCatalogo = (deps) => ({ cargarCatalogo: async () => catalogoTodoComun, ...deps });
 
 // Fábricas de dependencias. Cada test arma el escenario que necesita.
-const depsBase = ({ fmp, neon, repo } = {}) => ({
+//
+// ── EL ESCALÓN 1 TAMBIÉN SE INYECTA (2026-10-18) ─────────────────────
+// `fetchDesdeEtf` FALTABA acá, y su default en `resolveConstituents` es el real
+// — que sale a buscar el CSV de tenencias de iShares por red. O sea que los
+// diez bloques que usan `depsBase` dependían de internet sin decirlo, y lo que
+// medían cambiaba según la máquina:
+//
+//   · con red: el ETF contesta 502 nombres, GANA el escalón 1, y los bloques
+//     que dicen "gana FMP" / "se usa la lista guardada" / "gana el JSON del
+//     repo" reciben `source: 'etf'` y fallan los nueve;
+//   · sin red (los sandboxes donde se corría la suite a mano): devuelve null,
+//     el escalón 1 se cae solo, y todo pasa.
+//
+// Pasaba por la razón equivocada. Lo encontró la PRIMERA corrida del workflow
+// de CI, que es lo primero que corrió esta suite en una máquina con internet.
+//
+// El default es `null` —escalón 1 caído— porque es lo que CADA uno de esos
+// diez bloques ya suponía: son sobre FMP, Neon y el JSON del repo, que son los
+// escalones de ABAJO. Los bloques que sí prueban el ETF lo inyectan ellos
+// mismos (y ya lo hacían), así que ninguno cambia de significado.
+const depsBase = ({ fmp, neon, repo, etf } = {}) => ({
+  fetchDesdeEtf: async (index) => (etf === undefined ? null : (typeof etf === 'function' ? etf(index) : etf)),
   fetchConstituents: async (index) => (fmp === undefined ? null : (typeof fmp === 'function' ? fmp(index) : fmp)),
   readStored: async (index) => (neon === undefined ? null : (typeof neon === 'function' ? neon(index) : neon)),
   writeStored: async () => true,
