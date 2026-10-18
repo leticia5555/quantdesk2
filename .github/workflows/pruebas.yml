@@ -1,0 +1,102 @@
+# ═══════════════════════════════════════════════════════════════════
+# .github/workflows/pruebas.yml — LA SUITE, EN AUTOMÁTICO.
+#
+# POR QUÉ EXISTE (2026-10-18). Durante meses los únicos checks del repo fueron
+# los de Vercel, que dicen que el DEPLOY salió — no que el código esté sano. La
+# suite (155 archivos) nunca corrió sola: se corría a mano, en una sesión, sobre
+# el `main` de ese día.
+#
+# Y eso ya costó. Un PR estuvo dos semanas abierto con "checks en verde" que no
+# incluían una sola prueba, mientras `main` se movía 19 commits por debajo. Lo
+# dijo Lety así: «le dije que los checks verdes querían decir código sano. Los
+# checks son de Vercel.»
+#
+# El riesgo concreto que esto cubre: durante la temporada van a entrar merges a
+# `main` de otras sesiones, trabajando en mercado/mundo/reaccion. Hoy nada
+# impide que uno rompa el Arena en silencio, y lo descubriríamos como un aborto
+# raro en la semana tres — con la liga corriendo y los datos ya sucios.
+#
+# ── POR QUÉ NO HAY `npm ci` ─────────────────────────────────────────
+# El repo no tiene `package.json` y las pruebas no importan NADA fuera de
+# `node:*`. Agregar un paso de instalación sería agregar una forma de fallar
+# que hoy no existe.
+#
+# ── POR QUÉ NO ES FAIL-FAST ─────────────────────────────────────────
+# El objetivo es contestar "¿qué rompió este merge?", no "¿rompió algo?". Con
+# fail-fast, un merge que toca tres áreas obliga a tres corridas para enterarse
+# de las tres. El loop junta TODOS los rojos y los lista al final.
+#
+# ── POR QUÉ `TZ: UTC` EXPLÍCITO ─────────────────────────────────────
+# Dos pruebas de backtest construyen su calendario a partir de la fecha, y una
+# de ellas amaneció en rojo sin que nadie tocara el código (ver B52/B53 y los
+# fixtures clavados en `rotation-analyze` y `dualmom-analyze`). La zona del
+# runner no puede ser una variable silenciosa del resultado: si una prueba
+# depende de la fecha, que dependa de la MISMA en todas las máquinas.
+# ═══════════════════════════════════════════════════════════════════
+name: pruebas
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Un push nuevo sobre la misma rama cancela la corrida anterior: la que importa
+# es la del último commit, y dos corridas compitiendo gastan minutos y confunden.
+concurrency:
+  group: pruebas-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: node y cuántos archivos hay
+        run: |
+          node -v
+          echo "archivos de prueba: $(ls tests/*.test.mjs | wc -l)"
+
+      - name: la suite
+        run: |
+          rojos=()
+          total=0
+          for f in tests/*.test.mjs; do
+            total=$((total + 1))
+            if node "$f" > "/tmp/$(basename "$f").log" 2>&1; then
+              printf '  ok   %s\n' "$f"
+            else
+              printf '  ROJO %s\n' "$f"
+              rojos+=("$f")
+            fi
+          done
+
+          echo
+          echo "──────────────────────────────────────────────────────────"
+          echo "$total archivos · ${#rojos[@]} rojos"
+
+          if [ ${#rojos[@]} -eq 0 ]; then
+            echo "TODO VERDE"
+            exit 0
+          fi
+
+          # La salida de CADA rojo, entera y al final. Un resumen que sólo
+          # nombra los archivos obliga a abrir el log y buscar — y lo que hace
+          # falta para decidir si el merge se revierte es la línea del FAIL.
+          echo
+          for f in "${rojos[@]}"; do
+            echo "═══ $f ═══"
+            cat "/tmp/$(basename "$f").log"
+            echo
+          done
+          exit 1
