@@ -83,12 +83,6 @@
     },
     "api/*.js": {
       "maxDuration": 60
-    },
-    "api/libro.js": {
-      "maxDuration": 60
-    },
-    "api/libro-report.js": {
-      "maxDuration": 120
     }
   },
   "rewrites": [
