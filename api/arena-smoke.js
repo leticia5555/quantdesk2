@@ -78,9 +78,10 @@ import {
   buildDiveSystemPrompt, buildDiveUserPrompt, resolveBaseUrl, PROMPT_VERSION,
 } from './arena-run.js';
 import { parseScanResponse, parsePlanResponse } from './_lib/arena-guard.js';
+import { buildInfo } from './_lib/build-info.js';
 import {
   callArenaLLM, providerKey, buildAnthropicPayload, buildOpenRouterBody, anthropicCostUsd, withDeadline,
-  openRouterCostUsd, cachePrefixReport,
+  openRouterCostUsd, cachePrefixReport, diagnosticoDeCorte,
 } from './_lib/arena-model.js';
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
@@ -117,6 +118,18 @@ export function relojesEfectivos() {
   return {
     una_llamada_ms: ARENA_LLM_TIMEOUT_MS,
     una_llamada_origen: ARENA_LLM_TIMEOUT_ORIGEN,
+    // ── EL CIERRE ESTÁ EXENTO, Y SE PUBLICA (2026-10-02) ────────────
+    // `una_llamada_ms: 92500` se leía como "ninguna llamada pasa de 92,5s", y
+    // el turno de CIERRE sí pasa: no lleva techo. La regla es nuestra y
+    // estaba escrita solo en un comentario de arena-tool-loop.js, donde nadie
+    // la lee desde el navegador — el mismo patrón de B45, un límite que no
+    // alcanza al camino que corre, ahora al revés.
+    //
+    // `null` es el valor CORRECTO, no un dato que falte: el cierre recibe lo
+    // que quede del total (loop + reserva) menos lo usado, con el piso de
+    // vuelta como mínimo. Por eso va con su motivo al lado.
+    cierre_techo_ms: null,
+    cierre_techo_motivo: 'después del cierre no hay llamadas siguientes: el techo por llamada existe para que una llamada colgada no se coma el presupuesto de las SIGUIENTES, y acotar el cierre no protege nada. Recibe (loop + reserva) − usado, con el piso de vuelta como mínimo.',
     // EL QUE CORRE.
     loop_herramientas_ms: loopVivo,
     loop_contrato: 'objetivo (sin fase de scan)',
@@ -384,8 +397,15 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
   const text = ((data.content || []).map((b) => b.text || '').join('')).trim();
   const usage = data.usage || {};
   row.retried = !!llm.retried;
-  row.stop_reason = data.stop_reason || null;
-  row.truncated = row.stop_reason === 'max_tokens';
+  // ── EL MISMO INSTRUMENTO QUE LA LIGA (2026-10-02) ──────────────────
+  // Esto era `row.truncated = row.stop_reason === 'max_tokens'` acá y NADA en
+  // arena-shadow: la sonda de conectividad diagnosticaba mejor que el camino
+  // que corre la temporada. Ahora las dos llaman a la misma función, y de paso
+  // el booleano se volvió de tres estados: un proveedor que no manda
+  // `finish_reason` no es un "no truncado", es un "no se sabe".
+  row.corte = diagnosticoDeCorte(data, { maxTokens: ARENA_MAX_TOKENS, texto: text });
+  row.stop_reason = row.corte.stop_reason;
+  row.truncated = row.corte.truncado;   // true | false | null (ver `por_que_no_se_sabe`)
   row.response_chars = text.length;
   row.tokens = {
     input: Number(usage.input_tokens) || 0,
@@ -460,8 +480,11 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
     row.tickers = parsed.candidates || [];
     row.thesis_chars = (parsed.thesis || '').length;
   }
-  row.ok = row.json_ok && !row.truncated;
-  if (!row.ok && row.truncated) row.failure = 'truncated_at_max_tokens';
+  // `!== true` y no `!row.truncated`: con el tri-estado, `!null` es `true` y un
+  // "no se sabe" habría pasado como sano. Un hueco declarado no se puede leer
+  // como un OK.
+  row.ok = row.json_ok && row.truncated !== true;
+  if (!row.ok && row.truncated === true) row.failure = 'truncated_at_max_tokens';
   else if (!row.ok) row.failure = 'malformed_json';
   return row;
 }
@@ -556,6 +579,16 @@ export default async function handler(req, res) {
 
   const out = {
     ran_at: new Date().toISOString(),
+    // ── QUÉ BUILD CONTESTÓ, EN LA LLAMADA GRATIS (2026-10-05) ───────
+    // `/api/arena-shadow` ya devolvía el commit; el catálogo NO, y el catálogo
+    // es la llamada de 0 tokens que se hace PRIMERO. Así que la única forma de
+    // saber qué build servía producción era gastar una corrida.
+    //
+    // El 2026-10-05 eso casi costó la tanda de 21: el commit estaba en una
+    // rama sin mergear y producción seguía sirviendo el build del viernes. Era
+    // la TERCERA vez que casi medimos el sistema anterior. Un número que
+    // decide si el resto de la respuesta significa algo va primero y gratis.
+    build: buildInfo(),
     prompt_version: PROMPT_VERSION,
     settings: { max_tokens: ARENA_MAX_TOKENS, effort: ARENA_EFFORT, temperature_default: ARENA_TEMPERATURE },
     // ── LOS RELOJES EFECTIVOS, CON SU ORIGEN ──────────────────────────

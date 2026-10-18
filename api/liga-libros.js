@@ -51,6 +51,10 @@ import { sql } from './_lib/db.js';
 import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay, PROBE_IDS } from './_lib/arena-registry.js';
 import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
 import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes, resumenDeslizamiento, ordenesDeActions } from './_lib/arena-fills.js';
+// `effectiveCutoff` ya es "la más reciente de dos fechas, tolerando null" — la
+// MISMA pregunta que acota la ventana. Importarla en vez de escribir otro
+// `max` es B41 aplicado a dos líneas: una regla duplicada se vuelve dos reglas.
+import { leerInicioTemporada, effectiveCutoff } from './_lib/arena-baseline.js';
 
 const int = (v, def, min, max) => {
   const n = parseInt(v, 10);
@@ -237,6 +241,57 @@ export const FUENTE_VIVA = 'en_vivo';
 export const FUENTE_PRUEBA = 'prueba';
 
 // Una fila del journal (en vivo o de prueba) → el libro publicable.
+// ── ¿NECESITÓ EL REINTENTO SOLO-JSON? (2026-10-02) ───────────────────
+// El reintento es un RIEL: lo tienen los siete igual (`ARENA_REINTENTO_JSON`,
+// sin variante por agente). La condición para que sea un riel y no un favor es
+// que "necesitó reintento" se CUENTE y se publique, igual que las tres culpas
+// de B44.
+//
+// `jsonb_build_object` siempre construye el objeto, así que una corrida sin
+// reintento vuelve con los cuatro campos en null. Eso se normaliza a `null`
+// acá: un objeto con todo en null se lee en la pantalla como "hubo reintento y
+// no sabemos qué pasó", que es lo contrario de lo que ocurrió.
+export function reintentoPublicable(ctx) {
+  const r = ctx && ctx.reintento_json;
+  if (!r || (r.concedido == null && r.omitido_por_reloj == null)) return null;
+  return {
+    concedido: !!r.concedido,
+    resuelto: r.resuelto == null ? null : !!r.resuelto,
+    // LA CAUSA, que manda a lugares opuestos: `corte` es NUESTRO techo de
+    // tokens (se sube `ARENA_MAX_TOKENS`); `formato` es el modelo y es
+    // hallazgo; `desconocida` es un hueco declarado (el proveedor no mandó
+    // `finish_reason`).
+    causa: r.causa || null,
+    omitido_por_reloj: !!r.omitido_por_reloj,
+  };
+}
+
+// EL TOTAL POR AGENTE. Y las dos cifras se leen JUNTAS, a propósito: el riel es
+// el mismo en el reglamento y desigual en el resultado — el reintento cuesta
+// una llamada más del presupuesto total, así que se lo lleva de hecho el que
+// cierra rápido. Publicar `necesito` sin `omitido_por_reloj` al lado haría
+// pasar por igualdad algo que en la práctica alcanza a cinco de siete.
+export function conteoDeReintentos(libros) {
+  const por = {};
+  let total = 0, resueltos = 0, omitidos = 0;
+  for (const l of libros || []) {
+    const r = l && l.reintento;
+    if (!r) continue;
+    const id = (l.agente && l.agente.id) || 'desconocido';
+    const a = por[id] || (por[id] = { necesito: 0, resuelto: 0, fallo: 0, omitido_por_reloj: 0, por_causa: {} });
+    a.necesito++; total++;
+    if (r.omitido_por_reloj) { a.omitido_por_reloj++; omitidos++; }
+    else if (r.resuelto) { a.resuelto++; resueltos++; }
+    else a.fallo++;
+    const c = r.causa || 'desconocida';
+    a.por_causa[c] = (a.por_causa[c] || 0) + 1;
+  }
+  return {
+    total, resueltos, omitidos_por_reloj: omitidos, por_agente: por,
+    nota: 'El reintento solo-JSON es un riel igual para los siete y pide SOLO el formato (no cambia la decisión y va sin herramientas), así que un libro rescatado cuenta como entregado. Pero "necesitó reintento" es un hallazgo del agente y se cuenta. `causa: corte` NO es del agente: es nuestro techo de tokens. Y `omitido_por_reloj` es la desigualdad del riel: el que cierra tarde no alcanza a usarlo.',
+  };
+}
+
 export function libroDeFila(row, fuente) {
   const ctx = row.context || {};
   // ── LOS FILLS Y EL LIBRO DE ANTES ─────────────────────────────────
@@ -270,6 +325,9 @@ export function libroDeFila(row, fuente) {
     enfoque_nota: ctx.lens ? 'El enfoque rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ese día.' : null,
     // CÓMO INVESTIGÓ.
     investigacion: secuenciaPublicable(ctx),
+    // null cuando no hubo reintento, que es el caso normal: cuatro campos en
+    // null se leerían como "hubo y no sabemos".
+    reintento: reintentoPublicable(ctx),
     // ── LOS PESOS ACTUALES, que son la otra mitad del delta ──────────
     // `objetivo − actual` es lo que el agente DECIDIÓ CAMBIAR, y es lo único
     // comparable entre dos cuentas que heredaron carteras distintas. Sin los
@@ -690,10 +748,38 @@ export default async function handler(req, res) {
   // siempre el nombre nuevo.
   const ALIAS_FUENTE = { viva: FUENTE_VIVA, sombra: FUENTE_PRUEBA, en_vivo: FUENTE_VIVA, prueba: FUENTE_PRUEBA, ambas: 'ambas' };
   const fuente = ALIAS_FUENTE[String(q.fuente || '').trim().toLowerCase()] || 'ambas';
-  const desde = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10);
 
   const libros = [];
   const avisos = [];
+
+  // ── LA VENTANA NO PUEDE MIRAR ANTES DE LA TEMPORADA (2026-10-02) ───
+  // `?dias=3` es el default, y el día 1 de la T3 eso alcanza al 29-sep: la
+  // corrida CONTAMINADA que se corrió con el reglamento a medio cambiar. Con
+  // la ventana sin piso, /liga la dibuja como si fuera de la T3 — siete
+  // tarjetas de una temporada que no es ésta, en la primera pantalla que Lety
+  // va a abrir el día del encendido.
+  //
+  // UN SOLO `desde`, y por eso UNA SOLA LÍNEA: las dos consultas (viva y
+  // prueba) lo toman como `$1`, y las cinco secciones de la respuesta
+  // (`por_dia`, `deslizamiento`, `herramientas`, `coincidencia` y el piso de
+  // ruido) se derivan en JS del MISMO array `libros`. No hay cinco ventanas
+  // que acotar: hay una.
+  //
+  // El piso es el arranque REAL (lo escribe el reset en `arena_flags`), no el
+  // declarado: una temporada "abierta" en la config y nunca reseteada no
+  // empezó. Si todavía no está escrito, cae al declarado — que ya excluye el
+  // 29-sep — y la respuesta DICE cuál de los dos usó.
+  const desdePedido = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10);
+  let inicioReal = null;
+  try {
+    inicioReal = await leerInicioTemporada(ARENA_SEASON.id);
+  } catch (e) {
+    // Se REPORTA. Un piso que falla en silencio deja la ventana abierta hacia
+    // atrás y la pantalla se ve igual de bien que si hubiera funcionado.
+    avisos.push('No se pudo leer el arranque real de la temporada (' + String((e && e.message) || e) + '): la ventana se acotó con el arranque DECLARADO.');
+  }
+  const pisoTemporada = (inicioReal && inicioReal.start) || ARENA_SEASON.start;
+  const desde = effectiveCutoff(pisoTemporada, desdePedido);
 
   if (fuente === FUENTE_VIVA || fuente === 'ambas') {
     try {
@@ -721,6 +807,16 @@ export default async function handler(req, res) {
                   'ejecucion', context->'ejecucion',
                   'contrato', context->>'contrato',
                   'posiciones_iniciales', context->'posiciones_iniciales',
+                  -- ¿NECESITÓ EL REINTENTO SOLO-JSON? Van los cuatro campos
+                  -- chicos y NO el bloque entero (trae el primer texto
+                  -- malformado, que en 200 filas no baja). Se agrega para el
+                  -- total por agente, no para dibujarlo en cada tarjeta.
+                  'reintento_json', jsonb_build_object(
+                    'concedido', context->'reintento_json'->'concedido',
+                    'resuelto',  context->'reintento_json'->'resuelto',
+                    'causa',     context->'reintento_json'->>'causa',
+                    'omitido_por_reloj', context->'reintento_json'->'omitido_por_reloj'
+                  ),
                   -- POR QUE SE CAYO. Se arma campo por campo y NO se manda
                   -- llm_error entero: trae raw_body y el turno de cierre
                   -- completo, que en 200 filas es una respuesta que no baja.
@@ -770,6 +866,12 @@ export default async function handler(req, res) {
                   'rails', context->'rails',
                   'ejecucion', context->'ejecucion',
                   'posiciones_iniciales', context->'posiciones_iniciales',
+                  'reintento_json', jsonb_build_object(
+                    'concedido', context->'reintento_json'->'concedido',
+                    'resuelto',  context->'reintento_json'->'resuelto',
+                    'causa',     context->'reintento_json'->>'causa',
+                    'omitido_por_reloj', context->'reintento_json'->'omitido_por_reloj'
+                  ),
                   -- Igual que la consulta VIVA. Las dos o ninguna: la mitad de
                   -- las fichas con el motivo a la vista es peor que ninguna,
                   -- porque la ausencia se lee como "no falló".
@@ -814,7 +916,21 @@ export default async function handler(req, res) {
       start: ARENA_SEASON.start, end: ARENA_SEASON.end,
       estado: seasonStatus(), dia: seasonDay(),
     },
-    ventana: { dias, desde },
+    // LA VENTANA, CON SU PISO A LA VISTA. Una ventana acotada en silencio y
+    // una temporada sin corridas se ven idénticas desde la pantalla: las dos
+    // muestran menos filas. Acá se dice cuál de las dos es.
+    ventana: {
+      dias, desde,
+      desde_pedido: desdePedido,
+      acotada: desde !== desdePedido,
+      inicio_temporada: pisoTemporada,
+      inicio_temporada_fuente: inicioReal && inicioReal.start
+        ? `real: el reset marcó el arranque${inicioReal.at ? ' el ' + String(inicioReal.at).slice(0, 19) : ''}`
+        : 'declarado (ARENA_SEASON.start): el reset todavía no marcó el arranque, así que la temporada no está abierta',
+      ...(desde !== desdePedido ? {
+        nota: `?dias=${dias} pedía desde ${desdePedido}, antes del arranque de la temporada (${pisoTemporada}). Se acotó: lo de antes es de otra temporada o de una corrida contaminada, y mezclarlo acá lo publicaría como T3.`,
+      } : {}),
+    },
     filtros: { agente, fuente },
     conteos: {
       libros: libros.length,
@@ -822,6 +938,8 @@ export default async function handler(req, res) {
       con_investigacion: conHerramientas.length,
       de_prueba: libros.filter((l) => l.fuente === FUENTE_PRUEBA).length,
     },
+    // La estadística del riel, por agente. No se esconde, se cuenta.
+    reintentos: conteoDeReintentos(libros),
     nota_fuente: 'Cada libro trae su sello. EN VIVO es la liga de verdad. PRUEBA es el contrato nuevo corriendo en paralelo sobre el mismo mercado y sin mandar una sola orden. EN VIVO · SIN ENVIAR es la liga de verdad con la bandera en seco: las órdenes se calcularon completas y no salió ninguna.',
     // Por día y por fuente: la coincidencia entre los libros de ese día y el
     // piso de ruido claude↔control. El piso se CALCULA acá y no se archiva —
