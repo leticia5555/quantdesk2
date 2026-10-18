@@ -26,6 +26,44 @@ import {
   buildUniverse, resolveConstituents, refreshDue, REFRESH_DAYS, MOVERS_MAX,
 } from '../api/_lib/arena-universe.js';
 
+// ── «SIN RED» TIENE QUE SER VERIFICABLE, NO UNA PROMESA (2026-10-18) ─
+// El encabezado de este archivo dice, desde que se escribió: «Sin red y sin
+// Neon: todo por inyección de dependencias». No era cierto, y no había forma
+// de notarlo: dos escalones —`fetchDesdeEtf` y `fetchNasdaq100`— no estaban
+// inyectados en varios bloques, y su default en `arena-universe.js` sale a
+// buscar el CSV de iShares y las tablas públicas del Nasdaq POR RED.
+//
+// El resultado dependía de la máquina:
+//   · sin salida a esos hosts (los sandboxes donde esta suite se corrió a mano
+//     durante meses) → los defaults devuelven null, el escalón se cae solo, y
+//     TODO PASA — por la razón equivocada;
+//   · con internet → el escalón 1 contesta de verdad, gana, y los bloques que
+//     dicen «gana FMP» o «entran 600 nombres» reciben otra fuente y otro
+//     conteo (502 + 102 en vez de 500 + 100).
+//
+// Lo encontró la primera corrida del workflow de CI, que fue la primera vez
+// que esta suite corrió en una máquina con internet.
+//
+// ESTO LO VUELVE IMPOSIBLE en vez de arreglar los dos casos: cualquier `fetch`
+// que se escape lanza, nombrando la URL. Un bloque al que le falte una
+// inyección ya no pasa en una máquina y falla en otra — falla en las dos, con
+// el motivo escrito. Es la única forma de que la frase del encabezado sea un
+// hecho verificado y no una intención.
+// Y SE CUENTAN, no sólo se bloquean. Lanzar no alcanza: `fetchNasdaq100` y
+// `fetchDesdeEtf` están escritos para NO propagar un error de red —devuelven
+// null y el caller baja un escalón, que es lo correcto en producción—, así que
+// un `fetch` que lanza se ve exactamente igual que una máquina sin salida. Ése
+// es el motivo por el que esto estuvo invisible: el código de verdad hace bien
+// su trabajo y se come la evidencia.
+//
+// La fuga se REGISTRA y se verifica al final del archivo. Así el bloque al que
+// le falta una inyección falla en TODAS las máquinas, con la URL escrita.
+const FUGAS_DE_RED = [];
+globalThis.fetch = async (url) => {
+  FUGAS_DE_RED.push(String((url && url.url) || url).slice(0, 120));
+  throw new Error('PRUEBA SIN RED: salió a la red en vez de usar su dependencia inyectada');
+};
+
 let failures = 0;
 function ok(cond, name, detail) {
   if (cond) console.log('  PASS', name);
@@ -933,6 +971,41 @@ console.log('\n── el tope del día sale de la cuota de Finnhub ──');
   ok(MOVERS_MAX <= 60 - FINNHUB_CALL_BUDGET + FINNHUB_CALL_BUDGET && MOVERS_MAX <= FINNHUB_CALL_BUDGET + 10,
     'y el tope del canal entra en el presupuesto de llamadas declarado',
     `tope ${MOVERS_MAX} · presupuesto ${FINNHUB_CALL_BUDGET}`);
+}
+
+// ── LA PROMESA DEL ENCABEZADO, MEDIDA ────────────────────────────────
+// El encabezado dice «sin red y sin Neon: todo por inyección de dependencias».
+// Con el `fetch` de arriba contado, resulta que NO: hay 88 intentos a 6 hosts
+// (wikipedia, slickcharts, iShares, Invesco, Alpaca y finnhub con
+// `token=undefined`). Todos los come el código de producción —devuelve null y
+// baja un escalón— así que ninguno cambia un assert, pero estaban saliendo de
+// verdad en cada corrida de la suite.
+//
+// ESTO ES UN TRINQUETE, NO UN ARREGLO. Inyectar los hooks que faltan en cada
+// bloque es un trabajo aparte y es de otra área; meterlo acá ensancharía un PR
+// que es sobre el CI. Lo que sí entra hoy es:
+//
+//   · el `fetch` de arriba, que hace que NINGUNO salga de verdad (y de paso
+//     evita 88 timeouts de 20-25s en el runner, que es lo que volvería al CI
+//     lento y flaky);
+//   · este número, declarado, que SÓLO PUEDE BAJAR. Si alguien agrega una fuga
+//     nueva, esto se pone rojo en su commit en vez de a los dos meses.
+//
+// Medido tres veces: 88 exactos, determinista (ya no depende de la red).
+const PRESUPUESTO_DE_FUGAS = 88;
+console.log('\n── «sin red y sin Neon: todo por inyección de dependencias» ──');
+{
+  const urls = [...new Set(FUGAS_DE_RED)];
+  const hosts = [...new Set(urls.map((u) => { try { return new URL(u).host; } catch { return u; } }))];
+  ok(FUGAS_DE_RED.length <= PRESUPUESTO_DE_FUGAS,
+    `las fugas a la red no AUMENTAN (presupuesto ${PRESUPUESTO_DE_FUGAS}, sólo puede bajar)`,
+    `${FUGAS_DE_RED.length} intento(s) · ${hosts.length} host(s): ${hosts.join(', ')}`);
+  if (FUGAS_DE_RED.length) {
+    console.log(`  NOTA  ${FUGAS_DE_RED.length} intentos BLOQUEADOS a ${hosts.length} hosts: ${hosts.join(', ')}`);
+    console.log('  NOTA  ninguno sale de verdad (el fetch de este archivo lanza), y ninguno cambia un assert');
+    console.log('        porque producción los come y baja un escalón. Inyectar los hooks que faltan es');
+    console.log('        trabajo aparte: este número es el trinquete mientras tanto.');
+  }
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
