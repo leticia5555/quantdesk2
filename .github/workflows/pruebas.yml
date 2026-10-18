@@ -1,0 +1,193 @@
+# ═══════════════════════════════════════════════════════════════════
+# .github/workflows/pruebas.yml — LA SUITE, EN AUTOMÁTICO.
+#
+# POR QUÉ EXISTE (2026-10-18). Durante meses los únicos checks del repo fueron
+# los de Vercel, que dicen que el DEPLOY salió — no que el código esté sano. La
+# suite (155 archivos) nunca corrió sola: se corría a mano, en una sesión, sobre
+# el `main` de ese día.
+#
+# Y eso ya costó. Un PR estuvo dos semanas abierto con "checks en verde" que no
+# incluían una sola prueba, mientras `main` se movía 19 commits por debajo. Lo
+# dijo Lety así: «le dije que los checks verdes querían decir código sano. Los
+# checks son de Vercel.»
+#
+# El riesgo concreto que esto cubre: durante la temporada van a entrar merges a
+# `main` de otras sesiones, trabajando en mercado/mundo/reaccion. Hoy nada
+# impide que uno rompa el Arena en silencio, y lo descubriríamos como un aborto
+# raro en la semana tres — con la liga corriendo y los datos ya sucios.
+#
+# ── POR QUÉ NO HAY `npm ci` ─────────────────────────────────────────
+# El repo no tiene `package.json` y las pruebas no importan NADA fuera de
+# `node:*`. Agregar un paso de instalación sería agregar una forma de fallar
+# que hoy no existe.
+#
+# ── PERO SÍ HAY UN POSTGRES, Y ESO CONTRADICE LO DE ARRIBA ──────────
+# `tests/mercado-sql.test.mjs` prepara el SQL del mapa contra un Postgres REAL
+# que levanta él mismo con `initdb` en un temporal, y se niega a saltarse solo:
+#
+#     'Esta prueba NO se salta sola: el SQL sin verificar fue exactamente cómo
+#      el mapa llegó roto a producción.'
+#
+# Tiene razón quien la escribió, así que la máquina tiene que traer el binario
+# en vez de que la prueba baje el estándar. `SIN_POSTGRES=1` existe y lo
+# saltearía en una línea — y entonces el CI dejaría pasar justo el bug que esa
+# prueba cerró. No se usa acá.
+#
+# ── LO PRIMERO QUE ENCONTRÓ, EN SU PROPIO PR ────────────────────────
+# `tests/arena-universo.test.mjs` pasaba por la razón equivocada. Su fábrica de
+# dependencias no inyectaba `fetchDesdeEtf`, cuyo default sale a buscar el CSV
+# de tenencias de iShares POR RED. Con red, el escalón 1 contesta 502 nombres y
+# gana; nueve aserciones que dicen "gana FMP" / "se usa la lista guardada" /
+# "gana el JSON del repo" reciben `source: 'etf'`. Sin red —los sandboxes donde
+# la suite se corría a mano— devuelve null y todo pasa.
+#
+# O sea: la suite estaba verde porque nunca había corrido en una máquina con
+# internet. Que el primer rojo de este workflow haya sido eso, en su propio PR,
+# es el argumento entero a favor de que exista.
+#
+# ── Y LAS FALLAS SE PUBLICAN DONDE SE PUEDEN LEER ───────────────────
+# La primera corrida de este workflow salió roja y el log crudo de Actions vive
+# en otro host, así que desde una sesión sin acceso a ese host el único dato era
+# "exit code 1". Un CI cuyo resultado sólo se puede leer abriendo el navegador
+# obliga a un humano para cada rojo.
+#
+# Así que cada archivo rojo sale por TRES caminos: el log del paso, una
+# ANOTACIÓN (`::error::`, que queda en la API de check-runs y en la pestaña
+# Files del PR) y el RESUMEN del job (`$GITHUB_STEP_SUMMARY`, que se ve en la
+# página del run sin abrir el log). El mismo criterio que el resto del repo: un
+# diagnóstico que existe en un solo lugar inaccesible no existe.
+#
+# ── POR QUÉ NO ES FAIL-FAST ─────────────────────────────────────────
+# El objetivo es contestar "¿qué rompió este merge?", no "¿rompió algo?". Con
+# fail-fast, un merge que toca tres áreas obliga a tres corridas para enterarse
+# de las tres. El loop junta TODOS los rojos y los lista al final.
+#
+# ── POR QUÉ `TZ: UTC` EXPLÍCITO ─────────────────────────────────────
+# Dos pruebas de backtest construyen su calendario a partir de la fecha, y una
+# de ellas amaneció en rojo sin que nadie tocara el código (ver B52/B53 y los
+# fixtures clavados en `rotation-analyze` y `dualmom-analyze`). La zona del
+# runner no puede ser una variable silenciosa del resultado: si una prueba
+# depende de la fecha, que dependa de la MISMA en todas las máquinas.
+# ═══════════════════════════════════════════════════════════════════
+name: pruebas
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Un push nuevo sobre la misma rama cancela la corrida anterior: la que importa
+# es la del último commit, y dos corridas compitiendo gastan minutos y confunden.
+concurrency:
+  group: pruebas-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # ── EL ENTORNO, COMO ANOTACIÓN ─────────────────────────────────
+      # Sale por `::notice::` y no sólo por `echo` para que se pueda leer sin
+      # el log crudo. Es lo primero que hace falta cuando una prueba pasa en
+      # una máquina y falla en otra.
+      - name: el entorno
+        run: |
+          echo "::notice title=entorno::node $(node -v) · archivos de prueba $(ls tests/*.test.mjs | wc -l) · TZ=${TZ:-<sin fijar>} · jq $(jq --version 2>/dev/null || echo AUSENTE)"
+          # El MISMO criterio que usa `binDePostgres()` en la prueba: no vale
+          # preguntar por `psql` en el PATH, la prueba busca initdb/pg_ctl.
+          encontrado=""
+          for b in /usr/lib/postgresql/*/bin /usr/local/pgsql/*/bin /usr/bin /usr/local/bin; do
+            if [ -x "$b/initdb" ] && [ -x "$b/pg_ctl" ]; then encontrado="$b"; break; fi
+          done
+          echo "::notice title=postgres::initdb/pg_ctl en: ${encontrado:-NO ENCONTRADO}"
+          echo "POSTGRES_BIN=$encontrado" >> "$GITHUB_ENV"
+
+      # Sólo si falta. En la imagen del runner suele venir; cuando no, la
+      # prueba del SQL del mapa no puede correr y NO se la saltea.
+      - name: postgres, si la imagen no lo trae
+        if: env.POSTGRES_BIN == ''
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql
+          for b in /usr/lib/postgresql/*/bin; do
+            if [ -x "$b/initdb" ] && [ -x "$b/pg_ctl" ]; then
+              echo "::notice title=postgres instalado::$b"
+              exit 0
+            fi
+          done
+          echo "::error title=postgres::se instaló el paquete y initdb/pg_ctl siguen sin aparecer"
+          exit 1
+
+      - name: la suite
+        run: |
+          rojos=()
+          total=0
+          for f in tests/*.test.mjs; do
+            total=$((total + 1))
+            if node "$f" > "/tmp/$(basename "$f").log" 2>&1; then
+              printf '  ok   %s\n' "$f"
+            else
+              printf '  ROJO %s\n' "$f"
+              rojos+=("$f")
+            fi
+          done
+
+          echo
+          echo "──────────────────────────────────────────────────────────"
+          echo "$total archivos · ${#rojos[@]} rojos"
+
+          {
+            echo "## suite"
+            echo
+            echo "\`$total\` archivos · \`${#rojos[@]}\` rojos"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ${#rojos[@]} -eq 0 ]; then
+            echo "TODO VERDE"
+            echo -e "\nTODO VERDE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # La salida de CADA rojo, entera y al final. Un resumen que sólo
+          # nombra los archivos obliga a abrir el log y buscar — y lo que hace
+          # falta para decidir si el merge se revierte es la línea del FAIL.
+          echo
+          for f in "${rojos[@]}"; do
+            log="/tmp/$(basename "$f").log"
+            echo "═══ $f ═══"
+            cat "$log"
+            echo
+
+            # AL RESUMEN DEL JOB: la salida entera, en la página del run.
+            {
+              echo
+              echo "### ROJO \`$f\`"
+              echo '```'
+              cat "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            # Y COMO ANOTACIÓN, que es lo único legible desde la API sin tocar
+            # el host de los logs. Las líneas que importan son las del FAIL (o
+            # las primeras, si el archivo murió al importar), acotadas: una
+            # anotación gigante se trunca y pierde justo la primera.
+            motivo="$( (grep -m 8 -E 'FAIL|Error|error:|not ok' "$log" || head -8 "$log") \
+              | cut -c1-300 \
+              | sed -e 's/%/%25/g' -e 's/\r/%0D/g' \
+              | paste -sd '\n' - \
+              | sed -e 's/$/%0A/' | tr -d '\n' )"
+            echo "::error file=$f,title=prueba roja::${motivo:-sin salida}"
+          done
+          exit 1
