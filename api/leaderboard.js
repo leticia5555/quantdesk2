@@ -96,8 +96,70 @@ const eqOf = (r) => (r && r.account && Number.isFinite(r.account.equity) ? r.acc
 //     falso de una forma difícil de ver.
 //   - Sin equity (sin keys, Alpaca caída, benchmark sin abrir) → al final, sin
 //     rango. Un agente caído no es un agente en cero.
-export function ordenarRanking({ agentes = [], bench = null } = {}) {
+// ── UNA TEMPORADA QUE NO ARRANCÓ NO TIENE RENDIMIENTO (2026-10-18) ───
+// LA INCOHERENCIA, dentro de UNA sola respuesta (Lety, 2026-10-18):
+//
+//   temporada: { abierta: false, corrida_dias: 0 }
+//   benchmark: { abierto: false, return_pct: null, detalle: "…" }
+//   agents:    los siete CON return_pct y CON puesto (deepseek +2.79 … control −5.26)
+//
+// La fila del índice se niega a dar un número y las filas de los agentes no.
+// Esos +2.79 y −5.26 son los libros HEREDADOS de la T2 medidos contra el
+// baseline del último reset, publicados como si fueran el rendimiento de una
+// temporada que no empezó. Y es lo primero que se mira el día 1.
+//
+// La regla ya existía y estaba aplicada a UNA fila de ocho: `filaBenchmark`
+// devuelve `abierto: false`, `return_pct: null` y un `detalle` que dice por
+// qué. Esto la aplica a las siete que faltaban, con el MISMO campo.
+//
+// QUÉ SE NIEGA Y QUÉ NO, que es la parte que hay que poder discutir:
+//
+//   SE NIEGA   todo lo que se mide CONTRA EL BASELINE DE LA TEMPORADA:
+//              `return_pct`, `exceso_pp`, `rank`, `margen`. Sin temporada no
+//              hay desde dónde medir, así que el número no es impreciso: no
+//              existe.
+//   SE QUEDA   lo que es un hecho de HOY y no una afirmación sobre la
+//              temporada: `equity` (la cuenta tiene ese dinero),
+//              `day_change_pct` (lo que se movió hoy) y `baseline_equity` (lo
+//              que escribió el último reset, que es el dato con el que se
+//              verifica que el próximo reset re-basó bien).
+//
+// Y EL ORDEN TAMBIÉN. Dejar `rank: null` pero seguir ordenando por equity
+// publica un ranking sin llamarlo ranking: la pantalla lo dibuja en ese orden
+// y se lee igual. Con la temporada cerrada el orden es el del registro
+// (`activeAgents()`), que no afirma nada.
+export const DETALLE_TEMPORADA_CERRADA =
+  'La temporada todavía no arrancó: el reset que la abre no corrió. El rendimiento y el puesto se miden contra el baseline de la temporada, así que todavía no existen — los libros son los que quedaron de la anterior. `equity` y `day_change_pct` sí son de hoy y se publican. Misma regla que la fila del índice (`benchmark.abierto: false`).';
+
+export function negarSiTemporadaCerrada(filas, temporada) {
+  if (temporada && temporada.abierta) return filas;
+  return (filas || []).map((r) => ({
+    ...r,
+    return_pct: null,
+    exceso_pp: null,
+    rank: null,
+    margen: null,
+    temporada_abierta: false,
+    detalle: DETALLE_TEMPORADA_CERRADA,
+  }));
+}
+
+export function ordenarRanking({ agentes = [], bench = null, rankear = true } = {}) {
   const filas = [...agentes, ...(bench ? [bench] : [])];
+  // Sin temporada no se ordena por rendimiento NI por equity: el orden del
+  // registro no afirma nada, y `rank` sale null para todos (ver
+  // `negarSiTemporadaCerrada`).
+  if (!rankear) {
+    return filas.map((r, i) => ({
+      id: r.id, name: r.name, kind: r.kind || 'MODELO',
+      model: r.model ?? null, has_keys: r.has_keys === true,
+      compite: r.compite !== false,
+      orden: i + 1, equity: eqOf(r),
+      baseline_equity: r.baseline_equity ?? null,
+      return_pct: null, rank: null,
+      orden_nota: 'orden de registro, NO un ranking: la temporada no arrancó.',
+    }));
+  }
   const retOf = (r) => (r && Number.isFinite(r.return_pct) ? r.return_pct : null);
   const conEquity = filas.filter((r) => eqOf(r) != null).sort((a, b) => {
     const ra = retOf(a), rb = retOf(b);
@@ -304,9 +366,24 @@ export default async function handler(req, res) {
     bench = { ...filaBenchmark(null, null), error: String((err && err.message) || err) };
   }
 
+  // ── LA NEGACIÓN VA EN EL ORIGEN, NO EN CADA CONSUMIDOR ────────────
+  // Acá y no en el ranking, ni en el margen, ni en el post-mortem: si las
+  // filas salen ya negadas, los tres de abajo se niegan solos (el margen no
+  // encuentra retornos y lo dice; el exceso ya era null porque el benchmark
+  // también está cerrado). Negar en tres lugares sería tener la misma regla
+  // escrita tres veces, que es cómo se vuelve dos reglas.
+  //
+  // Se muta `rows` en el lugar porque `rows` es lo que leen `ranked`, `margen`
+  // y `post_mortem` más abajo: reasignar la const dejaría a esos tres mirando
+  // las filas viejas, que es exactamente el bug que esto cierra.
+  if (!temporada.abierta) {
+    const negadas = negarSiTemporadaCerrada(rows, temporada);
+    for (let i = 0; i < rows.length; i++) Object.assign(rows[i], negadas[i]);
+  }
+
   // Ranking por EQUITY (decisión #6), con el benchmark ordenado entre medio
   // pero sin tomar puesto. Ver `ordenarRanking`.
-  const ranking = ordenarRanking({ agentes: rows, bench });
+  const ranking = ordenarRanking({ agentes: rows, bench, rankear: !!temporada.abierta });
   const porId = new Map(ranking.map((r) => [r.id, r]));
   for (const r of rows) r.rank = (porId.get(r.id) || {}).rank ?? null;
   if (bench) bench.rank = null;
@@ -366,6 +443,10 @@ export default async function handler(req, res) {
     // La temporada EFECTIVA: con `abierta` y, si el reset corrió tarde, cuántos
     // días se corrió la ventana contra lo planeado.
     temporada,
+    // EL AVISO EN LA CABECERA, para el consumidor que no baja a las filas. Una
+    // tabla sin rendimiento y una tabla con todos en cero se ven parecidas
+    // desde arriba, y son cosas opuestas.
+    ...(temporada.abierta ? {} : { aviso: DETALLE_TEMPORADA_CERRADA }),
     // El orden VISUAL, liviano: id + puesto + equity. La página arma la tabla
     // con esto y busca la fila completa por id, así el orden se decide UNA vez
     // acá y no se re-deriva en el navegador.
@@ -378,6 +459,19 @@ export default async function handler(req, res) {
   // sombra, que es una consulta más en una ruta pública y cacheada — por eso no
   // va en el camino por defecto.
   if (String((req.query || {}).postmortem || '') === '1') {
+    // Sin temporada no hay post-mortem, y se dice. `excesoVsBenchmark` filtra
+    // por `Number.isFinite(return_pct)`, así que con las filas negadas
+    // devolvería una lista VACÍA — y una lista vacía se lee como "ningún
+    // agente le ganó al índice", que es una afirmación, no una ausencia.
+    if (!temporada.abierta) {
+      body.post_mortem = {
+        disponible: false,
+        motivo: DETALLE_TEMPORADA_CERRADA,
+        agentes: [], piso_de_ruido_serie: [],
+      };
+      res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
+      return res.status(200).json(body);
+    }
     // ── EL PISO SALE DEL ARCHIVO, no de recalcular el día de hoy ───────
     // Un post-mortem de temporada que recalcula el piso de HOY no sirve: el día
     // que se lee puede no tener sombra, y las filas de septiembre pueden no
