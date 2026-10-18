@@ -746,6 +746,89 @@ vive en el smoke, que corre solo y puede pagar esa llamada.
 
 ---
 
+## B53 · LA MISMA REGLA, APLICADA A UNA FILA DE OCHO (2026-10-18)
+
+Dentro de **una sola respuesta** de `/api/leaderboard` (Lety, 2026-10-18):
+
+```
+temporada: { abierta: false, corrida_dias: 0 }
+benchmark: { abierto: false, return_pct: null, detalle: "…" }
+agents:    los siete CON rendimiento y CON puesto (deepseek +2.79 … control −5.26)
+```
+
+> «La fila del índice se niega a dar un número y las filas de los agentes no.
+> Dentro de la misma respuesta.»
+
+Esos +2.79 y −5.26 son los libros **heredados de la T2**, medidos contra el
+baseline del último reset y publicados como el rendimiento de una temporada que
+no empezó. Y es lo primero que se mira el día 1.
+
+**Lo que lo hace peor: la regla ya existía.** `filaBenchmark` devuelve
+`abierto: false`, `return_pct: null` y un `detalle` con el motivo desde que se
+escribió. Siete filas de ocho usaban el mismo campo `return_pct` y no la misma
+regla. No era una regla faltante: era una regla aplicada a una fila.
+
+### Qué se niega y qué no
+
+| | campos | por qué |
+|---|---|---|
+| **se niega** | `return_pct` · `exceso_pp` · `rank` · `margen` | se miden **contra el baseline de la temporada**. Sin temporada no hay desde dónde medir: el número no es impreciso, no existe |
+| **se queda** | `equity` · `day_change_pct` · `baseline_equity` | son hechos de **hoy**, no afirmaciones sobre la temporada. La cuenta tiene ese dinero; eso se movió hoy; y el baseline es el dato con el que se verifica que el próximo reset re-basó bien |
+
+Con `null` y nunca con `0`: **"no existe" y "no se movió" son cosas opuestas**, y
+un cero tiene autoridad.
+
+### Y EL ORDEN TAMBIÉN AFIRMA
+
+Dejar `rank: null` y seguir ordenando por equity **publica un ranking sin
+llamarlo ranking**: la pantalla lo dibuja en ese orden y se lee igual. Con la
+temporada cerrada el orden es el del registro (`activeAgents()`), que no afirma
+nada, y la fila lo dice (`orden_nota`) en vez de dejarlo deducir.
+
+El test tiene el contraejemplo ejecutable: con `rankear: true` sobre las
+**mismas filas ya negadas**, deepseek vuelve al primer puesto por equity. Por eso
+negar los campos no alcanzaba y hace falta la bandera.
+
+### LA NEGACIÓN VA EN EL ORIGEN
+
+Se aplica una vez sobre `rows`, que es lo que leen el ranking, el margen y el
+post-mortem. Los tres se niegan solos entonces: el margen no encuentra retornos
+y lo dice, el exceso ya era null porque el benchmark también está cerrado.
+Negar en los tres consumidores sería la misma regla escrita tres veces — B41, que
+es justo el defecto que este hallazgo *es*.
+
+Hay un test que cuenta las llamadas: si aparece una tercera, alguien la está
+aplicando otra vez en un consumidor.
+
+### UNA LISTA VACÍA NO ES UNA AUSENCIA
+
+`excesoVsBenchmark` filtra por `Number.isFinite(return_pct)`, así que con las
+filas negadas `?postmortem=1` devolvía `[]` — y `[]` se lee como «ningún agente
+le ganó al índice», que es una **afirmación**. Ahora sale
+`{ disponible: false, motivo }`.
+
+### Y LA CAUSA CORRECTA EN LA PANTALLA
+
+`armaArena` ya publicaba el motivo de cada rendimiento ausente, con las tres
+causas que main separó el 5-oct (sin llaves / cuenta ilegible / baseline
+ilegible). Con las filas negadas caía en el genérico *"el leaderboard no trajo el
+rendimiento de este agente"* — y mandaba a revisar el leaderboard, que está
+bien. **Es el mismo error que esa función vino a arreglar, un escalón arriba.**
+La temporada cerrada va **adelante** de las otras tres, con `=== false` y no
+falsy: en una temporada abierta el campo no viaja, y un `undefined` no puede
+disparar la causa.
+
+### Lo que esto NO arregla
+
+`baselines_uniformes: false` sigue siendo cierto: los siete no arrancan con el
+mismo capital. Ya estaba decidido no igualarlo en la T3 (exige recrear las
+cuentas paper en Alpaca y regenerar 14 env vars), así que el anuncio de apertura
+publica el capital de arranque de cada agente **con su posición mínima al lado**
+(`lineaCapital` en `arena-reset.js`, ya escrito). Una asimetría declarada es
+dato; una callada es el sesgo que alguien descubre en noviembre.
+
+---
+
 ## B52 · RAZONÉ SOBRE UNA RAMA COMO SI FUERA PRODUCCIÓN (2026-10-05)
 
 Mi reporte del viernes terminaba en «**Pusheado en

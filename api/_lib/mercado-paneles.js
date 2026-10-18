@@ -173,6 +173,18 @@ export function armaArena({ agents = [], error = null, n = 5 } = {}) {
  * era la primera: no tienen cuenta de Alpaca conectada.
  */
 function motivoSinRetorno(a) {
+  // ── LA CAUSA QUE MANDA SOBRE LAS OTRAS TRES (2026-10-18) ───────────
+  // Si la temporada no arrancó, el rendimiento no FALTA: no existe. Las llaves
+  // pueden estar las siete puestas, la cuenta leerse perfecto y el baseline
+  // estar escrito —y los tres motivos de abajo mandarían a revisar cosas que
+  // están bien. Es el mismo error que esta función vino a arreglar, un escalón
+  // más arriba.
+  //
+  // `=== false` y no falsy: en una temporada abierta el campo no viaja, y un
+  // `undefined` no puede disparar esto.
+  if (a && a.temporada_abierta === false) {
+    return a.detalle || 'la temporada todavía no arrancó: el rendimiento se mide contra el baseline de la temporada';
+  }
   if (a && a.has_keys === false) return 'este agente no tiene llaves de Alpaca configuradas';
   if (num(a && a.equity) == null) return 'no se pudo leer su cuenta de Alpaca';
   if (num(a && a.baseline_equity) == null) return 'no se pudo leer su capital inicial';
