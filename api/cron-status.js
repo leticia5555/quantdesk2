@@ -104,6 +104,14 @@ export const EXPECTED = [
   // 300 nombres a 100/min no cabe en una corrida; una vez sembrada, la cola
   // diaria termina en la primera y las otras dos no piden nada.
   { job: 'mercado:precios', path: '/api/mercado-precios?job=us',      schedule: '20,35,50 21 * * 1-5',   cadence: '3×/hora tras el cierre US', stale_after_h: 80 },
+  // R3(b). Cada 10 min, TODOS los días: las noticias no respetan el calendario
+  // bursátil. La ventana de stale es corta a propósito — con esta cadencia, dos
+  // horas sin latido ya no es "se perdió un tick", es que el job murió.
+  { job: 'mercado:noticias', path: '/api/noticias?job=feeds',         schedule: '*/10 * * * *',          cadence: 'cada 10 min', stale_after_h: 2 },
+  // Banxico por el SIE: la tasa objetivo se mira UNA vez al día. Sólo salen
+  // filas cuando la serie CAMBIA, así que el latido dice "se miró", no "hubo
+  // anuncio" — y por eso vale aunque pasen meses sin un solo cambio.
+  { job: 'mercado:banxico', path: '/api/noticias?job=banxico',        schedule: '25 23 * * 1-5',         cadence: '1×/día hábil', stale_after_h: 80 },
 ];
 
 // Crons de vercel.json que a propósito NO se vigilan acá, con el porqué. La
