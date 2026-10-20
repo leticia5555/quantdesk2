@@ -45,6 +45,7 @@ import { SECTOR_ETFS } from './arena-board.js';
 import { readDayCache, writeDayCache, marketDay } from './arena-buffet-cache.js';
 import { sql } from './db.js';
 import { tickersDeFila } from './noticias.js';
+import { runHistoria } from './arena-tools-historia.js';
 import { runEventos, DIAS_DEFAULT as EVENTOS_DIAS_DEFAULT, DIAS_MAX as EVENTOS_DIAS_MAX } from './arena-tools-eventos.js';
 
 // Tope DURO de llamadas por corrida. Las rondas fijas tienen 8; una corrida por
@@ -168,7 +169,8 @@ export const TOOL_DEFS = [
 // `eventos` (8-K de EDGAR) existe, está probada y NO se le ofrece a ningún
 // agente por defecto. Ofrecerla cambia el esquema que viaja en cada llamada
 // —o sea, el experimento— y eso se decide con Lety, no en un merge. Se
-// enciende sin deploy con `ARENA_TOOLS_EXTRA=eventos`.
+// enciende sin deploy con `ARENA_TOOLS_EXTRA=eventos` (o `eventos,historia`).
+// `historia` es la misma regla: lee la narración ya escrita, no narra.
 //
 // Mientras esté apagada, `TOOL_DEFS` (las cuatro de siempre) es exactamente lo
 // que ven los siete, y una llamada a `eventos` se responde como herramienta
@@ -181,6 +183,11 @@ export const TOOL_DEFS_OPCIONALES = [
       ticker: { type: 'string', desc: 'The ticker.', required: true },
       days: { type: 'number', desc: `How many days back (1-${EVENTOS_DIAS_MAX}, default ${EVENTOS_DIAS_DEFAULT}).` },
     },
+  },
+  {
+    name: 'historia',
+    description: 'The company\'s story from its own SEC filings, as already written by our HISTORIA module: ~2 paragraphs (promised vs. delivered, catalysts, where it breaks), with the date it was written and a hash. It is a reading as of that date, not today. If the name is not covered, it says "sin_cobertura" — that means not read, not "nothing to tell".',
+    params: { ticker: { type: 'string', desc: 'The ticker.', required: true } },
   },
 ];
 
@@ -266,6 +273,8 @@ export function clampArgs(name, raw) {
     up('ticker');
   } else if (name === 'sector') {
     up('etf');
+  } else if (name === 'historia') {
+    up('ticker');
   } else if (name === 'eventos') {
     up('ticker');
     num('days', 1, EVENTOS_DIAS_MAX, EVENTOS_DIAS_DEFAULT);
@@ -804,7 +813,7 @@ export async function runSector(args, ctx) {
   return { text: t.text, rows: t.shown, truncated: t.truncated };
 }
 
-export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector, eventos: runEventos };
+export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector, eventos: runEventos, historia: runHistoria };
 
 // ── EL EJECUTOR, con presupuesto y caché ─────────────────────────────
 // Posiciones de Alpaca → { SYM: {price, change_today_pct, weight_pct, avg_entry, pnl_since_entry_pct} }.

@@ -583,7 +583,7 @@ export function ordenesSueltas(actions = [], account = null, estado = null) {
 //   · `abortadas` — una corrida que murió antes de investigar no cuenta como
 //     "decidió no usarla". Mezclarlas haría parecer desuso lo que es una falla
 //     del proveedor.
-export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector', 'eventos'];
+export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector', 'eventos', 'historia'];
 
 export function resumenDeHerramientas(libros = []) {
   const porAgente = new Map();
