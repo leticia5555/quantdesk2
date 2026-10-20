@@ -7002,6 +7002,17 @@ function stFundBlock(f){
 // Estado vacío HONESTO: fuentes OK + 0 items no es un error — es "escaneé
 // N filings y ninguna compra calificó" (ventana fría del atom, caveat
 // documentado en el scope). Solo fuentes caídas muestran "unavailable".
+//
+// ── R5: EL ESTADO VACÍO YA NO ES UN CALLEJÓN SIN SALIDA ──────────────
+// "0 compras destacadas" era cierto y era inútil: la ventana SÍ traía
+// decenas de transacciones —awards, ejercicios, ventas— y el panel no
+// enseñaba ninguna. Ahora, cuando no hay compras destacadas, el mismo panel
+// carga TODAS las transacciones del mismo escaneo (`cat=form4`) y deja el
+// filtro de compras como una opción, no como la única realidad.
+//
+// Es el único cambio a app.html que el encargo de /mercado autoriza.
+let stTodasCache=null, stTodasSoloCompras=false;
+
 function stEmptyState(d){
   const s=d.scan||{};
   let h='<div class="analysis"><h3>'+t('stEmptyTitle')+'</h3>'+
@@ -7010,7 +7021,68 @@ function stEmptyState(d){
     (s.atom_entries!=null?s.atom_entries+' filings '+t('stEmptyInFeed')+' · ':'')+
     s.inspected+' '+t('stEmptyInspected')+' · '+(s.accumulated||0)+' '+t('stEmptyAccum')+'</span>';
   h+='<br>'+t('stEmptyNote')+'</div></div>';
+  // El contenedor de "Todas" se rellena cuando llega `cat=form4`.
+  h+='<div id="stTodas"><div style="font-size:11px;color:var(--text3);padding:8px 0;">'+
+    t('stTodasCargando')+'</div></div>';
   return h;
+}
+
+// Una transacción del Form 4, en una línea. Las columnas son las del
+// encargo; "le quedan" es la que no existía y es la que se mira.
+function stTxRow(f){
+  const col=f.tipo==='compra'?'var(--green,#4caf50)':(f.tipo==='venta'?'var(--red,#e05252)':'var(--text2)');
+  const quedan=f.le_quedan==null
+    ?'<span style="color:#555;" title="'+qdEscHTML(f.le_quedan_motivo||'')+'">—</span>'
+    :(f.le_quedan===0
+      ?'<span style="color:var(--red,#e05252);font-weight:600;" title="'+qdEscHTML(t('stSoldAllTip'))+'">0 · '+t('stSoldAll')+'</span>'
+      :Number(f.le_quedan).toLocaleString());
+  const valor=Number.isFinite(f.valor)?stFmtUsd(f.valor)
+    :'<span style="color:#555;" title="'+qdEscHTML(f.valor_motivo||'')+'">—</span>';
+  return '<div style="display:grid;grid-template-columns:62px minmax(0,1fr) auto;gap:2px 10px;'+
+    'padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;font-family:var(--mono);">'+
+    '<div style="color:var(--text);font-weight:600;">'+qdEscHTML(f.ticker||'—')+'</div>'+
+    '<div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2);">'+
+      qdEscHTML(f.quien||'—')+(f.cargo?' · '+qdEscHTML(f.cargo):'')+'</div>'+
+    '<div style="text-align:right;color:'+col+';">'+valor+'</div>'+
+    '<div style="grid-column:1/-1;color:#555;font-size:10px;">'+
+      qdEscHTML(f.codigo||'?')+' · '+qdEscHTML(f.nombre||'')+' · '+qdEscHTML(f.fecha||'')+
+      ' · '+t('stRemaining')+': '+quedan+
+      (f.link?' · <a href="'+qdEscHTML(f.link)+'" target="_blank" rel="noopener noreferrer">EDGAR ↗</a>':'')+
+    '</div></div>';
+}
+
+function stRenderTodas(){
+  const el=document.getElementById('stTodas');
+  if(!el)return;
+  const d=stTodasCache;
+  if(!d){el.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px 0;">'+t('stTodasCargando')+'</div>';return;}
+  const todas=Array.isArray(d.items)?d.items:[];
+  if(!todas.length){
+    el.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px 0;">'+
+      qdEscHTML(d.error||t('stTodasVacio'))+'</div>';
+    return;
+  }
+  const filas=stTodasSoloCompras?todas.filter(f=>f.tipo==='compra'):todas;
+  el.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px;">'+
+      '<div style="font-size:10px;color:var(--text3);letter-spacing:.06em;">'+t('stTodasTitulo')+
+        ' <span style="color:#555;">('+filas.length+(filas.length!==todas.length?'/'+todas.length:'')+')</span></div>'+
+      '<button type="button" id="stTodasFiltro" style="margin-left:auto;min-height:30px;padding:0 10px;'+
+        'background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text2);'+
+        'font-family:var(--mono);font-size:11px;cursor:pointer;">'+
+        (stTodasSoloCompras?t('stTodasVerTodas'):t('stTodasSoloCompras'))+'</button>'+
+    '</div>'+
+    filas.slice(0,40).map(stTxRow).join('')+
+    '<div style="font-size:10px;color:#555;margin-top:8px;line-height:1.6;">'+t('stTodasPie')+
+      ' · <a href="/mercado/insiders" target="_blank" rel="noopener noreferrer">/mercado/insiders ↗</a></div>';
+  const b=document.getElementById('stTodasFiltro');
+  if(b)b.onclick=function(){stTodasSoloCompras=!stTodasSoloCompras;stRenderTodas();};
+}
+
+function stCargarTodas(){
+  if(stTodasCache){stRenderTodas();return;}
+  qdFetchJSON('/api/stock-tracker?cat=form4',null,function(x){return x&&Array.isArray(x.items);})
+    .then(function(j){stTodasCache=j||{items:[],error:'sin respuesta'};stRenderTodas();})
+    .catch(function(e){stTodasCache={items:[],error:String((e&&e.message)||e)};stRenderTodas();});
 }
 
 function renderTracker(d){
@@ -7023,6 +7095,7 @@ function renderTracker(d){
     const items=Array.isArray(d.items)?d.items:[];
     if(!items.length){
       el.innerHTML=h+(srcOk?stEmptyState(d):qdUnavailableHTML('stock tracker · insider'));
+      if(srcOk)stCargarTodas();
       return;
     }
     h+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px;letter-spacing:.04em;">'+
@@ -10169,6 +10242,17 @@ const i18n = {
     stEmptyBody:'Sources are up — the recent Form 4 window just has no open-market buys by officers/directors ≥ $100k. Most filings are awards, option exercises and sales; notable buys are rare by design.',
     stEmptyInFeed:'in feed', stEmptyInspected:'inspected', stEmptyAccum:'accumulated',
     stEmptyNote:'The feed accumulates qualifying buys as they are filed (Form 4s arrive in batches, mostly after market close). Check back later today.',
+    // R5: the empty state is no longer a dead end — it shows EVERY
+    // transaction from the same scan, with the buy filter as an option.
+    stTodasTitulo:'ALL TRANSACTIONS IN THE WINDOW',
+    stTodasCargando:'loading every transaction from the same window…',
+    stTodasVacio:'the EDGAR feed window brought no transactions',
+    stTodasSoloCompras:'Buys only',
+    stTodasVerTodas:'Show all',
+    stTodasPie:'SEC Form 4 · size is what moved, not the holding · "remaining" comes from the filing itself',
+    stRemaining:'remaining',
+    stSoldAll:'all',
+    stSoldAllTip:'sold or disposed of the entire holding of this class, per the post-transaction amount in the filing',
     vcAiTitle:'// AI Scan · complementary',
     vcSourceDown:'source down', vcStaleNote:'all sources down — showing last good data',
     vcIpoCalendar:'IPO calendar · Finnhub',
@@ -10404,6 +10488,17 @@ const i18n = {
     stEmptyBody:'Las fuentes están arriba — la ventana reciente de Form 4 simplemente no trae compras open-market de officers/directors ≥ $100k. La mayoría de filings son awards, ejercicios de opciones y ventas; las compras destacadas son raras por diseño.',
     stEmptyInFeed:'en el feed', stEmptyInspected:'inspeccionados', stEmptyAccum:'acumulados',
     stEmptyNote:'El feed acumula compras calificantes conforme se reportan (los Form 4 entran en lotes, sobre todo tras el cierre del mercado). Vuelve más tarde.',
+    // R5: el estado vacío ya no es un callejón sin salida — muestra TODAS
+    // las transacciones del mismo escaneo, con el filtro de compras aparte.
+    stTodasTitulo:'TODAS LAS TRANSACCIONES DE LA VENTANA',
+    stTodasCargando:'cargando todas las transacciones de la misma ventana…',
+    stTodasVacio:'la ventana del feed de EDGAR no trajo ninguna transacción',
+    stTodasSoloCompras:'Sólo compras',
+    stTodasVerTodas:'Ver todas',
+    stTodasPie:'Form 4 de la SEC · el tamaño es lo que se movió, no la tenencia · "le quedan" sale del propio filing',
+    stRemaining:'le quedan',
+    stSoldAll:'todo',
+    stSoldAllTip:'vendió o entregó todo lo que tenía de esta clase, según la tenencia posterior del filing',
     vcAiTitle:'// Scan IA · complementario',
     vcSourceDown:'fuente caída', vcStaleNote:'fuentes caídas — mostrando lo último bueno',
     vcIpoCalendar:'Calendario IPO · Finnhub',
