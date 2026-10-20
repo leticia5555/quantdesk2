@@ -40,7 +40,7 @@
 
 import { createHash } from 'node:crypto';
 import { getNews, getSnapshots } from './alpaca.js';
-import { fetchDeepDive } from './finnhub-dive.js';
+import { fetchDeepDive, FINNHUB_LIMITE, FINNHUB_CAIDO } from './finnhub-dive.js';
 import { SECTOR_ETFS } from './arena-board.js';
 import { readDayCache, writeDayCache, marketDay } from './arena-buffet-cache.js';
 import { sql } from './db.js';
@@ -483,6 +483,7 @@ export async function finnhubNoticias(ticker, { start, now, key }) {
   const to = now.toISOString().slice(0, 10);
   const r = await fetch(`https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${from}&to=${to}&token=${key}`,
     { signal: AbortSignal.timeout(FINNHUB_TIMEOUT_MS) });
+  if (r.status === 429) throw new Error(FINNHUB_LIMITE);
   if (!r.ok) throw new Error(`Finnhub ${r.status}`);
   const j = await r.json();
   if (!Array.isArray(j)) throw new Error('Finnhub: respuesta sin lista');
@@ -690,10 +691,16 @@ export async function runFicha(args, ctx) {
   const tk = args.ticker;
   if (!tk) return { text: 'ficha necesita un ticker.', rows: 0, error: true };
   let dive = null;
+  // POR QUÉ no llegaron los fundamentales, si no llegaron. `fetchDeepDive`
+  // distingue el límite de tasa (429), la caída y la falta de cobertura.
+  let motivo = null;
   try {
     const r = await (ctx.deps.fetchDeepDive || fetchDeepDive)([tk], ctx.finnhubKey, ctx.now);
     dive = (r && r.data && r.data[tk]) || null;
-  } catch (e) { /* best-effort: la parte de mercado igual sirve */ }
+    motivo = (r && r.errors && r.errors[tk]) || null;
+  } catch (e) { motivo = FINNHUB_CAIDO + ': ' + String((e && e.message) || e); }
+  const limitado = motivo === FINNHUB_LIMITE;
+  const caido = !!motivo && motivo.startsWith(FINNHUB_CAIDO);
 
   const enTablero = filasDelTablero(ctx).find((f) => f.symbol === tk) || null;
   const w = (ctx.universe && ctx.universe.fifty_two_week && ctx.universe.fifty_two_week[tk]) || null;
@@ -722,10 +729,24 @@ export async function runFicha(args, ctx) {
     lineas.push(`analistas: ${r.strongBuy ?? 0} strong buy / ${r.buy ?? 0} buy / ${r.hold ?? 0} hold / ${r.sell ?? 0} sell`);
   }
   for (const n of ((dive && dive.news) || []).slice(0, 5)) lineas.push(`  ${String(n.date || '').slice(0, 10)} ${n.headline}`);
+  // ── UN 429 O UNA CAÍDA NO SON "SIN COBERTURA" ──────────────────────
+  // Sin un solo campo de negocio y con Finnhub limitado o caído: la
+  // herramienta FALLÓ (error, no se cachea), y lo dice con el motivo. Con
+  // algo de dato pero un 429 en alguna de las cuatro: la ficha sale, avisa que
+  // está incompleta y tampoco se cachea — el próximo agente merece la completa.
+  const vacia = (o) => !o || Object.values(o).every((v) => v == null);
+  const sinNegocio = !dive || (vacia(dive.profile) && vacia(dive.fundamentals) && vacia(dive.recommendation) && !((dive.news || []).length));
+  if ((limitado || caido) && sinNegocio) {
+    const fallo = limitado ? 'límite de Finnhub' : 'Finnhub no respondió';
+    lineas[0] = `La herramienta falló en los fundamentales: ${motivo}. NO es "sin cobertura": Finnhub no contestó con datos. Arriba de esto no hay nada de negocio; lo que sigue sale del tablero. FICHA ${tk}`;
+    const t = truncateRows(lineas.slice(1), { header: lineas[0] });
+    return { text: t.text, rows: 0, truncated: t.truncated, error: true, fallo, no_cachear: true };
+  }
+  if (limitado) lineas.push(`(ficha INCOMPLETA: parte de los datos no llegó por el ${FINNHUB_LIMITE}. Lo que falta no es cero.)`);
   if (!dive) lineas.push('(sin cobertura de fundamentales para este nombre: los campos de negocio no están disponibles, no son cero.)');
 
   const t = truncateRows(lineas.slice(1), { header: lineas[0] });
-  return { text: t.text, rows: t.shown, truncated: t.truncated };
+  return { text: t.text, rows: t.shown, truncated: t.truncated, ...(limitado ? { fallo: 'límite de Finnhub (parcial)', no_cachear: true } : {}) };
 }
 
 export async function runSector(args, ctx) {
@@ -907,7 +928,8 @@ export function createToolExecutor({
         // Una consulta con una fuente caída (`cobertura: 'parcial'`) tampoco se
         // cachea: el próximo agente que pregunte lo mismo merece la consulta
         // completa, no el hueco de la caída.
-        if (cache && !out.error && out.cobertura !== 'parcial') await writeDayCache(key, out, now).catch(() => {});
+        // Ni lo que vino recortado por el límite de Finnhub (`no_cachear`).
+        if (cache && !out.error && !out.no_cachear && out.cobertura !== 'parcial') await writeDayCache(key, out, now).catch(() => {});
       }
 
       let text = out.text;
@@ -923,6 +945,8 @@ export function createToolExecutor({
         ...(Array.isArray(out.fuentes) ? { fuentes: out.fuentes } : {}),
         ...(out.cobertura ? { cobertura: out.cobertura } : {}),
         ...(Array.isArray(out.mapeo) && out.mapeo.length ? { mapeo: out.mapeo } : {}),
+        // POR QUÉ falló, corto ("límite de Finnhub"): /liga/libros lo publica.
+        ...(out.fallo ? { fallo: String(out.fallo).slice(0, 120) } : {}),
         // El resultado COMPLETO, no el resumen: sin esto el replay no puede
         // reproducir la corrida — el modelo decidió mirando algo que no
         // guardamos. Ver el encabezado.
@@ -947,6 +971,7 @@ export function createToolExecutor({
         ...(s.fuentes ? { fuentes: s.fuentes } : {}),
         ...(s.cobertura ? { cobertura: s.cobertura } : {}),
         ...(s.mapeo ? { mapeo: s.mapeo } : {}),
+        ...(s.fallo ? { fallo: s.fallo } : {}),
       }));
     },
   };
