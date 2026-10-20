@@ -35,6 +35,7 @@ import { SCHEMA_PRECIOS_US } from '../api/_lib/mercado-precios.js';
 import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
 import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS, SQL_PAGINA } from '../api/noticias.js';
 import { tickersDeFila } from '../api/_lib/noticias.js';
+import { SQL_NOTICIAS_LOCALES_TICKER, SQL_NOTICIAS_LOCALES_PALABRAS } from '../api/_lib/arena-tools.js';
 
 const PUERTO = 55433;
 
@@ -197,6 +198,17 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     assert.deepEqual(tickersDeFila(crudos[0]), ['NVDA', 'ORCL']);
     assert.deepEqual(tickersDeFila(crudos[1]), ['AMX']);
     assert.deepEqual(tickersDeFila(crudos[2]), [], 'el arreglo vacío no inventa un elemento');
+
+    // ── LAS DOS LECTURAS DE `noticias` (la herramienta del Arena) ──────
+    // Por ticker (`$1 = any(tickers)`) y por palabras (`ilike all`), contra
+    // las mismas filas: que parseen, liguen sus tipos y devuelvan la correcta.
+    // Cada `psql` es una sesión nueva: el PREPARE va en la misma llamada.
+    const nTicker = (args) => psql(`prepare n_ticker(text, timestamptz) as ${SQL_NOTICIAS_LOCALES_TICKER}; execute n_ticker(${args});`).trim();
+    const nPalabras = (args) => psql(`prepare n_palabras(text[], timestamptz) as ${SQL_NOTICIAS_LOCALES_PALABRAS}; execute n_palabras(${args});`).trim();
+    assert.equal(nTicker("'AMX', '2026-10-19T00:00:00Z'").split('|')[0], 'https://a/2');
+    assert.equal(nTicker("'AMX', '2026-10-21T00:00:00Z'"), '', 'la ventana de fechas se aplica');
+    assert.equal(nPalabras("array['%do%','%s%'], '2026-10-19T00:00:00Z'").split('|')[0], 'https://a/1',
+      'todas las palabras, en cualquier orden');
 
     // Un ticker con punto —BRK.B— y uno que Postgres entrecomilla por el
     // espacio: partir por comas a secas rompería el segundo.
