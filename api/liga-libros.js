@@ -99,10 +99,24 @@ export function etiquetaDePaso(tool, args) {
     .map(([k, v]) => (v === true ? k : `${k}=${Array.isArray(v) ? v.join(',') : v}`));
   return `${tool}(${resto.join(', ')})`;
 }
+// ── TRES VACÍOS, TRES PALABRAS (2026-10-20) ──────────────────────────
+// El "null" de Grok (screener, ficha MU/WDC/STX) NO era una falla: eran
+// intentos 21-24 con `refused: 'budget_exhausted'` — ni corrieron. Sin `n`,
+// sin `rows`, sin `result`, sin `error`. Leídos como "rows: null" parecían
+// la herramienta caída. Son tres cosas distintas y se dicen distinto:
+//
+//   rechazada    → ni corrió (cupo agotado / herramienta inexistente)
+//   falló        → corrió y la herramienta dio error
+//   sin resultado→ corrió y no devolvió nada usable
+//
+// EL ORDEN ES EL PUNTO: `refused` se resuelve PRIMERO. Un rechazo no tiene
+// `rows` por construcción, y cualquier chequeo de "sin conteo" que vaya antes
+// lo convertiría en falla.
+const RECHAZO = { budget_exhausted: 'presupuesto', unknown_tool: 'herramienta inexistente' };
 export function resultadoDePaso(s) {
-  if (s.refused) return s.refused === 'budget_exhausted' ? 'sin cupo' : 'rechazada';
-  // null NO es 0: es la herramienta fallando. Se dice con la palabra.
-  if (s.error || s.sin_resultado || s.rows == null) return 'falló';
+  if (s.refused) return `rechazada: ${RECHAZO[s.refused] || s.refused}`;
+  if (s.error && !s.sin_resultado) return 'falló';
+  if (s.sin_resultado || s.rows == null) return 'sin resultado';
   return plural(s.rows, s.tool) + (s.truncated ? ' (truncado)' : '');
 }
 
@@ -112,10 +126,13 @@ export function secuenciaPublicable(ctx) {
   if (!t) return null;
   if (t.enabled === false) return { usó_herramientas: false, motivo: t.reason || null, pasos: [] };
   const pasos = (t.summary || t.sequence || []).map((s) => ({
-    n: s.n, herramienta: s.tool,
+    // Un rechazo no tiene `n` (no consumió cupo); su número es el del intento.
+    n: s.n ?? null, ...(s.n == null && s.intento != null ? { intento: s.intento } : {}),
+    herramienta: s.tool,
     // Los argumentos YA acotados (lo que de verdad se ejecutó), no lo que pidió.
     argumentos: s.args || null,
-    filas: s.rows ?? null,
+    // Un rechazo NO lleva `filas`: no corrió, así que no tiene ni cero ni null.
+    ...(s.refused ? {} : { filas: s.rows ?? null }),
     // Sólo cuando lo está, como `rechazada`: un `false` repetido en cada paso
     // de cada tarjeta no dice nada y paga bytes en un feed de 200 filas.
     ...(s.truncated ? { truncado: true } : {}),

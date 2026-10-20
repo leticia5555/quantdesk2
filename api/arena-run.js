@@ -2313,6 +2313,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     executor = createToolExecutor({
       budget: toolBudget,
       board: boardForTools, universe: universeForTools, creds, now,
+      posiciones: positions || [], equity: Number(account && account.equity),
       deps: { sectorOf: (sym) => sectorPorSimbolo[sym] || null },
     });
     const loop = await runToolLoop({

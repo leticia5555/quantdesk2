@@ -501,10 +501,19 @@ export async function runFicha(args, ctx) {
 
   const enTablero = filasDelTablero(ctx).find((f) => f.symbol === tk) || null;
   const w = (ctx.universe && ctx.universe.fifty_two_week && ctx.universe.fifty_two_week[tk]) || null;
+  // ── LO QUE EL AGENTE TIENE, CON SU PRECIO (2026-10-20) ──────────────
+  // 11 de 15 fichas decían "precio: no está entre los nombres que el tablero
+  // cubre hoy": las posiciones propias casi nunca están en un extremo. Decirle
+  // "no tengo precio" de lo que él mismo tiene es confuso — el precio está en
+  // su libro de Alpaca, que la corrida ya leyó. Se usa ése, ROTULADO como de
+  // su posición para que no se mezcle con el reloj del tablero.
+  const mia = (ctx.tenencias && ctx.tenencias[tk]) || null;
 
   const lineas = [`FICHA ${tk}`];
   if (enTablero) lineas.push(`precio ${n2(enTablero.price)} · 1d ${sg(enTablero.change_pct)}% · RVOL ${enTablero.rvol ?? '—'}`);
+  else if (mia && Number.isFinite(mia.price)) lineas.push(`precio ${n2(mia.price)} (de TU posición en Alpaca — no está en ningún extremo del tablero) · 1d ${sg(mia.change_today_pct)}%`);
   else lineas.push('precio: no está entre los nombres que el tablero cubre hoy (no es que no cotice — es que no está en ningún extremo del tablero).');
+  if (mia) lineas.push(`TU POSICIÓN: peso ${n2(mia.weight_pct)}% · entrada ${n2(mia.avg_entry)} · desde tu entrada ${sg(mia.pnl_since_entry_pct)}%`);
   if (w) lineas.push(`52 semanas: máx ${n2(w.high_52w)} (${sg(w.pct_from_high)}%) · mín ${n2(w.low_52w)} (+${n2(w.pct_from_low)}%)`);
   if (dive && dive.profile) lineas.push(`${dive.profile.name || ''} · ${dive.profile.industry || 'sector s/d'} · mcap ${dive.profile.marketCapM != null ? '$' + (dive.profile.marketCapM / 1000).toFixed(1) + 'B' : '—'}`);
   if (dive && dive.fundamentals) {
@@ -545,6 +554,29 @@ export async function runSector(args, ctx) {
 export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector };
 
 // ── EL EJECUTOR, con presupuesto y caché ─────────────────────────────
+// Posiciones de Alpaca → { SYM: {price, change_today_pct, weight_pct, avg_entry, pnl_since_entry_pct} }.
+// Fracciones de Alpaca (0.012) a porcentaje (1.2), igual que el resto de la ficha.
+export function tenenciasDe(posiciones = [], equity = null) {
+  const eq = Number(equity);
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const out = {};
+  for (const p of posiciones || []) {
+    const sym = String((p && p.symbol) || '').trim().toUpperCase();
+    if (!sym) continue;
+    const mv = num(p.market_value);
+    const ct = num(p.change_today);
+    const pl = num(p.unrealized_plpc);
+    out[sym] = {
+      price: num(p.current_price),
+      change_today_pct: ct == null ? null : ct * 100,
+      weight_pct: mv != null && eq > 0 ? (mv / eq) * 100 : null,
+      avg_entry: num(p.avg_entry_price),
+      pnl_since_entry_pct: pl == null ? null : pl * 100,
+    };
+  }
+  return out;
+}
+
 // Un resultado de herramienta usable: texto para el modelo y un conteo. Lo que
 // no cumple esto es una falla, venga del runner o de la caché del día.
 function resultadoValido(out) {
@@ -559,6 +591,9 @@ function resultadoValido(out) {
 export function createToolExecutor({
   budget = TOOL_BUDGET.fixed_round, board = null, universe = null, creds = null,
   finnhubKey = process.env.FINNHUB_API_KEY, now = new Date(), deps = {}, cache = true,
+  // Las posiciones del agente, como las devuelve Alpaca, y su equity. Sólo
+  // las usa `ficha`, para dar el precio de lo que el agente ya tiene.
+  posiciones = [], equity = null,
 } = {}) {
   const sectorOf = deps.sectorOf || (() => null);
   const newsSymbols = new Set();
@@ -576,7 +611,8 @@ export function createToolExecutor({
   // Para ellos el market cap es una COTA INFERIOR, no una medición.
   const asumidos = new Set(((universe && universe.market_caps_asumidos) || []).map((x) => String(x || '').toUpperCase()));
   const capEsAsumido = deps.capEsAsumido || ((sym) => asumidos.has(String(sym || '').toUpperCase()));
-  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf };
+  const tenencias = tenenciasDe(posiciones, equity);
+  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf, tenencias };
   const sequence = [];
   // DOS CONTADORES, Y LA DIFERENCIA ES LA MITAD DEL BUG REPORTADO.
   //   `used`     = llamadas EJECUTADAS. Nunca puede pasar del techo.

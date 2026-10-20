@@ -362,6 +362,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   const executor = createToolExecutor({
     budget: toolsMax, board: buffet.board_raw || null, universe: buffet.universe_raw || null,
     creds, now,
+    posiciones: libro.positions || [], equity,
     // ── `sectorOf` DEVOLVÍA null LITERALMENTE ──────────────────────────
     // Por eso `sector({etf:'XLE'})` daba 0 filas: ningún nombre del tablero
     // podía coincidir con ningún sector, porque la función decía que nadie

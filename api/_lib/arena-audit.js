@@ -358,6 +358,36 @@ const TIPO_POR_STATUS = {
   skipped_superseded_by_watch: 'cadencia_retirada',
 };
 
+// ── LAS DOS TABLAS, CON SU SELLO (2026-10-20) ────────────────────────
+// La puerta de 21 corridas corre en `arena_shadow_journal`, y esta auditoría
+// sólo leía `arena_journal`: la puerta era invisible y hubo que sacarla por
+// SQL. Ahora lee las dos, y cada fila dice de cuál vino — confundir una
+// corrida de PRUEBA con una EN VIVO es exactamente el error que las tablas
+// separadas existen para impedir. Mismos nombres que /api/liga/libros.
+export const FUENTES_AUDIT = { en_vivo: 'EN VIVO', prueba: 'PRUEBA' };
+const ALIAS_FUENTE = { en_vivo: 'en_vivo', viva: 'en_vivo', live: 'en_vivo', prueba: 'prueba', sombra: 'prueba', shadow: 'prueba', ambas: 'ambas', todas: 'ambas', both: 'ambas' };
+
+// Qué tablas leer. `?view=shadow` es atajo de `fuente=prueba`. El RESUMEN no
+// mezcla: sus métricas (calidad del buffet, guard, fabricación) son de UNA
+// población, y sumar la puerta a la liga cambiaría lo que significan sin
+// decirlo. Por eso el resumen por defecto es EN VIVO, y `ambas` se rechaza
+// con aviso en vez de mezclarse.
+export function resolverFuente({ fuente, view, esResumen } = {}) {
+  const avisos = [];
+  const v = String(view || '').toLowerCase();
+  let f = ALIAS_FUENTE[String(fuente || '').trim().toLowerCase()] || null;
+  if (fuente && !f) avisos.push(`\`fuente=${fuente}\` no se reconoce (válidas: en_vivo, prueba, ambas) y se ignoró.`);
+  if (!f && (v === 'shadow' || v === 'sombra' || v === 'prueba')) f = 'prueba';
+  if (esResumen) {
+    if (f === 'ambas') {
+      avisos.push('El resumen no mezcla EN VIVO con PRUEBA: sus métricas son de una sola población. Se calculó sobre EN VIVO; pedí `fuente=prueba` para el de la puerta.');
+      f = 'en_vivo';
+    }
+    return { fuente: f || 'en_vivo', avisos };
+  }
+  return { fuente: f || 'ambas', avisos };
+}
+
 export function auditaFila(row) {
   const ctx = (row && row.context) || {};
   const scan = ctx.scan || {};
@@ -371,6 +401,8 @@ export function auditaFila(row) {
   };
   return {
     id: row.id,
+    // Se pone acá y no lo infiere nadie después: viene de la tabla que se leyó.
+    ...(row.fuente ? { fuente: row.fuente, sello: FUENTES_AUDIT[row.fuente] || row.fuente } : {}),
     fecha: row.run_date,
     created_at: row.created_at,
     agente: row.agent_id || null,
@@ -754,7 +786,7 @@ function mdFila(f) {
   const L = [];
   const titulo = f.tipo === 'red_de_riesgo' ? 'Red de riesgo (determinista)'
     : f.tipo === 'mercado_cerrado' ? 'Mercado cerrado' : 'Decisión del PM';
-  L.push(`### ${titulo} — \`${f.status}\``);
+  L.push(`### ${f.sello ? `[${f.sello}] ` : ''}${titulo} — \`${f.status}\``);
   const meta = [`agente **${val(f.agente)}**`, `modelo \`${val(f.modelo)}\``, `prompt \`${val(f.prompt_version)}\``];
   if (f.cuenta && f.cuenta.equity != null) meta.push(`equity **$${nf(Number(f.cuenta.equity))}** · cash $${nf(Number(f.cuenta.cash))} · ${val(f.cuenta.positions)} posiciones`);
   L.push(meta.join(' · '));

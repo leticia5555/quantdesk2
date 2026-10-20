@@ -127,6 +127,7 @@ section{padding:18px 0 4px;}
 .cadena{font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.7;margin-top:10px;word-break:break-word;}
 .cadena .flecha{color:var(--text3);}
 .cadena .zero{color:var(--amber);}
+.cadena .rech{color:var(--text3);font-style:italic;}
 
 /* tesis / órdenes */
 .tesis{font-size:12px;color:var(--text2);line-height:1.55;padding:7px 0;border-bottom:1px solid var(--border);}
@@ -273,17 +274,18 @@ function seqHtml(inv){
     const args=argsStr(s.argumentos);
     // 0 filas se marca: un filtro que vacía el embudo es el dato, no un hueco.
     // Y una FALLA no es 0 filas: la herramienta no devolvió nada, se dice.
-    const filas = s.falló ? '<span class="fallo">✕ '+esc(s.resultado||'falló')+'</span>' :
+    const filas = s.rechazada ? '' :
+      s.falló ? '<span class="fallo">✕ '+esc(s.resultado||'falló')+'</span>' :
       s.filas==null ? '' :
       '<span class="'+(s.filas===0?'zero':'')+'">'+esc(s.resultado||(s.filas+' filas'))+'</span>';
     const extra=[filas, s.truncado?'truncado':'', s.ms!=null?Math.round(s.ms)+' ms':'']
       .filter(Boolean).join(' · ');
     return '<div class="step'+(s.rechazada?' ref':'')+'">'+
-      '<div class="stepn">'+esc(s.n)+'</div><div class="stepb">'+
+      '<div class="stepn">'+esc(s.n!=null?s.n:'·')+'</div><div class="stepb">'+
       '<div class="steptool">'+esc(s.herramienta||'—')+(s.rechazada?' · rechazada':'')+'</div>'+
       (args?'<div class="stepargs">'+esc(args)+'</div>':'')+
       (extra?'<div class="steprows">'+extra+'</div>':'')+
-      (s.rechazada?'<div class="steprows">'+esc(s.rechazada)+'</div>':'')+
+      (s.rechazada?'<div class="steprows">'+esc(s.resultado||s.rechazada)+'</div>':'')+
       '</div></div>';
   }).join('');
 }
@@ -293,7 +295,7 @@ function seqHtml(inv){
 function cadenaHtml(inv){
   if(!inv||!inv.pasos||!inv.pasos.length) return '';
   return '<div class="cadena">'+inv.pasos.map(s=>{
-    const cls = s.falló||s.rechazada ? 'fallo' : (s.filas===0?'zero':'');
+    const cls = s.rechazada ? 'rech' : s.falló ? 'fallo' : (s.filas===0?'zero':'');
     return esc(s.etiqueta||s.herramienta||'—')+' <span class="flecha">→</span> '+
       '<span class="'+cls+'">'+(s.falló?'✕ ':'')+esc(s.resultado||'')+'</span>';
   }).join(' <span class="flecha">·</span> ')+'</div>';

@@ -37,11 +37,13 @@ declara el libro entero. Un peso que se sostiene solo por estar ya en el libro
 es un sesgo de dotación, y además hace que el agente "decida" menos de lo que
 parece — su retorno pasa a medir la herencia de otra corrida.
 
-**A decidir.** Si el prompt de cierre pregunta explícitamente, por cada
-posición: *"si hoy no la tuvieras, ¿la comprarías a este peso?"*. Y si una
-tesis que sólo se refiere a la tenencia ("core", "keep", "less of it") se
-marca en /liga como **sin tesis** — se puede contar sin cambiar el prompt, y
-ese conteo dice si el problema es de un agente o de todos.
+**APROBADO (2026-10-20), en este orden:**
+
+1. **Primero medir.** Un marcador **sin tesis** en /liga para las posiciones
+   cuya tesis sólo habla de la tenencia ("core", "keep", "less of it"). Mide
+   la inercia ANTES de tocar el prompt, y dice si es un agente o son todos.
+2. **Después, con ese dato,** el cambio de prompt: por cada posición, *"si hoy
+   no la tuvieras, ¿la comprarías a este peso?"*.
 
 ## 3. La quinta herramienta: `historia(ticker)`
 
@@ -68,7 +70,31 @@ ese conteo dice si el problema es de un agente o de todos.
   ingesta. En vivo está bien; para replay hay que guardar qué versión vio el
   agente (el journal ya guarda el resultado completo de cada herramienta).
 
-**A decidir.** Si se siembra el universo completo o sólo lo que aparece en el
-tablero (mucho menos); si la narración es la de Opus o un resumen más corto
+**APROBADO (2026-10-20): sembrar sólo lo del tablero (~130), no el universo.**
+
+**Sigue a decidir.** Si la narración es la de Opus o un resumen más corto
 hecho para la herramienta; y el criterio de éxito: ¿cambia alguna decisión, o
 sólo agrega texto a las tesis?
+
+## 4. El presupuesto de herramientas recorta justo lo nuevo
+
+**Qué se vio (2026-10-20, puerta en sombra).** Grok gastó sus 20 llamadas
+revisando lo que ya tenía, y los intentos 21-24 se negaron por presupuesto:
+`screener(near_52w_high, limit=25)`, `ficha MU`, `ficha WDC`, `ficha STX`. Eso
+era EXPLORACIÓN — un screener de máximos y tres nombres que no tiene. ChatGPT
+también topó 20 ese día. (Leídos como `rows: null` parecían fallas; eran
+rechazos. /liga ahora los dice "rechazada: presupuesto".)
+
+**Por qué importa.** El tope limita a los dos agentes que más investigan, y lo
+que les recorta es lo nuevo, no lo que ya tienen. Un techo que castiga la
+exploración empuja a todos hacia sus tenencias — la misma inercia de la
+entrada 2, por otro camino.
+
+**Opciones a discutir:**
+- subir el tope;
+- que las fichas de posiciones PROPIAS no cuenten contra él: el agente ya
+  tiene `pesos_actuales`, y desde el 2026-10-20 la ficha de una posición
+  propia le da su precio de Alpaca aunque no esté en el tablero.
+
+**Dato a juntar antes:** por agente, qué fracción de las llamadas fue a
+nombres que ya tenía, y cuántas corridas toparon el cupo.

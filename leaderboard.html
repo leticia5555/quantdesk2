@@ -158,6 +158,7 @@ section{padding:20px 0 4px;}
 .cadena .flecha{color:var(--text3);}
 .cadena .zero{color:var(--amber);}
 .cadena .fallo{color:var(--red);font-weight:700;}
+.cadena .rech{color:var(--text3);font-style:italic;}
 .tesis{font-size:12px;color:var(--text2);line-height:1.5;padding:5px 0;border-bottom:1px solid var(--border);}
 .tesis:last-child{border-bottom:0;}
 .tesis b{font-family:var(--mono);font-size:11px;color:var(--text);}
@@ -427,7 +428,7 @@ function cadenaHtml(inv){
   if(inv.usó_herramientas===false||!inv.pasos||!inv.pasos.length)
     return '<div class="cadena">Sin herramientas'+(inv.motivo?' — '+esc(inv.motivo):'')+': decidió con el tablero.</div>';
   return '<div class="cadena">'+inv.pasos.map(s=>{
-    const cls = s.falló||s.rechazada ? 'fallo' : (s.filas===0?'zero':'');
+    const cls = s.rechazada ? 'rech' : s.falló ? 'fallo' : (s.filas===0?'zero':'');
     return esc(s.etiqueta||s.herramienta||'—')+' <span class="flecha">→</span> '+
       '<span class="'+cls+'">'+(s.falló?'✕ ':'')+esc(s.resultado||'')+'</span>';
   }).join(' <span class="flecha">·</span> ')+'</div>';

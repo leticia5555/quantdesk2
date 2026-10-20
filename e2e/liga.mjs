@@ -29,13 +29,20 @@ const fila = (agent_id, hora, weights, theses, summary) => ({
   context: { lens: 'momentum', tools: { budget: 8, used: summary.length, turns: 3, stopped_by: 'end_turn', summary } },
 });
 const FILAS = [
-  // Grok: las herramientas se le caen. null NO es 0 filas.
+  // Grok 20-oct, como vino de arena_shadow_journal: investigó y se quedó sin
+  // cupo justo al explorar. Los 4 del final NO fallaron: ni corrieron.
   fila('grok', '15:40', { MU: 0.15, NVDA: 0.10 }, { MU: 'memoria en ciclo alcista', NVDA: 'demanda de centros de datos' }, [
-    { n: 1, tool: 'screener', args: {}, rows: null, ms: 30 },
-    { n: 2, tool: 'ficha', args: { ticker: 'MU' }, rows: 0, error: true, sin_resultado: true, ms: 900 },
-    { n: 3, tool: 'ficha', args: { ticker: 'WDC' }, rows: null, ms: 800 },
-    { n: 4, tool: 'ficha', args: { ticker: 'STX' }, rows: null, ms: 820 },
-    { n: 5, tool: 'noticias', args: { ticker: 'NVDA' }, rows: 5, ms: 300 },
+    { n: 19, tool: 'ficha', args: { ticker: 'NVDA' }, rows: 9, ms: 700 },
+    { n: 20, tool: 'noticias', args: { ticker: 'NVDA' }, rows: 5, ms: 300 },
+    { tool: 'screener', args: { near_52w_high: true, limit: 25 }, intento: 21, refused: 'budget_exhausted' },
+    { tool: 'ficha', args: { ticker: 'MU' }, intento: 22, refused: 'budget_exhausted' },
+    { tool: 'ficha', args: { ticker: 'WDC' }, intento: 23, refused: 'budget_exhausted' },
+    { tool: 'ficha', args: { ticker: 'STX' }, intento: 24, refused: 'budget_exhausted' },
+  ]),
+  // Una falla DE VERDAD (corrió y no devolvió nada), en otro agente.
+  fila('qwen', '15:41', { AAPL: 0.10 }, { AAPL: 'caja' }, [
+    { n: 1, tool: 'screener', args: {}, rows: 0, error: true, sin_resultado: true, ms: 30 },
+    { n: 2, tool: 'noticias', args: { ticker: 'AAPL' }, rows: 0, error: true, ms: 200 },
   ]),
   fila('deepseek', '15:42', { FICO: 0.20, MSFT: 0.10 }, { FICO: 'core holding, just less of it', MSFT: 'nube estable' }, [
     { n: 1, tool: 'screener', args: { rvol_top: true, sector: 'XLK' }, rows: 0, ms: 20 },
@@ -50,7 +57,7 @@ const agente = (id, name, rank) => ({
   account: { equity: 100000, cash: 50000 }, positions: [], return_pct: 1, day_change_pct: 0.1,
   journal: { plan: `Plan de ${id}.`, created_at: `${HOY}T15:40:00Z`, run_date: HOY, status: 'ok_target', ordenes: [] },
 });
-const LEADERBOARD = { enabled: true, agents: [agente('grok', 'Grok', 1), agente('deepseek', 'DeepSeek', 2)], baseline_equity: 100000 };
+const LEADERBOARD = { enabled: true, agents: [agente('grok', 'Grok', 1), agente('deepseek', 'DeepSeek', 2), agente('qwen', 'Qwen', 3)], baseline_equity: 100000 };
 
 const nav = globalThis.process;
 const browser = await chromium.launch();
@@ -74,11 +81,14 @@ async function abrir(ruta, { librosOk = true } = {}) {
   const { page, errores } = await abrir('/leaderboard.html');
   await page.waitForSelector('.decide', { timeout: 8000 }).catch(() => {});
   report('la página carga sin errores de JS', errores.length === 0, errores.join(' · '));
-  report('cada agente trae su bloque "cómo decidió"', (await page.locator('.decide').count()) === 2);
+  report('cada agente trae su bloque "cómo decidió"', (await page.locator('.decide').count()) === 3);
   const grok = await page.locator('.row', { hasText: 'Grok' }).first().innerText();
-  report('la cadena se lee como historia', /ficha MU/.test(grok) && /noticias NVDA → 5 titulares/.test(grok), grok.slice(0, 300));
-  report('null NO se pinta como 0: dice que falló', /screener\(\) → ✕ falló/.test(grok) && /ficha WDC → ✕ falló/.test(grok));
-  report('la falla va en rojo', (await page.locator('.row', { hasText: 'Grok' }).locator('.cadena .fallo').count()) === 4);
+  report('la cadena se lee como historia', /ficha NVDA → 9 líneas/.test(grok) && /noticias NVDA → 5 titulares/.test(grok), grok.slice(0, 300));
+  report('un rechazo por cupo dice "rechazada: presupuesto"', /screener\(near_52w_high, limit=25\) → rechazada: presupuesto/.test(grok) && /ficha STX → rechazada: presupuesto/.test(grok));
+  report('…y NO se pinta como falla', (await page.locator('.row', { hasText: 'Grok' }).locator('.cadena .fallo').count()) === 0 && !/✕/.test(grok));
+  const qwen = await page.locator('.row', { hasText: 'Qwen' }).first().innerText();
+  report('corrió-y-nada y corrió-y-falló se dicen distinto, en rojo', /screener\(\) → ✕ sin resultado/.test(qwen) && /noticias AAPL → ✕ falló/.test(qwen)
+    && (await page.locator('.row', { hasText: 'Qwen' }).locator('.cadena .fallo').count()) === 2, qwen.slice(0, 200));
   report('las tesis están a la vista, con su peso', /MU 15\.0% — memoria en ciclo alcista/.test(grok), grok.match(/MU[^\n]*memoria[^\n]*/)?.[0]);
   const ds = await page.locator('.row', { hasText: 'DeepSeek' }).first().innerText();
   report('la tesis de FICO sale tal cual (para que se vea que no hay tesis)', /FICO 20\.0% — core holding, just less of it/.test(ds));
@@ -100,14 +110,15 @@ async function abrir(ruta, { librosOk = true } = {}) {
 
 // ── 3. /liga/libros: la cadena fuera del colapsado y el aviso arriba ─
 {
-  const { page, errores } = await abrir('/libros.html?agente=grok');
+  const { page, errores } = await abrir('/libros.html');
   await page.waitForSelector('.cadena', { timeout: 8000 }).catch(() => {});
   report('libros carga sin errores de JS', errores.length === 0, errores.join(' · '));
   const cadena = await page.locator('.card', { hasText: 'Grok' }).locator('.cadena').first();
   report('la cadena se ve sin abrir la tarjeta', await cadena.isVisible());
   const body = await page.locator('body').innerText();
-  report('avisos publica las herramientas que fallaron', /Grok: 4 llamadas a herramientas fallaron en 1 corrida \(screener\(\), ficha MU, ficha WDC, ficha STX\)/.test(body),
-    (body.match(/Grok: \d+ llamada[^\n]*/) || [''])[0]);
+  report('avisos publica las herramientas que fallaron', /Qwen: 2 llamadas a herramientas fallaron en 1 corrida \(screener\(\), noticias AAPL\)/.test(body),
+    (body.match(/Qwen: \d+ llamada[^\n]*/) || [''])[0]);
+  report('Grok NO sale en avisos: sus 4 se negaron por cupo, no fallaron', !/Grok: \d+ llamada/.test(body));
   report('deepseek no sale en avisos: un 0 legítimo no es falla', !/DeepSeek: \d+ llamada/.test(body));
   await page.close();
 }
