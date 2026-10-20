@@ -75,21 +75,31 @@ const UPA = [
 const FACTS = {
   facts: { 'us-gaap': {
     RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: [
-      // El ejercicio completo. No es un trimestre y no puede colarse como uno.
-      { start: '2025-01-27', end: '2026-01-25', val: 130_497_000_000, accn: '0001045810-26-000090', form: '10-K', filed: '2026-02-26' },
+      // El concepto preferido existe y SÓLO trae el ejercicio completo: es lo
+      // que dejó los ingresos en "—" en los ocho trimestres de producción.
+      { start: '2024-01-29', end: '2025-01-26', val: 60_922_000_000, accn: '0001045810-25-000090', form: '10-K', filed: '2025-02-26' },
     ] } },
     Revenues: { units: { USD: [
-      { start: '2026-04-28', end: '2026-07-27', val: 46_743_000_000, accn: '0001045810-26-000070', form: '10-Q', filed: '2026-08-27' },
-      { start: '2026-01-26', end: '2026-04-27', val: 44_062_000_000, accn: '0001045810-26-000050', form: '10-Q', filed: '2026-05-28' },
-      { start: '2025-10-27', end: '2026-01-25', val: 39_331_000_000, accn: '0001045810-26-000010', form: '10-Q', filed: '2026-02-26' },
+      { start: '2026-04-27', end: '2026-07-26', val: 46_743_000_000, accn: '0001045810-26-000070', form: '10-Q', filed: '2026-08-27' },
+      { start: '2026-01-26', end: '2026-04-26', val: 44_062_000_000, accn: '0001045810-26-000050', form: '10-Q', filed: '2026-05-28' },
+      { start: '2025-07-28', end: '2025-10-26', val: 35_082_000_000, accn: '0001045810-25-000030', form: '10-Q', filed: '2025-11-20' },
+      { start: '2025-04-28', end: '2025-07-27', val: 30_040_000_000, accn: '0001045810-25-000020', form: '10-Q', filed: '2025-08-27' },
+      { start: '2025-01-27', end: '2025-04-27', val: 26_044_000_000, accn: '0001045810-25-000010', form: '10-Q', filed: '2025-05-28' },
+      // EL EJERCICIO COMPLETO. El trimestre que cierra el 2026-01-25 no tiene
+      // 10-Q propio —ninguna emisora lo presenta— y sale de restarle a esto
+      // los tres trimestres de arriba: 130,497 − 26,044 − 30,040 − 35,082.
+      { start: '2025-01-27', end: '2026-01-25', val: 130_497_000_000, accn: '0001045810-26-000090', form: '10-K', filed: '2026-02-26' },
       // REEXPRESIÓN del trimestre de julio: gana el filing más reciente.
-      { start: '2026-04-28', end: '2026-07-27', val: 46_800_000_000, accn: '0001045810-26-000099', form: '10-Q/A', filed: '2026-09-15' },
+      { start: '2026-04-27', end: '2026-07-26', val: 46_800_000_000, accn: '0001045810-26-000099', form: '10-Q/A', filed: '2026-09-15' },
     ] } },
     NetIncomeLoss: { units: { USD: [
-      { start: '2026-04-28', end: '2026-07-27', val: 26_422_000_000, accn: '0001045810-26-000070', form: '10-Q', filed: '2026-08-27' },
-      { start: '2026-01-26', end: '2026-04-27', val: 18_775_000_000, accn: '0001045810-26-000050', form: '10-Q', filed: '2026-05-28' },
+      { start: '2026-04-27', end: '2026-07-26', val: 26_422_000_000, accn: '0001045810-26-000070', form: '10-Q', filed: '2026-08-27' },
+      { start: '2026-01-26', end: '2026-04-26', val: 18_775_000_000, accn: '0001045810-26-000050', form: '10-Q', filed: '2026-05-28' },
+      { start: '2025-07-28', end: '2025-10-26', val: 19_309_000_000, accn: '0001045810-25-000030', form: '10-Q', filed: '2025-11-20' },
+      { start: '2025-04-28', end: '2025-07-27', val: 16_599_000_000, accn: '0001045810-25-000020', form: '10-Q', filed: '2025-08-27' },
       // Un trimestre en pérdida: tiene que verse como negativo.
-      { start: '2025-10-27', end: '2026-01-25', val: -1_200_000_000, accn: '0001045810-26-000010', form: '10-Q', filed: '2026-02-26' },
+      { start: '2025-01-27', end: '2025-04-27', val: -1_200_000_000, accn: '0001045810-25-000010', form: '10-Q', filed: '2025-05-28' },
+      { start: '2025-01-27', end: '2026-01-25', val: 72_880_000_000, accn: '0001045810-26-000090', form: '10-K', filed: '2026-02-26' },
     ] } },
   } },
 };
@@ -152,16 +162,25 @@ const QUOTE_SUMMARY = { quoteSummary: { result: [{
 // T2 del fiscal 2027. El fixture manda ese trimestre DOS VECES —una con el año
 // fiscal y otra con el calendario— que es lo que en producción pintó "2027 T2"
 // y "2026 T2" con el mismo real y el mismo estimado.
+// Finnhub `stock/earnings`, crudo. Dos cosas que esto reproduce:
+//
+//   · NVDA cierra su ejercicio en enero, así que su año fiscal va ADELANTADO:
+//     el trimestre que cerró en julio de 2026 es el T2 del fiscal 2027. El
+//     fixture manda ese trimestre DOS VECES —una con el año fiscal y otra con
+//     el calendario— que es lo que pintó "2027 T2" y "2026 T2" con el mismo
+//     real y el mismo estimado;
+//   · las FECHAS son las del trimestre de CALENDARIO que contiene al fiscal
+//     (2026-09-30 para el que cerró el 26 de julio), no las del filing. Es lo
+//     que ponía dos fechas distintas del mismo trimestre en la misma página.
 const EARNINGS_CRUDO = [
-  { period: '2026-07-27', quarter: 2, year: 2027, actual: 2.22, estimate: 2.14 },
-  { period: '2026-07-27', quarter: 2, year: 2026, actual: 2.22, estimate: 2.14 },
-  { period: '2026-04-27', quarter: 1, year: 2027, actual: 1.96, estimate: 1.90 },
-  { period: '2026-04-30', quarter: 1, year: 2026, actual: 1.96, estimate: 1.90 },
-  { period: '2026-01-25', quarter: 4, year: 2026, actual: 1.40, estimate: 1.33 },
+  { period: '2026-09-30', quarter: 2, year: 2027, actual: 2.22, estimate: 2.14 },
+  { period: '2026-09-30', quarter: 2, year: 2026, actual: 2.22, estimate: 2.14 },
+  { period: '2026-06-30', quarter: 1, year: 2027, actual: 1.96, estimate: 1.90 },
+  { period: '2026-03-31', quarter: 4, year: 2026, actual: 1.40, estimate: 1.33 },
   // Sin estimado: la sorpresa de ESE trimestre no se puede calcular, y se dice.
-  { period: '2025-10-26', quarter: 3, year: 2026, actual: 0.98, estimate: null },
+  { period: '2025-12-31', quarter: 3, year: 2026, actual: 0.98, estimate: null },
   // El que TODAVÍA NO REPORTA: otra causa distinta de "no hay estimado".
-  { period: '2026-10-26', quarter: 3, year: 2027, actual: null, estimate: 1.31 },
+  { period: '2026-12-31', quarter: 3, year: 2027, actual: null, estimate: 1.31 },
 ];
 
 const CALENDARIO_CRUDO = { earningsCalendar: [
@@ -420,7 +439,7 @@ try {
   chequeo('el trimestre sin estimado sigue en la tabla, con su causa',
     sinEst && sinEst.celdas[3] === '—' && /no trae estimado/.test(sinEst.titulos[3]),
     sinEst ? sinEst.titulos[3] : 'no está');
-  const futuro = upa.filas.find((f) => f.celdas[0].indexOf('2026-10-26') === 0);
+  const futuro = upa.filas.find((f) => f.celdas[0].indexOf('2026-12-31') === 0);
   chequeo('y el que todavía no reporta dice ESO, que es otra causa',
     futuro && /todavía no reporta/.test(futuro.titulos[3]), futuro ? futuro.titulos[3] : 'no está');
 
@@ -493,6 +512,61 @@ try {
   await p.goto(`${BASE}/analiza/NVDA`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.barra');
 
+  // ── EL TRIMESTRE QUE NO TIENE 10-Q ──────────────────────────────────
+  // Una emisora presenta tres 10-Q y un 10-K: el cuarto trimestre no tiene
+  // formulario propio. La tabla saltaba de octubre a abril SIN DECIRLO (Lety,
+  // 2026-10-22), y un hueco callado en una serie trimestral se lee como que
+  // la empresa no operó ese trimestre.
+  const q4 = fin.filas.find((f) => f.celdas[0] === '2026-01-25');
+  chequeo('el trimestre de enero ESTÁ en la tabla, no se salta',
+    !!q4, JSON.stringify(fin.filas.map((f) => f.celdas[0])));
+  // 130,497 − 26,044 − 30,040 − 35,082 = 39,331 millones. El número exacto
+  // del ejercicio menos los tres trimestres que sí tienen 10-Q.
+  chequeo('y su cifra es el ejercicio menos los tres trimestres reportados',
+    q4 && /39\.3 mil millones/.test(q4.celdas[1]), q4 ? q4.celdas[1] : 'no está');
+  chequeo('la cita dice 10-K y que el número se DERIVÓ, no que esté escrito ahí',
+    q4 && /10-K/.test(q4.celdas[4]) && /derivado/.test(q4.celdas[4]),
+    q4 ? q4.celdas[4] : 'no está');
+  const avisoFin = await p.evaluate(() => {
+    const h = [...document.querySelectorAll('#col-a h2')].find((x) => /Ingresos y utilidad/.test(x.textContent));
+    const out = [];
+    for (let e = h.nextElementSibling; e && e.tagName !== 'H2'; e = e.nextElementSibling) {
+      if (e.classList && e.classList.contains('aviso')) out.push(e.textContent);
+    }
+    return out.join(' | ');
+  });
+  chequeo('y el bloque DICE que ese trimestre se calculó con el 10-K',
+    /se calculó con el 10-K|no tiene formulario propio/.test(avisoFin), avisoFin.slice(0, 90));
+  // Y la serie no salta ningún otro trimestre.
+  const saltos = await p.evaluate(() => {
+    const fs = [...document.querySelectorAll('#col-a table tbody tr')]
+      .map((tr) => tr.children[0].textContent.trim())
+      .filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t))
+      .sort().reverse();
+    const malos = [];
+    for (let i = 0; i + 1 < fs.length; i++) {
+      const d = (Date.parse(fs[i]) - Date.parse(fs[i + 1])) / 864e5;
+      if (d > 120) malos.push(`${fs[i + 1]} → ${fs[i]} (${Math.round(d)} días)`);
+    }
+    return malos;
+  });
+  chequeo('ningún par de trimestres consecutivos se lleva más de un trimestre',
+    saltos.length === 0, JSON.stringify(saltos));
+
+  // ── LA UPA Y LOS INGRESOS, CON LA MISMA FECHA ───────────────────────
+  // Finnhub normaliza el trimestre al cierre del trimestre de CALENDARIO que
+  // lo contiene: el que cerró el 26 de julio salía fechado 2026-09-30, en la
+  // misma página en la que los ingresos decían 2026-07-26.
+  const fechasFin = fin.filas.map((f) => f.celdas[0]);
+  const fechasUpaReal = upa.filas.map((f) => f.celdas[0].trim().split(' ')[0]);
+  const reportados = fechasUpaReal.filter((f) => f !== '2026-12-31');
+  chequeo('cada trimestre de la UPA usa el mismo cierre que los ingresos',
+    reportados.every((f) => fechasFin.includes(f)),
+    JSON.stringify({ upa: fechasUpaReal, edgar: fechasFin }));
+  chequeo('y el que EDGAR no tiene conserva su fecha, DICIÉNDOLO',
+    upa.filas.some((f) => /fecha de la fuente de UPA/.test(f.celdas[0])),
+    JSON.stringify(fechasUpaReal));
+
   // ── LOS MONTOS, CON LA ESCALA DEL ESPAÑOL ───────────────────────────
   // "5.16 B" se leyó como 5.16 mil millones (Lety, 2026-10-21): esa "B" es
   // la del inglés y en español un billón son 10¹². `qdCap` escribe la escala
@@ -530,7 +604,7 @@ try {
     barras.every((b) => b.alturas.every((h) => h <= 60)),
     JSON.stringify(barras.map((b) => b.alturas)));
 
-  const trimNeg = fin.filas.find((f) => f.celdas[0] === '2026-01-25');
+  const trimNeg = fin.filas.find((f) => f.celdas[0] === '2025-04-27');
   chequeo('una utilidad NEGATIVA se ve como negativa',
     trimNeg && /-/.test(trimNeg.celdas[2]), trimNeg ? trimNeg.celdas[2] : 'no está');
 
