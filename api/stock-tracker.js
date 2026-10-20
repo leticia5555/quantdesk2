@@ -122,6 +122,12 @@ const FUNDS = [
   { cik: 1037389, name: 'Renaissance Technologies', persona: 'Renaissance' },
 ];
 
+// R5: la lectura COMPLETA del mismo Form 4. Vive aparte (`_lib/form4.js`)
+// porque es otra lectura, no un filtro más flojo: la tarjeta de TRACKER se
+// queda con las compras destacadas y la pantalla nueva ve todo. Se parsea en
+// la MISMA pasada del escaneo para no pedirle a la SEC dos veces lo mismo.
+import { form4Completo, filasDeForm4 } from './_lib/form4.js';
+
 const SOURCES = {
   edgar_form4_atom: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&company=&dateb=&owner=include&count=100&output=atom',
   // CIK personal (Elon Musk): confirma que submissions JSON sirve para
@@ -137,21 +143,30 @@ const SOURCES = {
 };
 
 // ── Caché en memoria por instancia (patrón vc-feed) ─────────────────
-const TTL_MS = { insider: 30 * 60e3, '13f': 24 * 3600e3 };
+const TTL_MS = { insider: 30 * 60e3, form4: 30 * 60e3, '13f': 24 * 3600e3 };
 const CDN_CACHE = {
   insider: 's-maxage=1800, stale-while-revalidate=3600',
+  form4: 's-maxage=1800, stale-while-revalidate=3600',
   '13f': 's-maxage=86400, stale-while-revalidate=86400',
 };
-let memCache = { insider: { at: 0, payload: null }, '13f': { at: 0, payload: null } };
+let memCache = { insider: { at: 0, payload: null }, form4: { at: 0, payload: null }, '13f': { at: 0, payload: null } };
 // accession → item de compra destacada (sobrevive entre builds warm).
 let insiderAccum = new Map();
+// accession → TODAS las filas de ese filing (R5). Acumulador aparte para que
+// la poda y el tope de uno no toquen al otro.
+let form4Accum = new Map();
+// El diagnóstico de la ÚLTIMA pasada del escaneo. `cat=form4` lo reporta sin
+// volver a escanear: las dos lecturas salen de la misma pasada.
+let ultimoEscaneo = null;
 // CUSIP → ticker (los CUSIP de un fondo cambian poco; el mapa es estable).
 let cusipTickerCache = new Map();
 
 // Hooks de tests (nunca se usan en producción).
 export function _resetTrackerCache() {
-  memCache = { insider: { at: 0, payload: null }, '13f': { at: 0, payload: null } };
+  memCache = { insider: { at: 0, payload: null }, form4: { at: 0, payload: null }, '13f': { at: 0, payload: null } };
   insiderAccum = new Map();
+  form4Accum = new Map();
+  ultimoEscaneo = null;
   cusipTickerCache = new Map();
 }
 export function _expireTrackerCache(cat) { if (memCache[cat]) memCache[cat].at = 0; }
@@ -387,6 +402,12 @@ async function buildInsider() {
     const xml = await fetchRaw(dir + '/' + xmlFile.name);
     fetched++;
     if (!xml.ok) return null;
+    // ── UNA PASADA, DOS LECTURAS (R5) ────────────────────────────────
+    // El XML ya está acá; parsearlo de nuevo en otro endpoint sería pedirle
+    // a la SEC el mismo documento dos veces. La lectura de TRACKER
+    // (`extractNotableBuy`) NO cambia ni una línea.
+    const completo = filasDeForm4(form4Completo(xml.text), e);
+    if (completo.length) form4Accum.set(e.accession, completo);
     return extractNotableBuy(parseForm4Xml(xml.text), e, NOTABLE_MIN_USD, skipStats);
   });
 
@@ -396,6 +417,9 @@ async function buildInsider() {
   for (const [acc, it] of insiderAccum) {
     if ((it.filedDate || '') < cutoff) insiderAccum.delete(acc);
   }
+  for (const [acc, fs] of form4Accum) {
+    if (((fs[0] && fs[0].filing_fecha) || '') < cutoff) form4Accum.delete(acc);
+  }
 
   // Orden por tamaño comparable: USD real o la aproximación (nunca el
   // monto nominal en moneda local, que mezclaría pesos con dólares).
@@ -403,6 +427,14 @@ async function buildInsider() {
   const items = markClusters([...insiderAccum.values()])
     .sort((a, b) => (b.filedDate || '').localeCompare(a.filedDate || '') || usd(b) - usd(a))
     .slice(0, 60);
+
+  // El diagnóstico del escaneo se guarda para que `cat=form4` pueda decir lo
+  // mismo sin volver a escanear: las dos lecturas salen de la MISMA pasada.
+  ultimoEscaneo = {
+    sources,
+    scan: { atom_entries: entries.length, inspected: toScan.length, xml_fetched: fetched, accumulated: form4Accum.size },
+    at: Date.now(),
+  };
 
   return {
     cat: 'insider',
@@ -668,8 +700,37 @@ async function runSmoke() {
   return { smoke: true, results, generated_at: new Date().toISOString() };
 }
 
+// ═══ R5 — TODAS LAS TRANSACCIONES DEL FORM 4 ════════════════════════
+//
+// Comparte el escaneo con `cat=insider`: si éste corre primero y el
+// acumulador ya tiene filas, no se vuelve a pedir nada. Si está vacío, se
+// dispara el mismo `buildInsider` —que es el que escanea— y después se lee
+// el acumulador. Nunca hay dos escaneos de la SEC en vuelo por lo mismo.
+async function buildForm4() {
+  if (!form4Accum.size) await buildInsider();
+  const filas = [...form4Accum.values()].flat()
+    // Por HORA de aceptación del filing, no por fecha de la operación: es lo
+    // que pide el encargo ("orden por hora de filing ↓") y es lo que hace que
+    // "lo último" signifique algo.
+    .sort((a, b) => String(b.filing_en || '').localeCompare(String(a.filing_en || '')))
+    .slice(0, 400);
+  const diag = ultimoEscaneo || {};
+  return {
+    cat: 'form4',
+    items: filas,
+    // El TOP y las destacadas los arma la pantalla desde estas mismas filas
+    // (`api/_lib/form4.js`): una sola fuente de verdad por pantalla.
+    scan: diag.scan || null,
+    sources: diag.sources || {},
+    cobertura: 'la ventana del feed `getcurrent` de EDGAR más lo que la instancia acumuló; un arranque en frío sólo ve la ventana',
+    lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después de la operación',
+    stale: false,
+    generated_at: new Date().toISOString(),
+  };
+}
+
 // ── Handler (patrón vc-feed: cache doble, stale-on-fail, nunca 500) ──
-const BUILDERS = { insider: buildInsider, '13f': build13F };
+const BUILDERS = { insider: buildInsider, form4: buildForm4, '13f': build13F };
 
 function payloadLooksEmpty(payload) {
   const srcs = Object.values(payload.sources || {});
@@ -693,7 +754,7 @@ export default async function handler(req, res) {
 
   const cat = String(q.cat || '').toLowerCase();
   if (!BUILDERS[cat]) {
-    return res.status(400).json({ error: 'cat must be insider | 13f (or pass smoke=1)' });
+    return res.status(400).json({ error: 'cat must be insider | form4 | 13f (or pass smoke=1)' });
   }
 
   const entry = memCache[cat];
