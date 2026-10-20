@@ -117,6 +117,10 @@
       "destination": "/insiders.html"
     },
     {
+      "source": "/analiza/:ticker",
+      "destination": "/analiza.html"
+    },
+    {
       "source": "/hoy",
       "destination": "/hoy.html"
     },

@@ -275,8 +275,12 @@ export function serieConvertida(velas, fx) {
       if (Number.isFinite(v[campo])) conv[campo] = v[campo] * k;
     }
     if (!Number.isFinite(conv.close)) {
-      const c = Number(v.c);
-      if (Number.isFinite(c)) conv.close = c * k; else { descartadas++; continue; }
+      // `Number(null)` es CERO, no NaN: sin el guardia de nulo, una vela con
+      // `c: null` se convertía en un cierre de 0 — un precio inventado que
+      // además hunde la gráfica. Es la misma trampa que convirtió un estimado
+      // de consenso ausente en "le ganó por 0.98" en la ficha de ticker.
+      const c = v.c == null || v.c === '' ? null : Number(v.c);
+      if (c != null && Number.isFinite(c)) conv.close = c * k; else { descartadas++; continue; }
     }
     out.push(conv);
   }

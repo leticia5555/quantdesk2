@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ficha de ticker — QuantDesk</title>
+<meta name="description" content="Ficha de una emisora: rendimiento contra su índice, UPA real contra estimado, ingresos y utilidad citando su 10-Q, insiders y noticias.">
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  /analiza/:ticker — R6, artboard 8.
+
+  LAS CUATRO COSAS QUE ESTA PANTALLA NO HACE:
+
+  1. NO llama a ninguna IA al cargar. El encargo lo permite SÓLO al pulsar
+     "Analizar con agentes", y ese flujo vive en la terminal: acá hay un
+     enlace, no una llamada.
+  2. NO calcula un porcentaje por su cuenta. Todos pasan por
+     `qdPeriodChange` y se pintan con `qdPctTag` (regla 1).
+  3. NO llama "rendimiento total" a un número sin dividendos. Si la fuente
+     no devolvió el cierre ajustado, la tabla dice "de precio" — son dos
+     cosas distintas y la diferencia no se nota mirando el número.
+  4. NO estima lo que es de pago. El precio objetivo y la calificación con
+     nombre de casa van en paneles punteados con su causa.
+
+  Y la que sí hace, que es la que importa: CADA NÚMERO DICE DE DÓNDE SALE.
+  Los trimestres citan su 10-Q con link a EDGAR.
+  ═══════════════════════════════════════════════════════════════════
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#0e141b; --linea:#161c24;
+    --texto:#e6edf3; --tenue:#8b98a5; --apagado:#7d8793;
+    --verde:#00c97d; --rojo:#E24B4A; --ambar:#d4af37;
+    --sans:"IBM Plex Sans Condensed","IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tap:44px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
+    font-family:var(--sans);-webkit-text-size-adjust:100%}
+  a{color:inherit}
+
+  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;padding:12px 16px 8px;
+    padding-top:calc(12px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
+  header h1{margin:0;font-size:24px;letter-spacing:-.3px}
+  header .nom{font-size:14px;color:var(--tenue);min-width:0;overflow:hidden;text-overflow:ellipsis}
+  header .px{font-family:var(--mono);font-size:18px}
+  .chip{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
+  .chip.abierto{color:var(--verde)}
+  .sub{width:100%;font-family:var(--mono);font-size:11px;color:var(--tenue);line-height:1.5}
+  .acciones{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea);flex-wrap:wrap}
+  .acciones a{min-height:var(--tap);display:inline-flex;align-items:center;padding:0 12px;
+    border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
+    font-family:var(--mono);font-size:12px;text-decoration:none}
+
+  nav{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea);
+    overflow-x:auto;scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{flex:0 0 auto;min-height:var(--tap);padding:0 13px;background:transparent;
+    border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
+    font-family:var(--mono);font-size:13px;cursor:pointer;white-space:nowrap}
+  nav button[aria-selected="true"]{background:#18212b;border-color:#2b3845;color:var(--texto)}
+
+  main{padding:10px 16px 0}
+  h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
+    letter-spacing:.6px;text-transform:uppercase;margin:16px 0 7px;display:flex;
+    align-items:baseline;gap:8px;flex-wrap:wrap}
+  h2 span{color:var(--apagado);font-weight:400;text-transform:none;letter-spacing:0;font-size:10px}
+  /* `overflow-x:auto` y no `hidden`: la tabla de recomendaciones tiene seis
+     columnas y en la lateral de 380 px se CORTABA por la derecha — la captura
+     enseñó "VENTA | VI…". Una columna recortada es un dato que no está. */
+  .panel{border:1px solid var(--linea);border-radius:8px;background:var(--panel);
+    overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+  .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
+    border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
+  /* El punteado es la forma de decir "esto NO está, y por qué". */
+  .punteado{border:1px dashed #3a3222;border-radius:8px;padding:11px;background:transparent}
+  .punteado b{display:block;font-size:12px;color:var(--ambar);margin-bottom:4px}
+  .punteado p{margin:0;font-family:var(--mono);font-size:11px;color:var(--tenue);line-height:1.5}
+
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+  th,td{padding:6px 9px;text-align:right;white-space:nowrap;border-top:1px solid var(--linea)}
+  th:first-child,td:first-child,.izq{text-align:left}
+  thead th{border-top:0;color:var(--tenue);font-weight:600;font-size:9.5px;
+    letter-spacing:.06em;text-transform:uppercase}
+  td.falta{color:var(--apagado)}
+  td.f{font-size:9px;color:var(--apagado)}
+  .pos{color:var(--verde)} .neg{color:var(--rojo)}
+
+  .barras{display:flex;gap:3px;align-items:flex-end;height:90px;padding:10px}
+  .barra{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;gap:2px}
+  .barra i{display:block;background:#2b5f8a;border-radius:2px 2px 0 0}
+  .barra i.u{background:var(--verde)}
+  .barra i.neg{background:var(--rojo)}
+  .barra b{font:9px var(--mono);color:var(--apagado);text-align:center;font-weight:400;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  footer{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.6;
+    padding:16px 16px calc(18px + env(safe-area-inset-bottom));
+    border-top:1px solid var(--linea);margin-top:18px}
+
+  @media (min-width:1100px){
+    main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:18px;align-items:start;
+      padding:12px 24px 0;max-width:1440px;margin:0 auto}
+    header,nav,.acciones{padding-left:24px;padding-right:24px}
+    .col-a{min-width:0} .col-b{min-width:0}
+    footer{grid-column:1/-1}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="tk">—</h1>
+  <span class="nom" id="nombre"></span>
+  <span class="px" id="precio"></span>
+  <span id="pct1d"></span>
+  <div class="chip" id="chip">—</div>
+  <div class="sub" id="sub"></div>
+</header>
+
+<div class="acciones">
+  <a href="/mercado">← al mapa</a>
+  <a id="a-grafica" href="#" target="_blank" rel="noopener noreferrer">Ver gráfica ↗</a>
+  <a id="a-agentes" href="#" target="_blank" rel="noopener noreferrer">Analizar con agentes ↗</a>
+</div>
+
+<nav id="tabs" role="tablist" aria-label="Secciones">
+  <button role="tab" data-tab="resumen" aria-selected="true">Resumen</button>
+  <button role="tab" data-tab="historia" aria-selected="false">Historia</button>
+  <button role="tab" data-tab="insiders" aria-selected="false">Insiders</button>
+  <button role="tab" data-tab="noticias" aria-selected="false">Noticias</button>
+  <button role="tab" data-tab="pares" aria-selected="false">Pares</button>
+  <button role="tab" data-tab="opciones" aria-selected="false">Opciones</button>
+</nav>
+
+<main>
+  <div class="col-a" id="col-a"></div>
+  <div class="col-b" id="col-b"></div>
+  <footer id="pie">cargando…</footer>
+</main>
+
+<script src="/qd-periods.js"></script>
+<script src="/qd-mercados.js"></script>
+<script src="/qd-pesos.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  var TABS = ['resumen','historia','insiders','noticias','pares','opciones'];
+  var PERIODOS = ['YTD','1A','3A','5A'];
+
+  var estado = (function(){
+    var p = new URLSearchParams(location.search);
+    var delPath = (location.pathname.match(/\/analiza\/([A-Za-z0-9.\-]+)/) || [])[1];
+    var tk = String(p.get('ticker') || delPath || '').toUpperCase();
+    var tab = TABS.indexOf(p.get('tab')) >= 0 ? p.get('tab') : 'resumen';
+    return { ticker: tk, tab: tab };
+  })();
+
+  var datos = null, pidiendo = false;
+
+  function escribirUrl(){
+    var p = new URLSearchParams();
+    if(estado.tab !== 'resumen') p.set('tab', estado.tab);
+    var qs = p.toString();
+    history.replaceState(null, '', '/analiza/' + encodeURIComponent(estado.ticker) + (qs ? '?' + qs : ''));
+  }
+
+  function serieDe(bloque){
+    var r = bloque && bloque.rendimiento;
+    return (r && r.serie) || [];
+  }
+
+  function cambio(serie, periodo){
+    if(!serie || serie.length < 2) return { pct:null, periodLabel:periodo,
+      motivo:'la serie trae ' + ((serie && serie.length) || 0) + ' cierre(s)' };
+    return qdPeriodChange(serie, periodo);
+  }
+
+  function pctDelFix(periodo){
+    var f = (datos && datos.fix && datos.fix.serie) || [];
+    if(f.length < 2) return null;
+    var r = qdPeriodChange(f, periodo);
+    return Number.isFinite(r.pct) ? r.pct : null;
+  }
+
+  function fmtUsd(v){
+    if(!Number.isFinite(v)) return '—';
+    var a = Math.abs(v);
+    if(a >= 1e12) return (v/1e12).toFixed(2) + ' B';
+    if(a >= 1e9) return (v/1e9).toFixed(2) + ' mil M';
+    if(a >= 1e6) return (v/1e6).toFixed(1) + ' M';
+    if(a >= 1e3) return Math.round(v/1e3) + ' mil';
+    return v.toFixed(2);
+  }
+  function fmtValor(v, formato){
+    if(v == null) return '—';
+    if(formato === 'usd') return fmtUsd(v);
+    if(formato === 'x') return Number(v).toFixed(2) + '×';
+    if(formato === 'pct1') return (Number(v) * 100).toFixed(1) + '%';
+    // Dos decimales para el dividendo: 0.03% con un decimal se pinta "0.0%",
+    // que se lee como "no paga". Un redondeo que cambia el sentido del dato
+    // es un número mal.
+    if(formato === 'pct2') return (Number(v) * 100).toFixed(2) + '%';
+    return String(v);
+  }
+
+  // ── RESUMEN ────────────────────────────────────────────────────────
+  function bloqueRendimiento(){
+    var r = datos.rendimiento || {};
+    var b = datos.benchmark || {};
+    var mia = serieDe(datos), suya = serieDe(b);
+    var clase = r.clase === 'total' ? 'Rendimiento total' : 'Rendimiento de precio';
+    var html = '<h2>' + clase + ' vs ' + esc(b.nombre || '—')
+      + '<span>' + esc(r.nota || r.motivo || '') + '</span></h2>';
+    if(mia.length < 2){
+      return html + '<div class="vacio">' + esc('sin serie: '
+        + ((datos.serie && datos.serie.motivo) || 'la fuente no contestó')) + '</div>';
+    }
+    html += '<div class="panel"><table><thead><tr><th>Periodo</th><th>'
+      + esc(datos.ticker) + '</th><th>' + esc(b.nombre || 'índice') + '</th>'
+      + '<th>Diferencia</th><th>En pesos</th></tr></thead><tbody>';
+    html += PERIODOS.map(function(p){
+      var a = cambio(mia, p), c = cambio(suya, p);
+      var dif = (Number.isFinite(a.pct) && Number.isFinite(c.pct)) ? a.pct - c.pct : null;
+      // La tercera línea del encargo: el mismo rendimiento, en pesos.
+      var fx = pctDelFix(p);
+      var mx = datos.es_mexicana
+        ? rendimientoEnDolares(a.pct, fx)
+        : enPesos({ pctLocal:a.pct, moneda:'USD', usdMxnPct:fx,
+            fix: datos.fix && datos.fix.fecha ? { serie:'SF43718', fecha:datos.fix.fecha } : null });
+      return '<tr><td class="izq">' + esc(p) + '</td>'
+        + '<td>' + qdPctTag(a.pct, p, { motivo:a.motivo }) + '</td>'
+        + '<td>' + qdPctTag(c.pct, p, { motivo:c.motivo || (b.serie && b.serie.motivo) }) + '</td>'
+        + '<td>' + (dif == null
+            ? '<span class="falta">—</span>'
+            : '<span class="' + (dif >= 0 ? 'pos' : 'neg') + '">'
+              + (dif >= 0 ? '+' : '') + dif.toFixed(2) + ' pp</span>') + '</td>'
+        + '<td>' + qdPctTag(mx.pct, p, { motivo:mx.motivo }) + '</td></tr>';
+    }).join('');
+    return html + '</tbody></table></div>';
+  }
+
+  function bloqueUpa(){
+    var u = datos.upa || {};
+    var html = '<h2>UPA real vs estimado'
+      + '<span>' + esc(u.medidos ? ('le ganó al consenso en ' + u.gano + ' de ' + u.medidos + ' trimestres medidos') : '') + '</span></h2>';
+    if(!u.filas || !u.filas.length) return html + '<div class="vacio">' + esc(u.motivo || 'sin datos') + '</div>';
+    html += '<div class="panel"><table><thead><tr><th>Trimestre</th><th>Real</th>'
+      + '<th>Estimado</th><th>Le ganó</th></tr></thead><tbody>';
+    html += u.filas.map(function(f){
+      return '<tr><td class="izq">' + esc(f.trimestre || f.fecha || '—') + '</td>'
+        + '<td>' + (f.real == null ? '<span class="falta">—</span>' : f.real.toFixed(2)) + '</td>'
+        + '<td>' + (f.estimado == null ? '<span class="falta">—</span>' : f.estimado.toFixed(2)) + '</td>'
+        + (f.sorpresa == null
+          ? '<td class="falta" title="' + esc(f.sorpresa_motivo || '') + '">—</td>'
+          : '<td class="' + (f.sorpresa >= 0 ? 'pos' : 'neg') + '">'
+            + (f.sorpresa >= 0 ? '+' : '') + f.sorpresa.toFixed(2) + '</td>')
+        + '</tr>';
+    }).join('');
+    html += '</tbody></table></div>';
+    html += '<p class="vacio" style="border-style:solid;border-color:var(--linea);margin-top:6px">'
+      + esc(u.nota || '') + '</p>';
+    var pr = datos.proximo_reporte || {};
+    html += '<div class="panel" style="margin-top:8px"><table><tbody><tr>'
+      + '<td class="izq">Próximo reporte</td>'
+      + '<td>' + (pr.fecha ? esc(pr.fecha) + (pr.cuando ? ' · ' + esc(pr.cuando) : '') : '<span class="falta">—</span>') + '</td>'
+      + '<td>' + (pr.eps_estimado != null ? 'UPA est. ' + Number(pr.eps_estimado).toFixed(2) : '') + '</td>'
+      + '<td class="f">' + esc(pr.fuente || pr.motivo || '') + '</td></tr></tbody></table></div>';
+    return html;
+  }
+
+  function bloqueFinancieros(){
+    var f = datos.financieros || {};
+    var html = '<h2>Ingresos y utilidad por trimestre<span>cada barra cita su 10-Q</span></h2>';
+    if(!f.filas || !f.filas.length) return html + '<div class="vacio">' + esc(f.motivo || 'sin datos de EDGAR') + '</div>';
+    var filas = f.filas.slice().reverse();
+    var maxIng = Math.max.apply(null, filas.map(function(x){ return Math.abs(x.ingresos || 0); }).concat([1]));
+    html += '<div class="panel"><div class="barras">' + filas.map(function(x){
+      var hi = Math.round(Math.abs(x.ingresos || 0) / maxIng * 56);
+      var hu = Math.round(Math.abs(x.utilidad || 0) / maxIng * 56);
+      return '<div class="barra" title="' + esc(x.fin + ' · ' + (x.ingresos_form || '')) + '">'
+        + '<i style="height:' + hi + 'px"></i>'
+        + '<i class="u' + (x.utilidad < 0 ? ' neg' : '') + '" style="height:' + Math.max(1, hu) + 'px"></i>'
+        + '<b>' + esc(String(x.fin || '').slice(2, 7)) + '</b></div>';
+    }).join('') + '</div></div>';
+    html += '<div class="panel" style="margin-top:6px"><table><thead><tr>'
+      + '<th>Trimestre</th><th>Ingresos</th><th>Utilidad</th><th>Margen</th><th class="izq">Filing</th>'
+      + '</tr></thead><tbody>' + f.filas.map(function(x){
+        return '<tr><td class="izq">' + esc(x.fin) + '</td>'
+          + '<td>' + (x.ingresos == null ? '<span class="falta">—</span>' : fmtUsd(x.ingresos)) + '</td>'
+          + '<td class="' + (x.utilidad < 0 ? 'neg' : '') + '">'
+            + (x.utilidad == null ? '<span class="falta">—</span>' : fmtUsd(x.utilidad)) + '</td>'
+          + (x.margen_pct == null
+            ? '<td class="falta" title="' + esc(x.margen_motivo || '') + '">—</td>'
+            : '<td>' + x.margen_pct.toFixed(1) + '%</td>')
+          + '<td class="izq f">' + (x.ingresos_link
+              ? '<a href="' + esc(x.ingresos_link) + '" target="_blank" rel="noopener noreferrer">'
+                + esc(x.ingresos_form || 'filing') + ' ↗</a>'
+              : esc(x.ingresos_form || '—')) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    return html;
+  }
+
+  function bloqueAnalistas(){
+    var a = datos.analistas || {};
+    var html = '<h2>Analistas</h2>';
+    var po = a.precio_objetivo || {};
+    if(po.disponible){
+      html += '<div class="panel"><table><tbody>'
+        + '<tr><td class="izq">Precio objetivo</td><td>bajo ' + fmtUsd(po.bajo)
+        + '</td><td>promedio ' + fmtUsd(po.medio) + '</td><td>alto ' + fmtUsd(po.alto) + '</td>'
+        + '<td class="f">' + esc(po.fuente) + '</td></tr></tbody></table></div>';
+    } else {
+      html += '<div class="punteado"><b>Precio objetivo</b><p>' + esc(po.motivo || 'no disponible') + '</p></div>';
+    }
+    (a.de_pago || []).forEach(function(d){
+      html += '<div class="punteado" style="margin-top:8px"><b>' + esc(d.titulo) + ' — '
+        + esc(d.motivo) + '</b><p>' + esc(d.detalle || '') + '</p></div>';
+    });
+    var r = a.recomendaciones || {};
+    if(r.filas && r.filas.length){
+      html += '<div class="panel" style="margin-top:8px"><table><thead><tr><th>Mes</th>'
+        + '<th>Compra fuerte</th><th>Compra</th><th>Mantener</th><th>Venta</th><th>Venta fuerte</th>'
+        + '</tr></thead><tbody>' + r.filas.map(function(x){
+          return '<tr><td class="izq">' + esc(x.periodo) + '</td><td>' + x.compra_fuerte + '</td>'
+            + '<td>' + x.compra + '</td><td>' + x.mantener + '</td><td>' + x.venta + '</td>'
+            + '<td>' + x.venta_fuerte + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    } else {
+      html += '<div class="vacio" style="margin-top:8px">' + esc(r.motivo || 'sin recomendaciones') + '</div>';
+    }
+    return html;
+  }
+
+  function bloqueValuacion(){
+    var v = datos.valuacion || {};
+    var html = '<h2>Valuación y finanzas<span>cada fila con su fuente</span></h2>';
+    if(!v.filas || !v.filas.length) return html + '<div class="vacio">' + esc(v.motivo || 'sin datos') + '</div>';
+    html += '<div class="panel"><table><tbody>' + v.filas.map(function(f){
+      return '<tr><td class="izq">' + esc(f.k) + '</td>'
+        + (f.valor == null
+          ? '<td class="falta" title="' + esc(f.motivo || '') + '">—</td>'
+          : '<td>' + esc(fmtValor(f.valor, f.formato)) + '</td>')
+        + '<td class="izq f">' + esc(f.fuente || f.motivo || '') + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+    if(v.motivo) html += '<div class="vacio" style="margin-top:6px">' + esc(v.motivo) + '</div>';
+    return html;
+  }
+
+  function bloqueInsiders(){
+    var i = datos.insiders || {};
+    var n = i.neto_90 || {};
+    var html = '<h2>Insiders<span>' + esc(i.fuente || '') + '</span></h2>';
+    html += '<div class="panel"><table><tbody><tr>'
+      + '<td class="izq">Neto 90 días</td>'
+      + (n.neto_usd == null
+        ? '<td class="falta" title="' + esc(n.motivo || '') + '">—</td>'
+        : '<td class="' + (n.neto_usd >= 0 ? 'pos' : 'neg') + '">'
+          + (n.neto_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(n.neto_usd)) + '</td>')
+      + '<td>' + (n.compras || 0) + ' compra(s) · ' + (n.ventas || 0) + ' venta(s)</td>'
+      + '</tr></tbody></table></div>';
+    if(!i.ultimas || !i.ultimas.length){
+      html += '<div class="vacio" style="margin-top:6px">' + esc(i.motivo || 'sin transacciones') + '</div>';
+    } else {
+      html += '<div class="panel" style="margin-top:6px"><table><thead><tr>'
+        + '<th class="izq">Quién</th><th class="izq">Tipo</th><th>Acciones</th><th>Valor</th><th>Fecha</th>'
+        + '</tr></thead><tbody>' + i.ultimas.map(function(t){
+          return '<tr><td class="izq">' + esc(t.name || '—') + '</td>'
+            + '<td class="izq">' + esc(t.type || t.code || '—') + '</td>'
+            + '<td>' + (t.shares ? Number(t.shares).toLocaleString('es-MX') : '—') + '</td>'
+            + '<td>' + (t.value ? fmtUsd(t.value) : '—') + '</td>'
+            + '<td>' + esc(t.transactionDate || t.filingDate || '—') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    html += '<p class="vacio" style="border-style:solid;border-color:var(--linea);margin-top:6px">'
+      + esc('Todas las transacciones, con la columna "le quedan": ') + '<a href="/mercado/insiders?q='
+      + encodeURIComponent(datos.ticker) + '">/mercado/insiders ↗</a></p>';
+    return html;
+  }
+
+  function bloqueHistoria(){
+    var h = datos.historia || {};
+    var html = '<h2>Historia<span>' + esc(h.fuente || '') + '</span></h2>';
+    if(!h.hitos || !h.hitos.length) return html + '<div class="vacio">' + esc(h.motivo || 'sin hitos registrados para este ticker') + '</div>';
+    return html + '<div class="panel"><table><tbody>' + h.hitos.slice(0,3).map(function(x){
+      return '<tr><td class="izq">' + esc(x.fecha || x.date || '—') + '</td>'
+        + '<td class="izq">' + esc(x.titulo || x.title || x.resumen || '—') + '</td>'
+        + '<td class="izq f">' + (x.fuente_url
+          ? '<a href="' + esc(x.fuente_url) + '" target="_blank" rel="noopener noreferrer">cita ↗</a>'
+          : esc(x.fuente || 'sin cita')) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  }
+
+  function bloqueNoticias(){
+    var n = datos.noticias || {};
+    var html = '<h2>Noticias<span>' + esc(n.metodo || '') + '</span></h2>';
+    if(!n.filas || !n.filas.length) return html + '<div class="vacio">' + esc(n.motivo || 'sin noticias') + '</div>';
+    return html + '<div class="panel">' + n.filas.map(function(x){
+      var hora = '';
+      try{ hora = new Date(x.publicado_en).toLocaleString('es-MX',
+        { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false }); }catch(e){}
+      return '<a style="display:block;padding:9px 11px;border-top:1px solid var(--linea);text-decoration:none"'
+        + ' href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">'
+        + '<div style="font-size:13px;line-height:1.35">' + esc(x.titular) + '</div>'
+        + '<div style="font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:3px">'
+        + esc(hora) + ' · ' + esc(x.fuente_nombre || x.fuente_id) + '</div></a>';
+    }).join('') + '</div>';
+  }
+
+  function bloquePendiente(nombre, motivo){
+    return '<h2>' + esc(nombre) + '</h2><div class="punteado"><b>' + esc(nombre) + ' · pronto</b>'
+      + '<p>' + esc(motivo) + '</p></div>';
+  }
+
+  function pintarChip(){
+    var el = document.getElementById('chip');
+    try{
+      var e = qdEstadoMercado(datos && datos.es_mexicana ? 'bmv' : 'nyse', new Date());
+      el.textContent = (e.nombre || '') + ': ' + (e.texto || (e.abierto ? 'abierto' : 'cerrado'));
+      el.className = 'chip' + (e.abierto ? ' abierto' : '');
+    }catch(err){ el.textContent = 'sin estado de mercado'; }
+  }
+
+  function pintarEncabezado(){
+    document.getElementById('tk').textContent = (datos && datos.ticker) || estado.ticker || '—';
+    document.getElementById('nombre').textContent = (datos && datos.nombre) || '';
+    var s = serieDe(datos || {});
+    var ult = s.length ? s[s.length-1] : null;
+    document.getElementById('precio').textContent = ult ? fmtPrice(ult.c) : '—';
+    var c = cambio(s, '1D');
+    document.getElementById('pct1d').innerHTML = qdPctTag(c.pct, '1D', { motivo:c.motivo });
+    var partes = [];
+    if(datos && datos.bolsa) partes.push(datos.bolsa);
+    if(datos && datos.sector) partes.push(datos.sector);
+    if(datos && datos.moneda) partes.push(datos.moneda);
+    var fx = pctDelFix('1D');
+    var mx = datos && datos.es_mexicana
+      ? null
+      : enPesos({ pctLocal:c.pct, moneda:'USD', usdMxnPct:fx,
+          fix: datos && datos.fix && datos.fix.fecha ? { serie:'SF43718', fecha:datos.fix.fecha } : null });
+    if(mx && Number.isFinite(mx.pct)) partes.push('en pesos ' + (mx.pct>=0?'+':'') + mx.pct.toFixed(2) + '% 1D');
+    document.getElementById('sub').textContent = partes.join(' · ');
+    document.getElementById('a-grafica').href = '/app?tab=tracker&ticker=' + encodeURIComponent(estado.ticker);
+    document.getElementById('a-agentes').href = (datos && datos.agentes && datos.agentes.ruta)
+      || ('/app?tab=analyze&ticker=' + encodeURIComponent(estado.ticker));
+  }
+
+  function pintarPie(){
+    var el = document.getElementById('pie');
+    if(!datos){ el.textContent = 'cargando…'; return; }
+    var hora = '';
+    try{ hora = new Date(datos.generado_en).toLocaleString('es-MX',
+      { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false }); }catch(e){}
+    el.textContent = 'Fuentes: ' + ((datos.serie && datos.serie.fuente) || 'sin serie')
+      + ' · ' + ((datos.financieros && datos.financieros.fuente) || 'edgar')
+      + ' · finnhub · ' + ((datos.fix && datos.fix.fuente) || 'sin tipo de cambio')
+      + ' · el análisis con agentes NO corre al abrir esta pantalla: sólo al pulsarlo'
+      + ' · actualizado ' + hora
+      + ' · Información, no asesoría.';
+  }
+
+  function pintar(){
+    [].forEach.call(document.querySelectorAll('#tabs button'), function(b){
+      b.setAttribute('aria-selected', String(b.dataset.tab === estado.tab));
+    });
+    var a = document.getElementById('col-a');
+    var b = document.getElementById('col-b');
+    if(!datos){ a.innerHTML = '<div class="vacio">cargando…</div>'; b.innerHTML = ''; return; }
+    pintarChip();
+    pintarEncabezado();
+    if(datos.error){
+      a.innerHTML = '<div class="vacio">' + esc('no se pudo armar la ficha: ' + datos.error) + '</div>';
+      b.innerHTML = '';
+      pintarPie();
+      return;
+    }
+    if(estado.tab === 'resumen'){
+      a.innerHTML = bloqueRendimiento() + bloqueUpa() + bloqueFinancieros();
+      b.innerHTML = bloqueAnalistas() + bloqueValuacion() + bloqueInsiders();
+    } else if(estado.tab === 'historia'){
+      a.innerHTML = bloqueHistoria(); b.innerHTML = bloqueNoticias();
+    } else if(estado.tab === 'insiders'){
+      a.innerHTML = bloqueInsiders(); b.innerHTML = '';
+    } else if(estado.tab === 'noticias'){
+      a.innerHTML = bloqueNoticias(); b.innerHTML = '';
+    } else if(estado.tab === 'pares'){
+      a.innerHTML = bloquePendiente('Pares',
+        'los pares comparables salen del universo con sector y capitalización verificada; hoy /mercado tiene el sector pero no una lista de comparables declarada, y una lista armada a ojo no es una comparación.');
+      b.innerHTML = '';
+    } else {
+      a.innerHTML = bloquePendiente('Opciones',
+        'la cadena de opciones vive en /api/options y todavía no está conectada a esta ficha.');
+      b.innerHTML = '';
+    }
+    pintarPie();
+  }
+
+  function cargar(){
+    if(pidiendo || !estado.ticker) return;
+    pidiendo = true;
+    fetch('/api/analiza?ticker=' + encodeURIComponent(estado.ticker))
+      .then(function(r){ return r.json(); })
+      .then(function(j){ datos = j; })
+      .catch(function(e){ datos = { ticker: estado.ticker, error: String((e && e.message) || e) }; })
+      .then(function(){ pidiendo = false; pintar(); });
+  }
+
+  document.getElementById('tabs').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-tab]'); if(!b) return;
+    estado.tab = b.dataset.tab; escribirUrl(); pintar();
+  });
+
+  escribirUrl();
+  pintar();
+  cargar();
+})();
+</script>
+</body>
+</html>
