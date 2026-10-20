@@ -328,6 +328,26 @@ const server = createServer(async (req, res) => {
       generado_en: '2026-09-21T22:00:00.000Z',
     }));
   }
+  if (url.pathname === '/api/noticias') {
+    pedidosApi++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    // Con fuentes CAÍDAS a propósito: una sección corta sin decir que ocho de
+    // veintidós no contestaron se lee como "no pasó nada hoy".
+    return res.end(JSON.stringify({
+      noticias: [
+        { url: 'https://cnbc.com/a', titular: 'Nvidia supera estimaciones y sube en el after',
+          fuente_id: 'cnbc', fuente_nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'acciones',
+          publicado_en: '2026-09-21T21:40:00.000Z', imagen: null, tickers: ['NVDA', 'ORCL'], fuente_dato: null },
+        { url: 'https://banxico.org.mx/anuncios#2026-09-21', titular: 'Banxico baja la tasa objetivo a 7.25% (desde 7.5%)',
+          fuente_id: 'banxico_sie', fuente_nombre: 'Banxico', tipo: 'oficial_derivado', idioma: 'es', seccion: 'oficiales',
+          publicado_en: '2026-09-21T12:00:00.000Z', imagen: null, tickers: [], fuente_dato: 'banxico:SF61745 (tasa objetivo)' },
+      ],
+      fuentes_caidas: [{ fuente_id: 'zerohedge', motivo: 'HTTP 403 (bloqueo de datacenter)' }],
+      fuentes_go: 22,
+      generado_en: '2026-09-21T22:00:00.000Z',
+      fuente: 'neon:mercado_noticias (RSS/Atom de api/_lib/news-sources.json)',
+    }));
+  }
   if (url.pathname === '/api/macro-markets') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -895,6 +915,85 @@ try {
   chequeo('un cuadro sin dato dice "—"', /—/.test(hojaHueco));
   chequeo('y dice POR QUÉ no hay dato', (await p.locator('.hoja .motivo').count()) === 1, hojaHueco.slice(0, 60).replace(/\n/g, ' '));
 
+  // ═══════════════════════════════════════════════════════════════════
+  // R3(b) · LO DE HOY
+  //
+  // Titular + hora + fuente + link, y nada más: el cuerpo de la nota no se
+  // guarda ni se muestra. Lo que se comprueba acá es que el link salga del
+  // dominio de la fuente, que la hora esté en hora de México, que un titular
+  // DERIVADO no se presente como comunicado, y que las fuentes caídas se
+  // digan en vez de dejar la lista corta sin explicación.
+  // ═══════════════════════════════════════════════════════════════════
+  await p.goto(`${BASE}/mercado?mapa=us&periodo=1D`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#paneles .nota-fila');
+  const hoy = await p.evaluate(() => {
+    const h = [...document.querySelectorAll('#paneles h2')].find((x) => /Lo de hoy/.test(x.textContent));
+    const nota = h && h.nextElementSibling && h.nextElementSibling.classList.contains('nota')
+      ? h.nextElementSibling.textContent.trim() : null;
+    const cont = h && (nota ? h.nextElementSibling.nextElementSibling : h.nextElementSibling);
+    return {
+      titulo: h ? h.textContent.trim() : null,
+      aviso: nota,
+      filas: [...(cont ? cont.querySelectorAll('.nota-fila') : [])].map((a) => ({
+        href: a.getAttribute('href'),
+        target: a.getAttribute('target'),
+        rel: a.getAttribute('rel'),
+        tit: (a.querySelector('.tit') || {}).textContent || '',
+        meta: (a.querySelector('.meta') || {}).textContent || '',
+        chips: [...a.querySelectorAll('.chip-tk')].map((c) => ({
+          sym: c.dataset.sym, alto: Math.round(c.getBoundingClientRect().height),
+        })),
+      })),
+    };
+  });
+  chequeo('"Lo de hoy" está, con sus notas', hoy.titulo === 'Lo de hoy' && hoy.filas.length === 2,
+    JSON.stringify(hoy.titulo) + ' · ' + hoy.filas.length);
+  chequeo('cada nota lleva su hora en hora de México y su fuente',
+    hoy.filas.every((f) => /^\d{2}:\d{2} · /.test(f.meta))
+      // 21:40 UTC = 15:40 en Ciudad de México. México no cambia de horario
+      // desde 2022, así que son UTC−6 todo el año: un 16:40 acá sería la
+      // suposición vieja del horario de verano.
+      && /15:40 · CNBC/.test(hoy.filas[0].meta),
+    hoy.filas.map((f) => f.meta).join(' | '));
+  chequeo('el link va a la FUENTE, en pestaña nueva y sin dejarle tocar la nuestra',
+    hoy.filas.every((f) => /^https:\/\//.test(f.href) && f.target === '_blank'
+      && /noopener/.test(f.rel || '') && /noreferrer/.test(f.rel || '')),
+    JSON.stringify(hoy.filas.map((f) => [f.href, f.rel])));
+  // UN TITULAR QUE ARMAMOS NOSOTROS NO SE PUEDE PRESENTAR COMO COMUNICADO.
+  chequeo('la fila de Banxico declara que sale de la serie, no de un comunicado',
+    /de la serie oficial, no un comunicado/.test(hoy.filas[1].meta), hoy.filas[1].meta);
+  chequeo('y las fuentes caídas se dicen, en vez de dejar la lista corta sin motivo',
+    /1 de 22 fuentes no contestaron/.test(hoy.aviso || '') && /zerohedge/.test(hoy.aviso || ''),
+    hoy.aviso);
+
+  // EL CHIP DE TICKER ES TOCABLE Y ABRE LA HOJA, no el medio.
+  chequeo('los chips de ticker miden lo suficiente para tocarse',
+    hoy.filas[0].chips.length === 2 && hoy.filas[0].chips.every((c) => c.alto >= 28),
+    JSON.stringify(hoy.filas[0].chips));
+  await p.locator('#paneles .chip-tk[data-sym="ORCL"]').tap();
+  await p.waitForSelector('.hoja[data-abierta="1"]');
+  const hojaChip = await p.locator('#hojaCuerpo').innerText();
+  chequeo('tocar un chip abre la hoja de ESA emisora, no el enlace de la nota',
+    /ORCL/.test(hojaChip) && p.url().includes('symbol=ORCL'),
+    hojaChip.slice(0, 90).replace(/\n/g, ' ') + ' · ' + p.url());
+  await p.locator('#cerrar').tap();
+  await p.waitForTimeout(100);
+
+  await p.evaluate(() => {
+    const h = [...document.querySelectorAll('#paneles h2')].find((x) => /Lo de hoy/.test(x.textContent));
+    if (h) window.scrollTo(0, h.getBoundingClientRect().top + window.scrollY - 8);
+  });
+  await p.waitForTimeout(120);
+  await p.screenshot({ path: join(OUT, 'mercado-390-hoy.png') });
+  console.log(`     → ${join(OUT, 'mercado-390-hoy.png')}`);
+  await p.evaluate(() => window.scrollTo(0, 0));
+
+  // NI UNA LÍNEA DE CUERPO. El encargo es explícito: esta sección manda a la
+  // fuente, no la reemplaza.
+  chequeo('ninguna nota pinta cuerpo: sólo titular, hora, fuente y chips',
+    hoy.filas.every((f) => f.tit.length > 0 && f.tit.length < 200),
+    JSON.stringify(hoy.filas.map((f) => f.tit.length)));
+
   // ── UNA CAP SIN VERIFICAR SE VE, CON SU CAUSA ──────────────────────
   // Antes se filtraba por `cap > 0` y la emisora salía AUSENTE del mapa: el
   // único rastro era un número en el pie. Un cuadro que no está no tiene
@@ -1262,8 +1361,8 @@ try {
     return out;
   });
   const porTitulo = Object.fromEntries(tablas.map((t) => [t.titulo, t]));
-  chequeo('están los cinco bloques del encargo',
-    ['Más suben', 'Más bajan', 'Más operadas', 'Esta semana', 'Arena'].every((k) => porTitulo[k]),
+  chequeo('están los seis bloques del encargo',
+    ['Más suben', 'Más bajan', 'Más operadas', 'Lo de hoy', 'Esta semana', 'Arena'].every((k) => porTitulo[k]),
     tablas.map((t) => t.titulo).join(' · '));
 
   const pctDe = (s) => parseFloat(String(s).replace(/[^\-0-9.]/g, ''));

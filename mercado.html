@@ -112,6 +112,23 @@
   .tabla .val{flex:0 0 auto;font:600 12px var(--mono);text-align:right;white-space:nowrap}
   @media (pointer:fine){ .tabla .fila:hover{background:#171717} }
   .vacio{padding:12px 10px;font-size:12px;color:var(--tenue);line-height:1.5}
+  /* ── R3(b): "lo de hoy" ─────────────────────────────────────────────
+     Titular + hora + fuente + link, y nada más. El cuerpo de la nota no se
+     guarda ni se muestra: esto manda a la fuente, no la reemplaza. */
+  .nota-fila{display:block;padding:9px 10px;border-top:1px solid var(--linea);
+    color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent}
+  .nota-fila:first-child{border-top:0}
+  .nota-fila .tit{font-size:13px;line-height:1.35}
+  .nota-fila .meta{margin-top:3px;font-family:var(--mono);font-size:10px;color:var(--tenue)}
+  .nota-fila .meta b{color:#9aa5b1;font-weight:600}
+  /* El chip de ticker es TOCABLE y abre la misma hoja que el cuadro, así que
+     mide como todo lo que se toca aunque el texto sea corto. */
+  .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+  .chip-tk{display:inline-flex;align-items:center;min-height:28px;padding:0 8px;
+    border:1px solid var(--linea);border-radius:999px;background:#161616;
+    font-family:var(--mono);font-size:10px;color:var(--texto);cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  @media (pointer:fine){ .nota-fila:hover{background:#171717} .chip-tk:hover{border-color:#3a3a3a} }
   /* "Esta semana" y Arena: listas de dos líneas, no tablas de números. */
   .evento{display:flex;gap:10px;align-items:baseline;min-height:36px;
     padding:7px 10px;border-top:1px solid var(--linea)}
@@ -1361,6 +1378,8 @@
   // ═══════════════════════════════════════════════════════════════════
   var paneles = null;          // lo que devolvió /api/mercado-paneles
   var panelesPedido = false;
+  var noticias = null;         // lo que devolvió /api/noticias
+  var noticiasPedido = false;
 
   function filasDeTablas(d){
     return (d.cuadros || []).map(function(c){
@@ -1440,6 +1459,64 @@
     return html + '</div>';
   }
 
+  // ── R3(b): LO DE HOY ──────────────────────────────────────────────
+  // Titular + hora + fuente + link. El cuerpo no se guarda ni se muestra: la
+  // sección manda a la fuente, no la reemplaza.
+  //
+  // LAS FUENTES CAÍDAS VIAJAN CON LA LISTA. Una sección corta sin decir que
+  // ocho de veintidós no contestaron se lee como "no pasó nada hoy", y hoy
+  // siempre pasa algo.
+  function horaDeNota(iso){
+    var d = new Date(iso);
+    if(!Number.isFinite(d.getTime())) return null;
+    // En hora de México, como todo lo demás de esta pantalla.
+    try {
+      return new Intl.DateTimeFormat('es-MX', { timeZone: 'America/Mexico_City',
+        hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+    } catch(e){ return null; }
+  }
+
+  function bloqueHoy(){
+    var html = '<h2>Lo de hoy</h2>';
+    if(!noticias){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
+    if(noticias.error){
+      return html + '<div class="tabla"><div class="vacio">' + esc('no se pudo leer: ' + noticias.error) + '</div></div>';
+    }
+    var ns = noticias.noticias || [];
+    var caidas = noticias.fuentes_caidas || [];
+    if(caidas.length){
+      html += '<p class="nota">' + esc(caidas.length + ' de ' + (noticias.fuentes_go || '?')
+        + ' fuentes no contestaron en la última cosecha: ' + caidas.slice(0,3).map(function(c){ return c.fuente_id; }).join(', ')
+        + (caidas.length > 3 ? '…' : '')) + '</p>';
+    }
+    html += '<div class="tabla">';
+    if(!ns.length){
+      html += '<div class="vacio">' + esc(caidas.length
+        ? 'ninguna fuente dejó notas en las últimas 72 horas'
+        : 'sin notas en las últimas 72 horas: corré /api/noticias?job=feeds') + '</div>';
+    } else {
+      html += ns.slice(0, 12).map(function(n){
+        var hora = horaDeNota(n.publicado_en);
+        var chips = (n.tickers || []).slice(0, 4).map(function(t){
+          return '<span class="chip-tk" data-sym="' + esc(t) + '" role="button" tabindex="0">' + esc(t) + '</span>';
+        }).join('');
+        // `rel="noopener noreferrer"`: la nota se abre en el sitio de la fuente
+        // y esa pestaña no puede tocar la nuestra.
+        return '<a class="nota-fila" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
+          + '<div class="tit">' + esc(n.titular) + '</div>'
+          + '<div class="meta">' + (hora ? esc(hora) + ' · ' : '')
+          + '<b>' + esc(n.fuente_nombre || n.fuente_id) + '</b>'
+          // Un titular que armamos nosotros desde una serie oficial NO se
+          // puede presentar como un comunicado: lo dice acá.
+          + (n.tipo === 'oficial_derivado' ? ' · ' + esc('de la serie oficial, no un comunicado') : '')
+          + '</div>'
+          + (chips ? '<div class="chips">' + chips + '</div>' : '')
+          + '</a>';
+      }).join('');
+    }
+    return html + '</div>';
+  }
+
   function bloqueArena(){
     var html = '<h2>Arena</h2>';
     if(!paneles){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
@@ -1479,11 +1556,25 @@
       html += bloqueTabla('Más bajan', t.bajan, t.conteo, 'bajan', 'pct');
       html += bloqueTabla('Más operadas', t.operadas, t.conteo, 'operadas', 'importe');
     }
+    html += bloqueHoy();
     html += bloqueSemana();
     html += bloqueArena();
     el.innerHTML = html;
     el.hidden = false;
     if(!panelesPedido) cargarPaneles();
+    if(!noticiasPedido) cargarNoticias();
+  }
+
+  function cargarNoticias(){
+    noticiasPedido = true;
+    fetch('/api/noticias?limite=30')
+      .then(function(r){ return r.json(); })
+      .then(function(j){ noticias = j; if(cache[estado.mapa]) pintarPaneles(cache[estado.mapa]); })
+      .catch(function(e){
+        // Un fallo de red no deja la sección diciendo "cargando…" para siempre.
+        noticias = { error: e.message };
+        if(cache[estado.mapa]) pintarPaneles(cache[estado.mapa]);
+      });
   }
 
   function cargarPaneles(){
@@ -1503,6 +1594,16 @@
 
   // Tap en una fila de tabla → la misma hoja que el cuadro del mapa.
   document.getElementById('paneles').addEventListener('click', function(ev){
+    // El chip de ticker va PRIMERO y corta el enlace: está dentro de un <a>
+    // que lleva a la nota, y sin esto tocar el chip abriría el medio en vez de
+    // la hoja de la emisora.
+    var chip = ev.target.closest('.chip-tk');
+    if(chip && chip.dataset.sym){
+      ev.preventDefault(); ev.stopPropagation();
+      estado.symbol = chip.dataset.sym; escribirUrl(true);
+      abrirHoja(cache[estado.mapa], chip.dataset.sym);
+      return;
+    }
     var f = ev.target.closest('.fila'); if(!f || !f.dataset.sym) return;
     estado.symbol = f.dataset.sym; escribirUrl(true);
     abrirHoja(cache[estado.mapa], f.dataset.sym);
