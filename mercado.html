@@ -41,6 +41,21 @@
      1.5 s en 4G, y una pantalla en blanco esperando una tipografía es
      exactamente lo que eso prohíbe. Si Google Fonts no responde, la página se
      ve con la fuente del sistema y no se rompe nada. -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="/mercado — QuantDesk">
+<meta property="og:description" content="Mapa de mercado de EE.UU. y México por capitalización, con el cambio del periodo que elijas.">
+<meta name="twitter:card" content="summary_large_image">
+<!-- ── R7: LA IMAGEN DEL PREVIEW ───────────────────────────────────────
+     `og:image` NO está puesta a propósito, y es una decisión, no un olvido.
+     El encargo pide que el preview de WhatsApp sea EL MISMO PNG que genera
+     el botón de compartir; ese PNG se dibuja en el navegador del lector, así
+     que para servirlo como `og:image` haría falta renderizarlo en el
+     servidor — otra dependencia (un renderizador tipo Satori) que no se
+     puede instalar ni probar desde este entorno sin red.
+     Poner una imagen genérica mientras tanto sería peor: el preview diría
+     algo distinto de lo que la URL abre. Sin `og:image`, WhatsApp enseña
+     título y descripción, que SÍ son ciertos. Queda anotado en el PR. -->
+<meta name="theme-color" content="#0b0f14">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
@@ -272,6 +287,20 @@
     border:1px solid var(--linea);border-radius:6px;padding:6px 9px;font-family:var(--mono);font-size:11px}
   /* Hover SÓLO donde hay puntero fino. En táctil, :hover se queda pegado. */
   @media (pointer:fine){ .cuadro:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
+  /* R7: el botón de compartir y su hoja */
+  .compartir{min-height:36px;display:inline-flex;align-items:center;padding:0 10px;
+    border:1px solid var(--linea);border-radius:6px;color:var(--tenue);background:transparent;
+    font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap}
+  .compartir-caja{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:60;
+    display:flex;flex-direction:column;gap:6px;padding:12px;min-width:260px;
+    background:var(--panel);border:1px solid var(--linea);border-radius:10px;
+    box-shadow:0 14px 40px rgba(0,0,0,.6)}
+  .compartir-caja .et{font-family:var(--mono);font-size:10px;color:var(--apagado);letter-spacing:.06em}
+  .compartir-caja button{min-height:44px;background:transparent;border:1px solid var(--linea);
+    border-radius:6px;color:var(--texto);font-family:var(--mono);font-size:13px;cursor:pointer}
+  .compartir-caja .nota{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.4;
+    min-height:14px}
+
   /* ── R3(c): LAS PIEZAS NUEVAS SON DE ESCRITORIO ────────────────────
      El encargo las lista bajo la línea de escritorio del artboard 5:
      "Desktop 1440×1000 sin scroll: 3 columnas … Header con buscador de
@@ -414,6 +443,7 @@
            aria-expanded="false" aria-controls="sugerencias" role="combobox">
     <div id="sugerencias" role="listbox" hidden></div>
   </div>
+  <button type="button" class="compartir" id="btn-compartir">Compartir imagen</button>
   <a class="ir-noticias" href="/mercado/noticias">noticias →</a>
 </header>
 
@@ -478,6 +508,7 @@
 <script src="/qd-pesos.js"></script>
 <script src="/qd-mundo.js"></script>
 <script src="/qd-tablas.js"></script>
+<script src="/qd-compartir.js"></script>
 <script>
 (function(){
   'use strict';
@@ -1875,6 +1906,104 @@
     estado.periodo = b.dataset.per; escribirUrl(true); render();
   });
 
+  /** Lo que el mapa pone en la tarjeta: lo que la pantalla está enseñando. */
+  function datosParaCompartir(){
+    var d = cache[estado.mapa] || {};
+    var nombre = NOMBRE_MAPA[estado.mapa] || estado.mapa;
+    var filas = [];
+    if(estado.mapa !== 'mundo'){
+      var t = tablasDeMercado(filasDeTablas(d), { error: d.error || null });
+      (t.suben || []).slice(0, 5).forEach(function(f){
+        filas.push({ k: f.symbol, v: Number.isFinite(f.pct) ? (f.pct>=0?'+':'') + f.pct.toFixed(2) + '%' : '—',
+                     color: Number.isFinite(f.pct) ? (f.pct>=0 ? '#00c97d' : '#E24B4A') : '#7d8793' });
+      });
+      (t.bajan || []).slice(0, 5).forEach(function(f){
+        filas.push({ k: f.symbol, v: Number.isFinite(f.pct) ? f.pct.toFixed(2) + '%' : '—',
+                     color: Number.isFinite(f.pct) ? '#E24B4A' : '#7d8793' });
+      });
+    }
+    return {
+      archivo: 'mapa-' + estado.mapa,
+      titulo: 'Mapa de ' + nombre,
+      subtitulo: estado.mapa === 'mundo' ? 'índices por región'
+        : ((d.cuadros || []).length + ' emisoras por capitalización'),
+      filas: filas,
+      periodo: estado.periodo,
+      moneda: estado.mapa === 'mundo' || estado.mapa === 'us'
+        ? (estado.moneda === 'mxn' ? 'MXN' : 'moneda local') : 'MXN',
+      fuente: d.fuente || (d.error ? ('ERROR: ' + d.error) : null),
+      fecha: d.generado_en || d.generated_at || null,
+      url: location.host + location.pathname + location.search
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // R7: COMPARTIR IMAGEN
+  //
+  // La tarjeta se dibuja EN EL NAVEGADOR (`qd-compartir.js`): no hay un
+  // servicio de imágenes que mantener ni una llamada más al abrir la
+  // pantalla. Lo que se comparte sale de lo que ya está en la pantalla, así
+  // que no puede decir algo distinto de lo que el lector está viendo.
+  //
+  // `navigator.share` con archivo cuando existe (iOS y Android lo tienen) y
+  // descarga cuando no: en escritorio la hoja de compartir no existe y un
+  // botón que no hace nada sería peor que un archivo en Descargas.
+  // ══════════════════════════════════════════════════════════════════
+  function abrirCompartir(){
+    var caja = document.getElementById('compartir-caja');
+    if(caja){ caja.remove(); return; }
+    caja = document.createElement('div');
+    caja.id = 'compartir-caja';
+    caja.className = 'compartir-caja';
+    // EL AVANCE: lo que la imagen va a decir, antes de generarla. No es
+    // adorno — es la línea que hace que nadie mande una tarjeta cuya
+    // procedencia dice "[object Object]" sin enterarse.
+    var av = opsDeTarjeta(datosParaCompartir(), 'historia').ops
+      .filter(function(o){ return o.rol === 'meta' || o.rol === 'fuente'; })
+      .map(function(o){ return o.texto; }).join(' · ');
+    caja.innerHTML = '<div class="et">COMPARTIR IMAGEN</div>'
+      + '<div class="nota" id="compartir-avance">' + esc(av || '') + '</div>'
+      + '<button type="button" data-fmt="historia">Vertical 1080×1920</button>'
+      + '<button type="button" data-fmt="cuadrado">Cuadrado 1080×1080</button>'
+      + '<div class="nota" id="compartir-nota"></div>';
+    document.body.appendChild(caja);
+    caja.addEventListener('click', function(ev){
+      var b = ev.target.closest('button[data-fmt]'); if(!b) return;
+      generarTarjeta(b.dataset.fmt);
+    });
+  }
+
+  function generarTarjeta(formato){
+    var nota = document.getElementById('compartir-nota');
+    var datos = datosParaCompartir();
+    var r;
+    try{ r = qdDibujaTarjeta(datos, formato); }
+    catch(e){ if(nota) nota.textContent = 'no se pudo dibujar: ' + e.message; return; }
+    if(!r.canvas){ if(nota) nota.textContent = 'este navegador no tiene canvas'; return; }
+    var nombre = 'quantdesk-' + (datos.archivo || 'mercado') + '-' + formato + '.png';
+    r.canvas.toBlob(function(blob){
+      if(!blob){ if(nota) nota.textContent = 'el navegador no pudo exportar el PNG'; return; }
+      var archivo = null;
+      try{ archivo = new File([blob], nombre, { type: 'image/png' }); }catch(e){}
+      if(archivo && navigator.canShare && navigator.canShare({ files: [archivo] })){
+        navigator.share({ files: [archivo], title: datos.titulo })
+          .then(function(){ if(nota) nota.textContent = 'compartido'; })
+          .catch(function(){ descargar(blob, nombre, nota); });
+      } else {
+        descargar(blob, nombre, nota);
+      }
+    }, 'image/png');
+  }
+
+  function descargar(blob, nombre, nota){
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = nombre;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+    if(nota) nota.textContent = 'descargada: ' + nombre;
+  }
+
   // ══════════════════════════════════════════════════════════════════
   // R3(c): LAS DOS TIRAS DEL ARTBOARD 5
   //
@@ -2148,6 +2277,7 @@
   // IPC abre la hoja de la emisora en el mapa de México, y un índice abre su
   // hoja en Mundo. Se cambia de mapa porque la hoja vive ahí; dejar el tap sin
   // efecto convertiría la tira en un adorno.
+  document.getElementById('btn-compartir').addEventListener('click', abrirCompartir);
   document.getElementById('tiras').addEventListener('click', function(ev){
     var t = ev.target.closest('.t[data-sym]'); if(!t) return;
     var sym = t.dataset.sym;

@@ -2020,6 +2020,117 @@ try {
     pestanas.every((x) => x.off && /pronto/.test(x.txt) && /pronto/.test(x.titulo || '')),
     JSON.stringify(pestanas.map((x) => x.k + ':' + x.off)));
 
+  // ══════════════════════════════════════════════════════════════════
+  // R7: COMPARTIR IMAGEN
+  // ══════════════════════════════════════════════════════════════════
+  console.log('\n── R7: la imagen para compartir ──');
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  await w.click('#btn-compartir');
+  await w.waitForSelector('#compartir-caja button[data-fmt]');
+  const formatos = await w.evaluate(() =>
+    [...document.querySelectorAll('#compartir-caja button[data-fmt]')].map((b) => ({
+      fmt: b.dataset.fmt, txt: b.textContent, alto: Math.round(b.getBoundingClientRect().height),
+    })));
+  chequeo('los dos formatos del encargo, tocables',
+    formatos.length === 2 && /1080×1920/.test(formatos[0].txt) && /1080×1080/.test(formatos[1].txt)
+    && formatos.every((f) => f.alto >= 44), JSON.stringify(formatos.map((f) => f.txt)));
+
+  // ── LA TARJETA, DE VERDAD ───────────────────────────────────────────
+  // No se le pide a la página que exponga su función: se PULSA el botón y se
+  // captura la descarga, que es lo que hace el lector. El PNG se verifica
+  // leyendo su cabecera IHDR —ancho y alto viven en los bytes 16..24— así
+  // que esto prueba el camino entero: los datos de la pantalla, el dibujo en
+  // canvas, el blob y la descarga.
+  const pngTam = (buf) => ({ w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) });
+  const bajar = async (fmt) => {
+    const [dl] = await Promise.all([
+      w.waitForEvent('download', { timeout: 8000 }),
+      w.click(`#compartir-caja button[data-fmt="${fmt}"]`),
+    ]);
+    const ruta = join(OUT, `compartir-${fmt}.png`);
+    await dl.saveAs(ruta);
+    const { readFileSync } = await import('node:fs');
+    const buf = readFileSync(ruta);
+    return { nombre: dl.suggestedFilename(), ruta, bytes: buf.length, ...pngTam(buf),
+             firma: buf.slice(1, 4).toString('ascii') };
+  };
+
+  const vertical = await bajar('historia');
+  chequeo('el botón genera un PNG de verdad y lo descarga',
+    vertical.firma === 'PNG' && vertical.bytes > 2000,
+    `${vertical.nombre} · ${vertical.bytes} bytes`);
+  chequeo('la tarjeta vertical mide 1080×1920',
+    vertical.w === 1080 && vertical.h === 1920, `${vertical.w}×${vertical.h}`);
+  chequeo('y el nombre del archivo dice de qué pantalla salió',
+    /quantdesk-mapa-us-historia\.png/.test(vertical.nombre), vertical.nombre);
+  const nota = await w.textContent('#compartir-nota');
+  chequeo('la pantalla confirma la descarga en vez de quedarse muda',
+    /descargada/.test(nota), nota);
+
+  const cuadrada = await bajar('cuadrado');
+  chequeo('la cuadrada mide 1080×1080', cuadrada.w === 1080 && cuadrada.h === 1080,
+    `${cuadrada.w}×${cuadrada.h}`);
+
+  // El CONTENIDO de la tarjeta (los cinco datos, el recorte visible, la URL
+  // con estado) se fija en `tests/mercado-compartir.test.mjs`, que puede
+  // mirar las operaciones una por una. Acá se prueba que el camino entero
+  // funciona y que el PNG sale con las medidas del encargo.
+  chequeo('qd-compartir expone lo que la página usa',
+    await w.evaluate(() => typeof opsDeTarjeta === 'function' && typeof qdDibujaTarjeta === 'function'));
+
+  // ── LO QUE EL PNG DESCARGADO ENSEÑÓ ─────────────────────────────────
+  // La primera tarjeta decía "Fuente: [object Object]" —el mapa manda la
+  // fuente como objeto— y la URL se encimaba con la firma. Las dos pasaban
+  // todas las comprobaciones porque ninguna miraba el TEXTO de la tarjeta.
+  //
+  // Ahora la hoja de compartir ENSEÑA lo que la imagen va a decir, que le
+  // sirve al lector (sabe qué está por mandar) y de paso se puede leer acá.
+  const avance = await w.textContent('#compartir-avance');
+  chequeo('la hoja enseña lo que la imagen va a decir',
+    avance && avance.trim().length > 10, (avance || '').slice(0, 100));
+  chequeo('y esa fuente NO es "[object Object]"',
+    !/\[object Object\]/.test(avance), avance.slice(0, 80));
+  chequeo('la fuente del mapa llega legible a la tarjeta',
+    /neon:mercado_universo_us/.test(avance), avance.slice(0, 110));
+
+  // ── UNA URL CON ESTADO ABRE IGUAL EN UNA SESIÓN LIMPIA ─────────────
+  // El encargo pide verificarlo "en incógnito": un contexto nuevo de
+  // Playwright NO comparte cookies, almacenamiento ni caché, que es
+  // exactamente lo que incógnito significa acá.
+  const urlConEstado = `${BASE}/mercado?mapa=us&periodo=1M&agrupar=plano`;
+  const leer = async (pagina) => pagina.evaluate(() => ({
+    periodo: (document.querySelector('#toggle button[aria-pressed="true"]') || {}).textContent,
+    agrupar: (document.querySelector('#agrupar button[aria-pressed="true"]') || {}).textContent,
+    mapa: (document.querySelector('nav button[aria-selected="true"]') || {}).textContent,
+    cuadros: [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null).length,
+    cabeceras: [...document.querySelectorAll('.cabecera')].filter((e) => e.offsetParent !== null).length,
+  }));
+  await w.goto(urlConEstado, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  const normal = await leer(w);
+  const incognito = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await incognito.addInitScript(RELOJ_FIJO);
+  const inc = await incognito.newPage();
+  await inc.goto(urlConEstado, { waitUntil: 'networkidle' });
+  await inc.waitForSelector('.cuadro');
+  const limpio = await leer(inc);
+  await incognito.close();
+  chequeo('una URL con estado abre IDÉNTICA en una sesión limpia (incógnito)',
+    JSON.stringify(normal) === JSON.stringify(limpio),
+    `${JSON.stringify(normal)} vs ${JSON.stringify(limpio)}`);
+
+  // ── LAS ETIQUETAS DEL PREVIEW ──────────────────────────────────────
+  const og = await w.evaluate(() => {
+    const m = (p) => { const e = document.querySelector(`meta[property="${p}"], meta[name="${p}"]`); return e ? e.content : null; };
+    return { titulo: m('og:title'), desc: m('og:description'), img: m('og:image'), card: m('twitter:card') };
+  });
+  chequeo('el preview lleva título y descripción ciertos', !!og.titulo && !!og.desc,
+    JSON.stringify(og));
+  // `og:image` NO está, a propósito: ver el comentario en el <head>. Una
+  // imagen genérica diría algo distinto de lo que la URL abre.
+  chequeo('y NO hay una og:image genérica prometiendo otra cosa', og.img == null, String(og.img));
+
   await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await w.waitForSelector('#tiras .t, #tiras .vacio');
   await w.screenshot({ path: join(OUT, 'mercado-1440x1000.png') });
