@@ -116,6 +116,8 @@ const RECHAZO = { budget_exhausted: 'presupuesto', unknown_tool: 'herramienta in
 export function resultadoDePaso(s) {
   if (s.refused) return `rechazada: ${RECHAZO[s.refused] || s.refused}`;
   if (s.error && !s.sin_resultado) return 'falló';
+  // Corrió bien y no tenía el dato: no es falla de la herramienta ni un cero.
+  if (Array.isArray(s.datos_faltantes) && s.datos_faltantes.length) return `sin dato: ${s.datos_faltantes.join(', ')}`;
   if (s.sin_resultado || s.rows == null) return 'sin resultado';
   return plural(s.rows, s.tool) + (s.truncated ? ' (truncado)' : '');
 }
@@ -138,6 +140,7 @@ export function secuenciaPublicable(ctx) {
     ...(s.truncated ? { truncado: true } : {}),
     ms: s.ms ?? null,
     ...(s.refused ? { rechazada: s.refused } : {}),
+    ...(Array.isArray(s.datos_faltantes) && s.datos_faltantes.length ? { datos_faltantes: s.datos_faltantes } : {}),
     // Antes el `error` del ejecutor se quedaba en el journal y acá salía como
     // "0 filas": una herramienta caída se leía igual que un filtro vacío. Un
     // paso ejecutado sin conteo (`rows: null`) también es una falla.

@@ -589,6 +589,16 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   // herramientas) y cuál ganó se deducía de `resuelto_por`. Una derivación
   // frágil para el dato que decide el diagnóstico.
   const corte = diagnosticoDeCorte(llm.data, { maxTokens: ARENA_MAX_TOKENS, texto: text });
+  // ── CUÁNTO TARDÓ EL CIERRE, Y A QUÉ VELOCIDAD (2026-10-20) ─────────
+  // Para subir `ARENA_MAX_TOKENS` no alcanza saber que cortó: hay que saber
+  // si un techo más alto CABE en el reloj del cierre (reserva de 70s). Un
+  // techo de tokens que el modelo no alcanza a escribir antes del reloj sólo
+  // cambia un corte por un timeout. Sin la duración no hay velocidad, y sin
+  // velocidad el número se adivina.
+  if (Number.isFinite(llm.ms)) {
+    corte.ms = llm.ms;
+    corte.tokens_por_s = corte.output_tokens && llm.ms > 0 ? +(corte.output_tokens / (llm.ms / 1000)).toFixed(1) : null;
+  }
   ctx.lectura_cierre = corte;
   let texto = text;
   let parsed = parsePortfolioResponse(texto);

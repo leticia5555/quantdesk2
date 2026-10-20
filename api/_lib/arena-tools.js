@@ -294,6 +294,20 @@ export async function runScreener(args, ctx) {
   const conNoticia = ctx.newsSymbols || new Set();
   let r = filas;
 
+  // ── SIN RVOL HOY: SE DICE, NO SE DEVUELVE UNA LISTA VACÍA ───────────
+  // Si el tablero no tiene RVOL para ningún nombre (falló el promedio de 20
+  // sesiones), `rvol_top` y `min_rvol` vacían el embudo por construcción. Eso
+  // no es "ningún nombre cumple": es "no tenemos el dato". Se contesta ANTES
+  // de filtrar, con el motivo, y se marca como dato faltante.
+  const pideRvol = args.rvol_top === true || args.min_rvol != null;
+  const sinRvol = (ctx.board && ctx.board.sin_rvol) || (!filas.some((f) => f.rvol != null) ? { motivo: 'ningún nombre del tablero tiene RVOL' } : null);
+  if (pideRvol && sinRvol) {
+    return {
+      text: `Screener sin RVOL hoy: ${sinRvol.motivo}. El filtro \`${args.rvol_top ? 'rvol_top' : 'min_rvol'}\` no se puede aplicar — NO significa que no haya volumen inusual, significa que hoy no lo pudimos medir. Probá el mismo pedido sin filtrar por RVOL.`,
+      rows: 0, datos_faltantes: ['rvol'],
+    };
+  }
+
   // ── EL EMBUDO: QUÉ FILTRO SE LLEVÓ LAS FILAS ───────────────────────
   // "0 filas" es la respuesta menos accionable posible: no distingue un
   // criterio exigente de un campo que no existe en los datos. Con seis filtros
@@ -718,6 +732,7 @@ export function createToolExecutor({
         n, intento: intentos, tool: name, args, ms: Date.now() - t0, source,
         rows: out.rows ?? null, truncated: !!out.truncated, error: !!out.error,
         ...(out.sin_resultado ? { sin_resultado: true } : {}),
+        ...(Array.isArray(out.datos_faltantes) && out.datos_faltantes.length ? { datos_faltantes: out.datos_faltantes } : {}),
         // El resultado COMPLETO, no el resumen: sin esto el replay no puede
         // reproducir la corrida — el modelo decidió mirando algo que no
         // guardamos. Ver el encabezado.
@@ -738,6 +753,7 @@ export function createToolExecutor({
         ...(s.refused ? { refused: s.refused } : {}),
         ...(s.error ? { error: true } : {}),
         ...(s.sin_resultado ? { sin_resultado: true } : {}),
+        ...(s.datos_faltantes ? { datos_faltantes: s.datos_faltantes } : {}),
       }));
     },
   };

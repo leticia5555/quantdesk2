@@ -1037,6 +1037,10 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
       ...boardRender, text: undefined,
       universe_size: board.universe_size, covered: board.covered, coverage_pct: board.coverage_pct,
       errors: board.errors,
+      // Lo que el tablero no pudo armar, dicho (hoy: sin RVOL). Viaja al
+      // journal y a la respuesta de la sombra, no sólo al texto del prompt.
+      avisos: board.avisos && board.avisos.length ? board.avisos : null,
+      sin_rvol: board.sin_rvol || null,
     } : null,
     movers, earnings_this_week,
     // BUFFET v1.5 — SOLO la parte que ve el PM. El diagnóstico (unavailable,

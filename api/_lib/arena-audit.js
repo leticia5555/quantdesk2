@@ -1067,3 +1067,94 @@ export function renderResumenMarkdown(audit) {
   }
   return L.join('\n') + '\n';
 }
+
+// ── ?view=cierres — CUÁNTO TECHO DE SALIDA HACE FALTA, CON DATO ──────
+// Pregunta (2026-10-20): `ARENA_MAX_TOKENS=6000` cortó 4 de 21 cierres de la
+// puerta (Qwen 3/3, DeepSeek 1/3). ¿A cuánto subirlo?
+//
+// Lo que NO sirve: el `techo_usado` de un cierre cortado. Es 1.0 por
+// definición — dice QUE cortó, no CUÁNTO le faltaba. Lo que sí sirve:
+//   · la salida más larga de los cierres que NO cortaron → cuánto usa un
+//     cierre completo (cota inferior del techo);
+//   · el razonamiento dentro de los cortes → cuánto se comió el pensamiento
+//     antes de llegar al JSON;
+//   · la velocidad (tokens/s) → cuánto techo CABE en la reserva del cierre.
+//     Un techo que el modelo no alcanza a escribir antes del reloj sólo cambia
+//     un corte por un timeout. (La velocidad se journalea desde 2026-10-20.)
+//
+// Recibe filas CRUDAS (con `context` y `fuente`), no auditadas: el dato vive
+// en `context.lectura_cierre`, que la auditoría por corrida no proyecta.
+const mediana = (xs) => {
+  const v = xs.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+};
+const aMil = (n) => Math.ceil(n / 1000) * 1000;
+
+export function resumenDeCierres(rows = [], { techoActual, reservaMs } = {}) {
+  const cierres = [];
+  for (const r of rows || []) {
+    const ctx = (r && r.context) || {};
+    const l = ctx.lectura_cierre;
+    if (!l) continue;
+    const rj = ctx.reintento_json || null;
+    cierres.push({
+      agente: r.agent_id || null,
+      ...(r.fuente ? { fuente: r.fuente, sello: FUENTES_AUDIT[r.fuente] || r.fuente } : {}),
+      created_at: r.created_at, status: r.status,
+      max_tokens: l.max_tokens ?? null, output_tokens: l.output_tokens ?? null,
+      reasoning_tokens: l.reasoning_tokens ?? null, techo_usado: l.techo_usado ?? null,
+      truncado: l.truncado ?? null, truncado_por: l.truncado_por || null,
+      ms: l.ms ?? null, tokens_por_s: l.tokens_por_s ?? null,
+      reintento: rj ? { concedido: !!rj.concedido, resuelto: rj.resuelto ?? null, causa: rj.causa || null } : null,
+      cola: l.cola || null,
+    });
+  }
+
+  const por = new Map();
+  for (const c of cierres) {
+    const a = por.get(c.agente) || { agente: c.agente, cierres: 0, cortados: 0, rescatados: 0, limpios: [], razonamiento_en_cortes: [], velocidades: [] };
+    a.cierres++;
+    if (c.truncado === true) {
+      a.cortados++;
+      if (c.reintento && c.reintento.resuelto) a.rescatados++;
+      if (c.reasoning_tokens != null) a.razonamiento_en_cortes.push(c.reasoning_tokens);
+    } else if (c.truncado === false && c.output_tokens != null) a.limpios.push(c.output_tokens);
+    if (c.tokens_por_s != null) a.velocidades.push(c.tokens_por_s);
+    por.set(c.agente, a);
+  }
+  const agentes = [...por.values()].map((a) => ({
+    agente: a.agente, cierres: a.cierres, cortados: a.cortados, rescatados_por_reintento: a.rescatados,
+    // Sin un solo cierre limpio, de este agente sólo sabemos que necesita MÁS
+    // que el techo actual — no cuánto más.
+    salida_max_sin_corte: a.limpios.length ? Math.max(...a.limpios) : null,
+    solo_cota_inferior: a.cortados > 0 && !a.limpios.length,
+    razonamiento_en_cortes: a.razonamiento_en_cortes,
+    tokens_por_s_mediana: mediana(a.velocidades),
+  })).sort((x, y) => y.cortados - x.cortados);
+
+  // ── LAS DOS COTAS ──
+  // Piso: la salida limpia más larga de la liga con 25% de margen, y nunca por
+  // debajo de techo+1000 si hubo cortes (los cortados necesitan más que eso).
+  const limpias = agentes.map((a) => a.salida_max_sin_corte).filter(Number.isFinite);
+  const huboCortes = agentes.some((a) => a.cortados > 0);
+  let piso = limpias.length ? aMil(Math.max(...limpias) * 1.25) : null;
+  if (huboCortes && Number.isFinite(techoActual)) piso = Math.max(piso || 0, techoActual + 1000);
+  // Techo por reloj: lo que el agente MÁS LENTO alcanza a escribir en la
+  // reserva del cierre. El techo es uno para los siete (es un riel), así que
+  // manda el más lento.
+  const velocidades = agentes.map((a) => a.tokens_por_s_mediana).filter(Number.isFinite);
+  const masLento = velocidades.length ? Math.min(...velocidades) : null;
+  const techoPorReloj = masLento != null && Number.isFinite(reservaMs) ? Math.floor((masLento * reservaMs) / 1000 / 1000) * 1000 : null;
+
+  const lectura = !cierres.length ? 'No hay cierres con `lectura_cierre` en la ventana.'
+    : !huboCortes ? `Ningún cierre cortó: ${techoActual} alcanza en la ventana.`
+      : techoPorReloj == null
+        ? `Hubo cortes. Piso: ${piso} (salida limpia más larga +25%${huboCortes ? `, y > ${techoActual}` : ''}). SIN velocidad journaleada todavía, así que no se sabe si ${piso} cabe en la reserva de ${Math.round(reservaMs / 1000)}s del cierre — la velocidad se guarda desde 2026-10-20.`
+        : piso <= techoPorReloj
+          ? `Subir a ${piso}: es el piso que piden los cortes y cabe en el reloj (el más lento escribe ~${techoPorReloj} tokens en ${Math.round(reservaMs / 1000)}s).`
+          : `CONFLICTO: los cortes piden ≥ ${piso} y el más lento sólo escribe ~${techoPorReloj} en la reserva de ${Math.round(reservaMs / 1000)}s. Subir el techo cambiaría cortes por timeouts: hay que subir la reserva del cierre o bajar el effort, no sólo el techo.`;
+
+  return { techo_actual: techoActual ?? null, reserva_cierre_ms: reservaMs ?? null, piso, techo_por_reloj: techoPorReloj, lectura, agentes, cierres };
+}

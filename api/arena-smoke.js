@@ -414,6 +414,10 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
     cache_read: Number(usage.cache_read_input_tokens) || 0,
     cache_write: Number(usage.cache_creation_input_tokens) || 0,
   };
+  // VELOCIDAD DE SALIDA. Es la mitad que falta para elegir ARENA_MAX_TOKENS:
+  // un techo que el modelo no alcanza a escribir dentro de la reserva del
+  // cierre cambia un corte por un timeout (ver ?view=cierres de arena-audit).
+  row.tokens_por_s = row.tokens.output > 0 && row.ms > 0 ? +(row.tokens.output / (row.ms / 1000)).toFixed(1) : null;
   // COSTO, en orden de preferencia:
   //   1. lo que el proveedor COBRÓ (anthropic: precio de la casa; openrouter:
   //      usage.cost, el cobro real);

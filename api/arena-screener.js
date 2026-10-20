@@ -28,6 +28,12 @@ import { fetchFundamentals } from './_lib/finnhub-dive.js';
 import { fetchDailySeries, completedSlice } from './_lib/sim.js';
 import { getSymbolMap, getSymbolTypes } from './earnings.js';
 import { beat } from './_lib/heartbeat.js';
+import { checkLecturaAuth } from './_lib/arena-admin.js';
+import { loadUniverse } from './_lib/arena-universe.js';
+import { buildBoard } from './_lib/arena-board.js';
+import { alpacaCreds } from './_lib/alpaca.js';
+import { buildInfo } from './_lib/build-info.js';
+import { diagnosticoScreener } from './_lib/arena-screener-diag.js';
 
 // El refresh procesa ≤30 símbolos con ~1.2s de espacio entre cada uno + I/O de
 // Finnhub/Yahoo: en la práctica pasa de los 60s del default de Vercel y muere con
@@ -125,6 +131,34 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
+
+  // ── ?job=screener — SOLO LECTURA, ANTES DE LA COMPUERTA DEL CRON ───
+  // Arma el tablero de HOY y le corre los filtros de openai del 29-sep con el
+  // MISMO ejecutor de los agentes. No escribe nada, así que no depende de
+  // `ARENA_SCREENER_ENABLED` (que gobierna el refresh de Finnhub). Y usa la
+  // llave de LECTURA (`ARENA_ADMIN_KEY` por `?key=`), no sólo `CRON_SECRET`:
+  // está hecho para abrirse en el navegador.
+  //   GET /api/arena-screener?job=screener&key=…
+  //   GET …&pedido={"rvol_top":true,"sector":"XLE"}   (uno propio)
+  if (String((req.query && req.query.job) || '').toLowerCase() === 'screener') {
+    const auth = checkLecturaAuth(req);
+    if (!auth.ok) return res.status(auth.status).json(auth.body);
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const now = new Date();
+      let pedidos;
+      if (req.query.pedido) {
+        try { pedidos = [JSON.parse(String(req.query.pedido))]; }
+        catch { return res.status(400).json({ error: '`pedido` tiene que ser JSON, p. ej. {"rvol_top":true}' }); }
+      }
+      const universe = await loadUniverse({ now });
+      const board = universe ? await buildBoard({ universe, creds: alpacaCreds(), now }) : null;
+      const diag = await diagnosticoScreener({ universe, board, ...(pedidos ? { pedidos } : {}) });
+      return res.status(200).json({ job: 'screener', solo_lectura: true, build: buildInfo(), ahora: now.toISOString(), ...diag });
+    } catch (e) {
+      return res.status(500).json({ job: 'screener', error: String((e && e.message) || e) });
+    }
+  }
 
   const secret = process.env.CRON_SECRET;
   if (secret && (req.headers.authorization || '') !== `Bearer ${secret}`) {

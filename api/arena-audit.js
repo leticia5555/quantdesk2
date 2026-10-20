@@ -20,6 +20,8 @@
 //   GET /api/arena-audit?fuente=prueba        → sólo arena_shadow_journal
 //   GET /api/arena-audit?view=shadow          → lo mismo (atajo)
 //   GET /api/arena-audit?view=resumen&fuente=prueba → el resumen de la puerta
+//   GET /api/arena-audit?view=cierres&agent=todos&fuente=prueba&dia=…
+//        → cada cierre con sus tokens, y a cuánto subir ARENA_MAX_TOKENS
 //
 // Las corridas leen las DOS tablas por defecto (cada fila con su sello); el
 // resumen, sólo EN VIVO salvo `fuente=prueba` (no mezcla poblaciones).
@@ -44,11 +46,12 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON } from './_lib/arena-registry.js';
+import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON, ARENA_MAX_TOKENS } from './_lib/arena-registry.js';
+import { RESERVA_CIERRE_MS } from './_lib/arena-tool-loop.js';
 import { buildInfo } from './_lib/build-info.js';
 import { checkLecturaAuth } from './_lib/arena-admin.js';
 import {
-  auditaFila, agrupaCorridas, construyeResumen, resolverFuente,
+  auditaFila, agrupaCorridas, construyeResumen, resolverFuente, resumenDeCierres,
   renderCorridasMarkdown, renderResumenMarkdown, BUFFET_QUALITY_DEPLOY,
   cadenciaPorAgente, renderCadenciaMarkdown,
 } from './_lib/arena-audit.js';
@@ -139,7 +142,7 @@ export default async function handler(req, res) {
   const CONOCIDOS = new Set(['agent', 'agente', 'format', 'view', 'resumen', 'deploy', 'desde', 'dia', 'limit', 'key', 'fuente']);
   const ignorados = Object.keys(q).filter((k) => !CONOCIDOS.has(k));
   const avisos = [];
-  if (ignorados.length) avisos.push(`Parámetros no reconocidos (se IGNORARON): ${ignorados.join(', ')}. Los válidos son: agent, view=resumen|shadow, fuente=en_vivo|prueba|ambas, dia, desde, format, limit.`);
+  if (ignorados.length) avisos.push(`Parámetros no reconocidos (se IGNORARON): ${ignorados.join(', ')}. Los válidos son: agent, view=resumen|shadow|cierres, fuente=en_vivo|prueba|ambas, dia, desde, format, limit.`);
   const { fuente, avisos: avisosFuente } = resolverFuente({ fuente: q.fuente, view, esResumen });
   avisos.push(...avisosFuente);
   if (q.dia && !diaParam) avisos.push(`\`dia=${q.dia}\` no es una fecha AAAA-MM-DD y se ignoró.`);
@@ -204,6 +207,16 @@ export default async function handler(req, res) {
       halt = await sql('select agent_id, halted, halted_at, halted_reason, resumed_at from arena_state order by agent_id');
       if (!todos) halt = halt.filter((h) => (h.agent_id || FLAGSHIP_AGENT_ID) === agentParam);
     } catch (e) { halt = []; }
+
+    // ── ?view=cierres: el techo de salida, con dato ──
+    if (view === 'cierres') {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({
+        pedido: { agent: agentParam, view: 'cierres', fuente, dia: diaParam, desde, limit },
+        ...(avisos.length ? { avisos } : {}),
+        ...resumenDeCierres(rows, { techoActual: ARENA_MAX_TOKENS, reservaMs: RESERVA_CIERRE_MS }),
+      });
+    }
 
     const filas = rows.map(auditaFila);
     const fechas = [...new Set(filas.map((f) => String(f.fecha)))].sort();
