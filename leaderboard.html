@@ -513,6 +513,9 @@ function rowHtml(a){
       '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
     plan+tradesHtml(a)+
+    // El razonamiento de cada corrida vive en /liga/libros: la cadena de
+    // herramientas y la tesis de cada posición. Desde acá, filtrado al agente.
+    '<div class="rfoot"><a href="/liga/libros?agente='+encodeURIComponent(a.id)+'" style="color:var(--purple)">por qué tiene cada posición →</a></div>'+
     '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
     // ── NO HAY TOPE DE POSICIONES, Y EL "/8" DECÍA QUE SÍ ─────────────
     // El 8 era del CONTRATO DE ACCIONES (el guard viejo), que el contrato de

@@ -131,6 +131,110 @@ export function secuenciaPublicable(ctx) {
   };
 }
 
+// ── EL RAZONAMIENTO, LEGIBLE (2026-10-20) ────────────────────────────
+// Lety: «por agente y por corrida: la cadena de herramientas (ficha X,
+// noticias Y → N titulares) y la tesis de cada posición. Que se pueda abrir
+// cada corrida y leer por qué compró cada cosa.»
+//
+// Los dos datos ya estaban en el journal —`investigacion.pasos` y
+// `portafolio.tesis`— pero sueltos: la secuencia era una lista de argumentos
+// en JSON y las tesis un bloque aparte. Para contestar "¿por qué tiene MU?"
+// había que cruzar los dos a ojo. Acá se cruzan una vez, del lado del
+// servidor, y la página solo pinta.
+//
+// Sale en un campo PROPIO del libro (`razonamiento`) y no dentro de
+// `investigacion`: la secuencia tiene una prueba de tamaño que la mantiene
+// chica, y con razón. El razonamiento es otra pregunta.
+const UNIDAD_DE = {
+  screener: ['nombre', 'nombres'], sector: ['nombre', 'nombres'],
+  noticias: ['titular', 'titulares'], ficha: ['línea', 'líneas'],
+  eventos: ['evento', 'eventos'], historia: ['párrafo', 'párrafos'],
+};
+
+// Los filtros del screener en palabras cortas. Los booleanos falsos no se
+// dicen: "near_52w_low: false" es ruido, no un filtro.
+function filtrosEnPalabras(a) {
+  const partes = [];
+  for (const [k, v] of Object.entries(a || {})) {
+    if (k === 'ticker' || k === 'etf' || k === 'tema' || k === 'limit') continue;
+    if (v == null || v === false || v === '') continue;
+    partes.push(v === true ? k : `${k} ${v}`);
+  }
+  return partes.join(', ');
+}
+
+// Un paso → una línea: "noticias NVDA (2 días) → 6 titulares".
+export function pasoEnPalabras(p) {
+  if (!p) return '';
+  const a = (p.argumentos && typeof p.argumentos === 'object') ? p.argumentos : {};
+  const objeto = a.ticker || a.etf || (a.tema ? `"${a.tema}"` : '');
+  const filtros = filtrosEnPalabras(a);
+  const dias = a.days != null && (p.herramienta === 'noticias' || p.herramienta === 'eventos') ? `(${a.days} días)` : '';
+  const que = [p.herramienta || '—', objeto, p.herramienta === 'screener' || p.herramienta === 'sector' ? filtros : '', dias]
+    .filter(Boolean).join(' ');
+  if (p.rechazada) return `${que} → no se ejecutó (${p.rechazada})`;
+  if (p.falló) return `${que} → la herramienta FALLÓ (no es lo mismo que 0 filas)`;
+  if (p.filas == null) return `${que} → sin resultado registrado`;
+  const [uno, varios] = UNIDAD_DE[p.herramienta] || ['fila', 'filas'];
+  return `${que} → ${p.filas} ${p.filas === 1 ? uno : varios}${p.truncado ? ' (truncado)' : ''}`;
+}
+
+// ¿Este paso preguntó POR ESTE ticker? Solo cuenta si lo nombró en los
+// argumentos. Que un nombre haya aparecido en una lista del screener no cuenta:
+// el resumen no guarda qué filas vinieron, y afirmar que "lo miró" sería
+// inventar evidencia.
+const pasoNombra = (p, tk) => !!(p && p.argumentos && String(p.argumentos.ticker || '').toUpperCase() === tk);
+
+// Movimiento de un peso. Medio punto de diferencia es deriva de precio, no
+// una decisión (la banda del motor es más ancha; esto solo etiqueta).
+function movimientoDe(antes, ahora) {
+  const a = Number(antes) || 0, b = Number(ahora) || 0;
+  if (!a && b) return b < 0 ? 'abre corto' : 'compra nueva';
+  if (a && !b) return 'sale';
+  if (Math.sign(a) !== Math.sign(b)) return 'da vuelta';
+  if (Math.abs(b - a) < 0.005) return 'se mantiene';
+  return Math.abs(b) > Math.abs(a) ? 'sube' : 'baja';
+}
+
+export function razonamientoDeLibro({ investigacion = null, portafolio = null, pesos_actuales = null } = {}) {
+  const pasos = (investigacion && Array.isArray(investigacion.pasos)) ? investigacion.pasos : [];
+  const cadena = pasos.map(pasoEnPalabras);
+  const objetivo = (portafolio && portafolio.pesos) || null;
+  const tesis = (portafolio && portafolio.tesis) || {};
+  const actuales = pesos_actuales || {};
+  if (!objetivo && !cadena.length) return null;
+
+  const tickers = [...new Set([...Object.keys(objetivo || {}), ...(objetivo ? Object.keys(actuales) : [])])]
+    .map((t) => String(t).toUpperCase());
+  const posiciones = tickers.map((tk) => {
+    const ahora = objetivo ? (objetivo[tk] ?? 0) : null;
+    const antes = actuales[tk] ?? 0;
+    const investigo = pasos.filter((p) => pasoNombra(p, tk)).map((p) => p.n);
+    return {
+      ticker: tk,
+      movimiento: movimientoDe(antes, ahora),
+      peso: ahora,
+      peso_antes: pesos_actuales ? antes : null,
+      tesis: tesis[tk] || null,
+      // Los números de paso donde PIDIÓ algo con este ticker.
+      investigo,
+    };
+  })
+    // Lo que entra o sube primero, lo que sale al final: "por qué compró".
+    .sort((x, y) => Math.abs(y.peso || 0) - Math.abs(x.peso || 0) || x.ticker.localeCompare(y.ticker));
+
+  const sinTesis = posiciones.filter((p) => p.peso && !p.tesis).map((p) => p.ticker);
+  const sinMirar = posiciones.filter((p) => p.peso && !p.investigo.length).map((p) => p.ticker);
+  return {
+    cadena,
+    posiciones,
+    sin_tesis: sinTesis,
+    // NO es una acusación: un nombre puede sostenerse con el tablero. Es el
+    // dato para leer la tesis sabiendo si vino de una consulta o no.
+    sin_consulta_propia: sinMirar,
+  };
+}
+
 // ── LA COHERENCIA ENTRE LAS DOS ETAPAS ───────────────────────────────
 // No se puede DERIVAR una de la otra —miden cosas distintas— pero sí hay
 // combinaciones IMPOSIBLES, y ésas son las que valen una prueba:
@@ -304,8 +408,18 @@ export function libroDeFila(row, fuente) {
   const entradas = entradasDeCuenta(row.account || null);
   const target = row.target || null;
   const reb = row.rebalance || null;
+  const portafolio = target ? {
+    pesos: target.weights || null,
+    cash: target.cash ?? null,
+    tesis: target.theses || null,
+  } : null;
+  const investigacion = secuenciaPublicable(ctx);
+  const pesosActuales = reb && reb.current ? reb.current : null;
   return {
     fuente,                                   // 'en_vivo' | 'prueba' — NUNCA se infiere
+    // El id de la fila, para poder ABRIR una corrida desde un enlace
+    // (`/liga/libros?corrida=<id>`). Filas sin id salen null.
+    corrida_id: row.id || null,
     // La etiqueta ya armada, con las dos cosas que tiene que decir.
     sello: selloDe(fuente, ctx.ejecucion),
     fecha: row.created_at || row.run_date,
@@ -314,17 +428,16 @@ export function libroDeFila(row, fuente) {
     plan: row.plan || null,
     // El portafolio objetivo. null cuando la corrida usó el contrato viejo
     // (órdenes) — y eso también es información: dice qué contrato corrió ese día.
-    portafolio: target ? {
-      pesos: target.weights || null,
-      cash: target.cash ?? null,
-      tesis: target.theses || null,
-    } : null,
+    portafolio,
     // El ENFOQUE del día (B8). Es un confound deliberado y se publica como tal:
     // dos agentes con enfoques distintos el mismo día no son comparables ese día.
     enfoque: ctx.lens || null,
     enfoque_nota: ctx.lens ? 'El enfoque rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ese día.' : null,
     // CÓMO INVESTIGÓ.
-    investigacion: secuenciaPublicable(ctx),
+    investigacion,
+    // POR QUÉ TIENE CADA COSA: la cadena de herramientas en palabras y, por
+    // posición, su tesis y los pasos donde preguntó por ese nombre.
+    razonamiento: razonamientoDeLibro({ investigacion, portafolio, pesos_actuales: pesosActuales }),
     // null cuando no hubo reintento, que es el caso normal: cuatro campos en
     // null se leerían como "hubo y no sabemos".
     reintento: reintentoPublicable(ctx),
@@ -333,7 +446,7 @@ export function libroDeFila(row, fuente) {
     // comparable entre dos cuentas que heredaron carteras distintas. Sin los
     // actuales, sólo se puede comparar lo que cada uno TIENE — que a mitad de
     // temporada mide herencia.
-    pesos_actuales: reb && reb.current ? reb.current : null,
+    pesos_actuales: pesosActuales,
     // Qué habría hecho el motor con ese objetivo.
     rebalanceo: reb ? {
       ordenes: (reb.legs || []).length,
@@ -791,7 +904,7 @@ export default async function handler(req, res) {
       // dibujado siete tarjetas vacías el día del encendido. La sombra se veía
       // bien porque allá sí son columnas.
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error,
+        `select id, run_date, created_at, agent_id, status, plan, error,
                 -- actions es la UNICA columna que el reconcile re-escribe:
                 -- sin ella no hay precio de ejecucion ni hora. account es el
                 -- libro de ANTES de operar, que es contra lo que se mide una
@@ -859,7 +972,7 @@ export default async function handler(req, res) {
   if (fuente === FUENTE_PRUEBA || fuente === 'ambas') {
     try {
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error, target, rebalance,
+        `select id, run_date, created_at, agent_id, status, plan, error, target, rebalance,
                 jsonb_build_object(
                   'lens', context->>'lens',
                   'tools', context->'tools',

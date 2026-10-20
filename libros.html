@@ -123,6 +123,23 @@ section{padding:18px 0 4px;}
 .steprows .zero{color:var(--amber);}
 .step.ref .steptool{color:var(--red);}
 
+/* el razonamiento: la cadena y el porqué de cada posición */
+.cadena{font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.6;margin-top:10px;word-break:break-word;}
+.cadena .eslabon{white-space:nowrap;}
+.cadena .eslabon.falla{color:var(--red);}
+.cadena .sep{color:var(--text3);margin:0 5px;}
+.porque{padding:8px 0;border-bottom:1px solid var(--border);}
+.porque:last-child{border-bottom:0;}
+.porque .pq-cab{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;}
+.porque .pq-cab b{font-size:11px;}
+.porque .mov{font-size:9px;letter-spacing:.05em;color:var(--text3);text-transform:uppercase;}
+.porque .mov.compra{color:var(--green);}.porque .mov.sale{color:var(--red);}
+.porque .pq-peso{margin-left:auto;color:var(--text2);}
+.porque .pq-tesis{font-size:12px;color:var(--text2);line-height:1.55;margin-top:4px;}
+.porque .pq-ev{font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;}
+.enlace{font-family:var(--mono);font-size:9px;color:var(--text3);margin-left:10px;}
+.card.destacada{outline:1px solid var(--purple);}
+
 /* tesis / órdenes */
 .tesis{font-size:12px;color:var(--text2);line-height:1.55;padding:7px 0;border-bottom:1px solid var(--border);}
 .tesis:last-child{border-bottom:0;}
@@ -281,6 +298,34 @@ function seqHtml(inv){
   }).join('');
 }
 
+// ── EL RAZONAMIENTO ──────────────────────────────────────────────────
+// La cadena viene armada del servidor (`razonamiento.cadena`), una línea por
+// herramienta: "noticias NVDA (2 días) → 6 titulares". Acá solo se pinta.
+function cadenaHtml(r){
+  if(!r||!r.cadena||!r.cadena.length) return '';
+  return '<div class="cadena">'+r.cadena.map(c=>
+    '<span class="eslabon'+(/FALLÓ|no se ejecutó|sin resultado/.test(c)?' falla':'')+'">'+esc(c)+'</span>')
+    .join('<span class="sep">·</span>')+'</div>';
+}
+const MOV_CLASE={'compra nueva':'compra','sube':'compra','abre corto':'compra','sale':'sale','baja':'sale','da vuelta':'sale'};
+function porqueHtml(r){
+  if(!r||!r.posiciones||!r.posiciones.length)
+    return '<div class="empty">Esta corrida no dejó portafolio objetivo: no hay posiciones que explicar.</div>';
+  return r.posiciones.map(p=>{
+    const peso=(p.peso_antes!=null?pp(p.peso_antes)+' → ':'')+(p.peso!=null?pp(p.peso):'—');
+    const ev=p.investigo&&p.investigo.length
+      ? 'preguntó por este nombre en el paso '+p.investigo.join(', ')
+      : (p.peso?'no pidió ninguna herramienta con este ticker en esta corrida':'');
+    return '<div class="porque"><div class="pq-cab"><b>'+esc(p.ticker)+'</b>'+
+      '<span class="mov '+(MOV_CLASE[p.movimiento]||'')+'">'+esc(p.movimiento)+'</span>'+
+      '<span class="pq-peso">'+peso+'</span></div>'+
+      (p.tesis?'<div class="pq-tesis">'+esc(p.tesis)+'</div>'
+        :(p.peso?'<div class="pq-tesis" style="color:var(--amber)">Sin tesis para esta posición.</div>'
+          :'<div class="pq-tesis">Sale del libro: lo que no se nombra en los pesos se vende.</div>'))+
+      (ev?'<div class="pq-ev">'+esc(ev)+'</div>':'')+'</div>';
+  }).join('');
+}
+
 function pesosHtml(p){
   if(!p||!p.pesos) return '';
   const es=Object.entries(p.pesos).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
@@ -435,7 +480,7 @@ function cardHtml(l,i){
     ? Object.entries(l.portafolio.tesis).map(([t,x])=>'<div class="tesis"><b>'+esc(t)+'</b> — '+esc(x)+'</div>').join('')
     : '<div class="empty">Sin tesis por posición en esta corrida.</div>';
 
-  return '<div class="card '+esc(l.fuente)+(rotos?' roto':'')+'" id="card-'+i+'">'+
+  return '<div class="card '+esc(l.fuente)+(rotos?' roto':'')+'" id="card-'+i+'"'+(l.corrida_id?' data-corrida="'+esc(l.corrida_id)+'"':'')+'>'+
     '<div class="chead" data-card="'+i+'">'+
       '<div class="cid">'+
         '<div class="cname">'+esc(a.nombre)+' '+houseTag(a)+' '+selloTag(l)+' '+railTag+' '+enfoqueTag+'</div>'+
@@ -452,8 +497,10 @@ function cardHtml(l,i){
       (l.plan?'<div class="plan">'+esc(l.plan)+'</div>'
         :(l.fallo?'':'<div class="plan">'+esc(l.error||'Sin plan publicado.')+'</div>'))+
       pesosHtml(l.portafolio)+
+      cadenaHtml(l.razonamiento)+
       '<span class="toggle" data-card="'+i+'" data-resumen="'+esc(invResumen)+'">ver la investigación ('+esc(invResumen)+') ↓</span>'+
       '<div class="detalle">'+
+        '<div class="blk"><h4>Por qué tiene cada cosa<em>'+(l.corrida_id?'<a class="enlace" href="?corrida='+encodeURIComponent(l.corrida_id)+'">enlace a esta corrida</a>':'')+'</em></h4>'+porqueHtml(l.razonamiento)+'</div>'+
         '<div class="blk"><h4>La investigación<em>'+esc(invResumen)+'</em></h4>'+seqHtml(inv)+'</div>'+
         '<div class="blk"><h4>Las tesis</h4>'+tesis+'</div>'+
         '<div class="blk"><h4>Las órdenes</h4>'+
@@ -576,14 +623,35 @@ function render(){
   });
 }
 
+// ── ABRIR UNA CORRIDA DESDE UN ENLACE ────────────────────────────────
+// `?corrida=<id>` abre esa tarjeta y la lleva a la vista; `?agente=<id>` deja
+// solo los libros de ese agente (el enlace que sale de /liga). Una corrida
+// vieja puede caer fuera de los 7 días por defecto, así que con `corrida` se
+// piden 30.
+const PARAMS=new URLSearchParams(location.search);
+const CORRIDA=PARAMS.get('corrida')||null;
+const AGENTE=(PARAMS.get('agente')||'').trim().toLowerCase()||null;
+function abrirCorrida(){
+  if(!CORRIDA) return;
+  const c=[...document.querySelectorAll('[data-corrida]')].find(n=>n.getAttribute('data-corrida')===CORRIDA);
+  if(!c) return;
+  c.classList.add('open','destacada');
+  const t=c.querySelector('.toggle'); if(t) t.textContent='ocultar el detalle ↑';
+  c.scrollIntoView({block:'start'});
+}
+
 async function load(){
-  DATA=await getJSON('/api/liga/libros?dias=7');
+  DATA=await getJSON('/api/liga/libros?dias='+(CORRIDA?30:7)+(AGENTE?'&agente='+encodeURIComponent(AGENTE):''));
   if(!DATA||!Array.isArray(DATA.libros)){
     $('cards').innerHTML='<div class="card"><div class="cbody"><div class="plan" style="border:0">Los libros no están disponibles ahora mismo. Volvé en un momento.</div></div></div>';
     return;
   }
   const dias=[...new Set((DATA.libros||[]).map(l=>String(l.fecha||'').slice(0,10)).filter(Boolean))].sort().reverse();
   DIA=dias[0]||null;
+  if(CORRIDA){
+    const l=(DATA.libros||[]).find(x=>x.corrida_id===CORRIDA);
+    if(l) DIA=String(l.fecha||'').slice(0,10)||null;
+  }
   $('selDia').innerHTML=dias.map(d=>'<option value="'+esc(d)+'">'+esc(d)+'</option>').join('')+
     '<option value="">todos los días</option>';
   $('selDia').value=DIA||'';
@@ -602,6 +670,7 @@ async function load(){
       '<div class="nota warn" style="margin-top:12px">'+DATA.avisos.map(esc).join('<br/>')+'</div>');
   }
   render();
+  abrirCorrida();
 }
 load();
 $('refreshNote').textContent='Actualizado al abrir · '+new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
