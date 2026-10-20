@@ -59,19 +59,37 @@ const UPA = [
   { date: '2026-11-05', quarter: 3, year: 2026, eps_actual: null, eps_est: 1.31 },
 ];
 
+// ═══════════════════════════════════════════════════════════════════
+// EDGAR, CON LA FORMA DE NVDA DE VERDAD.
+//
+// El concepto preferido —`RevenueFromContractWithCustomerExcludingAssessedTax`—
+// existe y SÓLO trae el ejercicio completo; el trimestre vive bajo `Revenues`.
+// Es lo que dejó los ingresos en "—" en los ocho trimestres de producción
+// (Lety, 2026-10-21) mientras la utilidad salía perfecta: se elegía el primer
+// concepto que EXISTIERA, no el que sirviera.
+//
+// Los trimestres son los fiscales de NVDA (cierran en abril, julio, octubre y
+// enero), no los del calendario: es lo que hace que el año fiscal vaya
+// adelantado y que la UPA pudiera contar el mismo trimestre dos veces.
+// ═══════════════════════════════════════════════════════════════════
 const FACTS = {
   facts: { 'us-gaap': {
     RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: [
-      { start: '2026-04-01', end: '2026-06-30', val: 30_000_000_000, accn: '0000320193-26-000070', form: '10-Q', filed: '2026-08-01' },
-      { start: '2026-01-01', end: '2026-03-31', val: 27_500_000_000, accn: '0000320193-26-000050', form: '10-Q', filed: '2026-05-02' },
-      { start: '2025-10-01', end: '2025-12-31', val: 26_100_000_000, accn: '0000320193-26-000010', form: '10-Q', filed: '2026-02-01' },
-      { start: '2025-07-01', end: '2026-06-30', val: 110_000_000_000, accn: '0000320193-26-000090', form: '10-K', filed: '2026-09-01' },
-      { start: '2026-04-01', end: '2026-06-30', val: 30_400_000_000, accn: '0000320193-26-000099', form: '10-Q/A', filed: '2026-09-15' },
+      // El ejercicio completo. No es un trimestre y no puede colarse como uno.
+      { start: '2025-01-27', end: '2026-01-25', val: 130_497_000_000, accn: '0001045810-26-000090', form: '10-K', filed: '2026-02-26' },
+    ] } },
+    Revenues: { units: { USD: [
+      { start: '2026-04-28', end: '2026-07-27', val: 46_743_000_000, accn: '0001045810-26-000070', form: '10-Q', filed: '2026-08-27' },
+      { start: '2026-01-26', end: '2026-04-27', val: 44_062_000_000, accn: '0001045810-26-000050', form: '10-Q', filed: '2026-05-28' },
+      { start: '2025-10-27', end: '2026-01-25', val: 39_331_000_000, accn: '0001045810-26-000010', form: '10-Q', filed: '2026-02-26' },
+      // REEXPRESIÓN del trimestre de julio: gana el filing más reciente.
+      { start: '2026-04-28', end: '2026-07-27', val: 46_800_000_000, accn: '0001045810-26-000099', form: '10-Q/A', filed: '2026-09-15' },
     ] } },
     NetIncomeLoss: { units: { USD: [
-      { start: '2026-04-01', end: '2026-06-30', val: 9_000_000_000, accn: '0000320193-26-000070', form: '10-Q', filed: '2026-08-01' },
-      { start: '2026-01-01', end: '2026-03-31', val: 7_900_000_000, accn: '0000320193-26-000050', form: '10-Q', filed: '2026-05-02' },
-      { start: '2025-10-01', end: '2025-12-31', val: -1_200_000_000, accn: '0000320193-26-000010', form: '10-Q', filed: '2026-02-01' },
+      { start: '2026-04-28', end: '2026-07-27', val: 26_422_000_000, accn: '0001045810-26-000070', form: '10-Q', filed: '2026-08-27' },
+      { start: '2026-01-26', end: '2026-04-27', val: 18_775_000_000, accn: '0001045810-26-000050', form: '10-Q', filed: '2026-05-28' },
+      // Un trimestre en pérdida: tiene que verse como negativo.
+      { start: '2025-10-27', end: '2026-01-25', val: -1_200_000_000, accn: '0001045810-26-000010', form: '10-Q', filed: '2026-02-26' },
     ] } },
   } },
 };
@@ -115,8 +133,12 @@ function yahooChart(velas, moneda = 'USD') {
 const QUOTE_SUMMARY = { quoteSummary: { result: [{
   price: { longName: 'NVIDIA Corporation', exchangeName: 'NasdaqGS' },
   assetProfile: { sector: 'Technology' },
-  summaryDetail: { trailingPE: { raw: 48.2 }, dividendYield: { raw: 0.0003 } },
-  defaultKeyStatistics: { priceToBook: { raw: 42.1 } },
+  // La capitalización de NVDA, en dólares completos: 5.16 billones (10¹²).
+  // Es el número que en producción se pintó "5.16 B" y se leyó como mil
+  // millones (Lety, 2026-10-21).
+  summaryDetail: { trailingPE: { raw: 48.2 }, dividendYield: { raw: 0.0003 },
+                   marketCap: { raw: 5_160_000_000_000 } },
+  defaultKeyStatistics: { priceToBook: { raw: 42.1 }, enterpriseValue: { raw: 5_140_000_000_000 } },
   financialData: { returnOnEquity: { raw: 0.91 } },
   recommendationTrend: { trend: [
     { period: '0m', strongBuy: 28, buy: 11, hold: 4, sell: 1, strongSell: 0 },
@@ -125,17 +147,23 @@ const QUOTE_SUMMARY = { quoteSummary: { result: [{
 }] } };
 
 // Finnhub `stock/earnings`, crudo: `period`, `actual`, `estimate`.
+// Finnhub `stock/earnings`, crudo. NVDA cierra su ejercicio en enero, así que
+// su año fiscal va ADELANTADO: el trimestre que cerró en julio de 2026 es el
+// T2 del fiscal 2027. El fixture manda ese trimestre DOS VECES —una con el año
+// fiscal y otra con el calendario— que es lo que en producción pintó "2027 T2"
+// y "2026 T2" con el mismo real y el mismo estimado.
 const EARNINGS_CRUDO = [
-  { period: '2026-07-30', quarter: 2, year: 2026, actual: 1.26, estimate: 1.20 },
-  { period: '2026-04-30', quarter: 1, year: 2026, actual: 1.10, estimate: 1.15 },
-  { period: '2026-01-29', quarter: 4, year: 2025, actual: 1.40, estimate: 1.33 },
+  { period: '2026-07-27', quarter: 2, year: 2027, actual: 2.22, estimate: 2.14 },
+  { period: '2026-07-27', quarter: 2, year: 2026, actual: 2.22, estimate: 2.14 },
+  { period: '2026-04-27', quarter: 1, year: 2027, actual: 1.96, estimate: 1.90 },
+  { period: '2026-04-30', quarter: 1, year: 2026, actual: 1.96, estimate: 1.90 },
+  { period: '2026-01-25', quarter: 4, year: 2026, actual: 1.40, estimate: 1.33 },
   // Sin estimado: la sorpresa de ESE trimestre no se puede calcular, y se dice.
-  { period: '2025-10-29', quarter: 3, year: 2025, actual: 0.98, estimate: null },
-  // El trimestre que TODAVÍA NO REPORTA: Finnhub lo manda con `actual` en
-  // null y su estimado puesto. Es otra causa distinta de "no hay estimado", y
-  // la ficha tiene que distinguirlas.
-  { period: '2026-11-05', quarter: 3, year: 2026, actual: null, estimate: 1.31 },
+  { period: '2025-10-26', quarter: 3, year: 2026, actual: 0.98, estimate: null },
+  // El que TODAVÍA NO REPORTA: otra causa distinta de "no hay estimado".
+  { period: '2026-10-26', quarter: 3, year: 2027, actual: null, estimate: 1.31 },
 ];
+
 const CALENDARIO_CRUDO = { earningsCalendar: [
   { symbol: 'NVDA', date: '2026-11-05', hour: 'amc', epsEstimate: 1.31, quarter: 3, year: 2026 },
 ] };
@@ -157,6 +185,9 @@ const FIX_CRUDO = { bmx: { series: [{ idSerie: 'SF43718', titulo: 'FIX',
 // Qué hace Yahoo con `quoteSummary` en esta corrida: 'ok', '429' (dos veces
 // y después bien, para ver el reintento) o 'siempre429' (para ver el relevo).
 let modoYahoo = 'ok';
+// Para ver el caso de producción: EDGAR con trimestres de utilidad y SIN
+// ingresos bajo ningún concepto conocido.
+let sinIngresos = false;
 let veces429 = 0;
 let pedidosYahooQS = 0;
 
@@ -184,7 +215,11 @@ globalThis.fetch = async (recurso, opciones) => {
   if (u.includes('/api/xbrl/companyfacts/')) {
     // El CIK va con diez dígitos en la URL: si el endpoint resolvió mal, esto
     // devuelve 404 y el bloque sale vacío, que es lo que se quiere ver.
-    return u.includes(String(CIK_NVDA).padStart(10, '0')) ? json(FACTS) : json({ error: 'no' }, 404);
+    if (!u.includes(String(CIK_NVDA).padStart(10, '0'))) return json({ error: 'no' }, 404);
+    if (!sinIngresos) return json(FACTS);
+    const recortado = JSON.parse(JSON.stringify(FACTS));
+    delete recortado.facts['us-gaap'].Revenues;
+    return json(recortado);
   }
   if (u.includes('finnhub.io/api/v1/stock/earnings')) return json(EARNINGS_CRUDO);
   if (u.includes('finnhub.io/api/v1/calendar/earnings')) return json(CALENDARIO_CRUDO);
@@ -219,6 +254,10 @@ let llamadasIa = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/__romper') { caido = url.searchParams.get('v') === '1'; res.writeHead(200); return res.end('ok'); }
+  if (url.pathname === '/__sin-ingresos') {
+    sinIngresos = url.searchParams.get('v') === '1';
+    res.writeHead(200); return res.end('ok');
+  }
   if (url.pathname === '/__yahoo') {
     modoYahoo = url.searchParams.get('m') || 'ok';
     veces429 = 0; pedidosYahooQS = 0;
@@ -353,12 +392,35 @@ try {
     upa.filas.length >= 4 && !/sin trimestres/.test(upa.titulo),
     `${upa.filas.length} filas · ${upa.titulo.slice(0, 50)}`);
   chequeo('la UPA dice en cuántos trimestres MEDIDOS le ganó al consenso',
-    /2 de 3 trimestres medidos/.test(upa.titulo), upa.titulo.slice(0, 80));
-  const sinEst = upa.filas.find((f) => f.celdas[0] === '2025 T3');
+    /3 de 3 trimestres medidos/.test(upa.titulo), upa.titulo.slice(0, 80));
+
+  // ── UN TRIMESTRE, UNA FILA ──────────────────────────────────────────
+  // En producción salían "2027 T2" y "2026 T2" con el mismo real y el mismo
+  // estimado: el mismo trimestre contado dos veces porque NVDA cierra su
+  // ejercicio en enero y la fuente mezcla el año fiscal con el calendario.
+  // El fixture manda esas filas repetidas a propósito.
+  const fechasUpa = upa.filas.map((f) => f.celdas[0].trim());
+  chequeo('ningún trimestre de la UPA aparece dos veces',
+    new Set(fechasUpa.map((t) => t.split(' ')[0])).size === fechasUpa.length,
+    JSON.stringify(fechasUpa));
+  chequeo('y cada fila se rotula con su FECHA DE CIERRE, no con el año fiscal',
+    fechasUpa.every((t) => /^\d{4}-\d{2}-\d{2}/.test(t)), JSON.stringify(fechasUpa));
+  chequeo('el nombre fiscal se conserva, dicho como fiscal',
+    upa.filas.some((f) => /del fiscal 20\d\d/.test(f.celdas[0])),
+    upa.filas[0] ? upa.filas[0].celdas[0] : 'no está');
+  const avisoUpa = await p.evaluate(() => {
+    const h = [...document.querySelectorAll('#col-a h2')].find((x) => /UPA/.test(x.textContent));
+    const av = h.parentElement.querySelector('.aviso');
+    return av ? av.textContent : null;
+  });
+  chequeo('y se DICE que la fuente mandó filas repetidas',
+    /repetida/.test(avisoUpa || ''), String(avisoUpa).slice(0, 80));
+
+  const sinEst = upa.filas.find((f) => f.celdas[0].indexOf('2025-10-26') === 0);
   chequeo('el trimestre sin estimado sigue en la tabla, con su causa',
     sinEst && sinEst.celdas[3] === '—' && /no trae estimado/.test(sinEst.titulos[3]),
     sinEst ? sinEst.titulos[3] : 'no está');
-  const futuro = upa.filas.find((f) => f.celdas[0] === '2026 T3');
+  const futuro = upa.filas.find((f) => f.celdas[0].indexOf('2026-10-26') === 0);
   chequeo('y el que todavía no reporta dice ESO, que es otra causa',
     futuro && /todavía no reporta/.test(futuro.titulos[3]), futuro ? futuro.titulos[3] : 'no está');
 
@@ -394,7 +456,81 @@ try {
   chequeo('el ANUAL no se coló entre los trimestres',
     fin.filas.length <= 8 && !fin.filas.some((f) => /110/.test(f.celdas[1])),
     JSON.stringify(fin.filas.map((f) => f.celdas[1])));
-  const trimNeg = fin.filas.find((f) => f.celdas[0] === '2025-12-31');
+  // ── SIN INGRESOS NO SE PINTAN BARRAS ────────────────────────────────
+  // El caso de producción: EDGAR trae la utilidad por trimestre y ningún
+  // ingreso. Antes se pintaban OCHO BARRAS DE LA MISMA ALTURA, que afirman
+  // que ocho trimestres distintos midieron lo mismo — y lo afirman más
+  // fuerte que el "—" de la tabla de abajo.
+  await p.goto(`${BASE}/__sin-ingresos?v=1`);
+  await p.goto(`${BASE}/analiza/NVDA`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#col-a table');
+  // Los bloques no tienen envoltorio propio: son un <h2> y lo que viene
+  // detrás hasta el siguiente <h2>. Se recorta así, o se mide la columna
+  // entera y la comprobación lee el bloque de al lado.
+  const sinIng = await p.evaluate(() => {
+    const h = [...document.querySelectorAll('#col-a h2')].find((x) => /Ingresos y utilidad/.test(x.textContent));
+    const trozos = [];
+    for (let e = h.nextElementSibling; e && e.tagName !== 'H2'; e = e.nextElementSibling) trozos.push(e);
+    const buscar = (sel) => trozos.flatMap((t) => [...t.querySelectorAll(sel)])
+      .concat(trozos.filter((t) => t.matches && t.matches(sel)));
+    const filas = buscar('table tbody tr');
+    return {
+      barras: buscar('.barra i').map((i) => Math.round(i.getBoundingClientRect().height)),
+      aviso: (buscar('.aviso')[0] || {}).textContent || null,
+      trimestres: filas.length,
+      ingresos: filas.map((tr) => tr.children[1].textContent.trim()),
+    };
+  });
+  chequeo('sin ingresos, los trimestres siguen en la tabla', sinIng.trimestres >= 3, String(sinIng.trimestres));
+  chequeo('y la columna de ingresos va en "—", no en cero',
+    sinIng.ingresos.every((v) => v === '—'), JSON.stringify(sinIng.ingresos));
+  chequeo('NO se pintan ocho barras iguales: se dice por qué no hay ingresos',
+    /no trae ingresos trimestrales/.test(sinIng.aviso || ''), String(sinIng.aviso).slice(0, 80));
+  chequeo('y si se pinta alguna barra, es la de la utilidad y no todas iguales',
+    sinIng.barras.length === 0 || new Set(sinIng.barras).size > 1,
+    JSON.stringify(sinIng.barras));
+  await p.goto(`${BASE}/__sin-ingresos?v=0`);
+  await p.goto(`${BASE}/analiza/NVDA`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('.barra');
+
+  // ── LOS MONTOS, CON LA ESCALA DEL ESPAÑOL ───────────────────────────
+  // "5.16 B" se leyó como 5.16 mil millones (Lety, 2026-10-21): esa "B" es
+  // la del inglés y en español un billón son 10¹². `qdCap` escribe la escala
+  // con palabras y la moneda al lado.
+  const montos = await p.evaluate(() => {
+    const t = document.body.innerText;
+    return {
+      // La abreviatura ambigua no puede quedar en ningún monto.
+      conB: (t.match(/\d+\.\d+ B\b/g) || []),
+      conPalabra: (t.match(/\d+(\.\d+)? (billones|billón|mil millones|millones)/g) || []).slice(0, 4),
+    };
+  });
+  chequeo('ningún monto se abrevia con la "B" del inglés',
+    montos.conB.length === 0, JSON.stringify(montos.conB));
+  chequeo('los montos se escriben con la escala en palabras, como el mapa',
+    montos.conPalabra.length >= 2, JSON.stringify(montos.conPalabra));
+  const capTxt = await p.evaluate(() => {
+    const tr = [...document.querySelectorAll('tr')].find((x) => /Capitalización/.test(x.children[0].textContent));
+    return tr ? tr.children[1].textContent.trim() : null;
+  });
+  // 5.16 × 10¹² son 5.16 BILLONES en español. Es el caso exacto de prod.
+  chequeo('la capitalización de 10¹² se escribe "billones", no "B"',
+    /^5\.16 billones USD$/.test(capTxt || ''), String(capTxt));
+
+  // ── LAS BARRAS ──────────────────────────────────────────────────────
+  // Ocho barras de la misma altura con los ingresos en "—" fue lo que se vio
+  // en producción: la escala caía a 1 y toda barra se salía del recuadro.
+  const barras = await p.evaluate(() => [...document.querySelectorAll('.barra')].map((b) => ({
+    alturas: [...b.querySelectorAll('i')].map((i) => Math.round(i.getBoundingClientRect().height)),
+  })));
+  chequeo('hay barras y NO todas miden lo mismo',
+    barras.length >= 3 && new Set(barras.map((b) => b.alturas.join('/'))).size > 1,
+    JSON.stringify(barras.map((b) => b.alturas)));
+  chequeo('ninguna barra se sale de su recuadro',
+    barras.every((b) => b.alturas.every((h) => h <= 60)),
+    JSON.stringify(barras.map((b) => b.alturas)));
+
+  const trimNeg = fin.filas.find((f) => f.celdas[0] === '2026-01-25');
   chequeo('una utilidad NEGATIVA se ve como negativa',
     trimNeg && /-/.test(trimNeg.celdas[2]), trimNeg ? trimNeg.celdas[2] : 'no está');
 
