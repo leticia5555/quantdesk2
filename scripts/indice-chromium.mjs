@@ -258,19 +258,26 @@ try {
       [/api\/_lib/, 'ruta del repo'],
       [/getcurrent|companyfacts|quoteSummary|metric=all|cik_str|infotable/i, 'nombre interno de un endpoint o campo'],
     ];
+    // Las FUENTES declaradas (`yahoo:v8/chart`, `banxico:SF43718`) no son
+    // jerga: son la procedencia que pide la regla 3. Se quitan antes de
+    // buscar, porque lo que se persigue es el nombre interno SUELTO en una
+    // frase, que es lo que nadie entiende.
+    const sinFuentes = (t) => t.replace(/[a-z_]+:[A-Za-z0-9_\-/.]+/g, ' ');
     const paseo = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let n;
     while ((n = paseo.nextNode())) {
-      const t = (n.textContent || '').trim();
-      if (!t) continue;
+      const crudo = (n.textContent || '').trim();
+      if (!crudo) continue;
       const padre = n.parentElement;
       if (padre && (padre.tagName === 'SCRIPT' || padre.tagName === 'STYLE')) continue;
-      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push(por + ': ' + t.slice(0, 70));
+      const t = sinFuentes(crudo);
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push(por + ': ' + crudo.slice(0, 70));
     }
     // Y lo que vive en un `title`, que también se lee.
     for (const el of document.querySelectorAll('[title]')) {
-      const t = el.getAttribute('title') || '';
-      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push('en un title · ' + por + ': ' + t.slice(0, 70));
+      const crudo = el.getAttribute('title') || '';
+      const t = sinFuentes(crudo);
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push('en un title · ' + por + ': ' + crudo.slice(0, 70));
     }
     return malas;
   });

@@ -244,3 +244,15 @@ test('las velas conservan apertura, máximo y mínimo al convertirse', () => {
   const r = serieConvertida([{ time: 100, open: 9, high: 11, low: 8, close: 10 }], [{ t: 1, c: 2 }, { t: 2, c: 2 }]);
   assert.deepEqual(r.velas[0], { time: 100, open: 18, high: 22, low: 16, close: 20 });
 });
+
+test('una vela con cierre NULO se descarta, no se convierte en un cierre de 0', () => {
+  // `Number(null)` es CERO, no NaN. Sin el guardia, la vela entraba con un
+  // precio de 0 — inventado, y encima hunde la gráfica hasta el eje.
+  const r = serieConvertida(
+    [{ time: 100, c: null }, { time: 200, c: 10 }],
+    [{ t: 1, c: 2 }, { t: 2, c: 2 }],
+  );
+  assert.equal(r.velas.length, 1);
+  assert.equal(r.velas[0].close, 20);
+  assert.equal(r.descartadas, 1);
+});
