@@ -218,3 +218,174 @@ las miraba**: las pestañas encimadas a 390 px, el mapa cortado por las tiras
 (175 cuadros partidos), y la tarjeta de compartir diciendo
 "Fuente: [object Object]" con la URL encimada sobre la firma. Las tres tienen
 ahora una comprobación que las vigila.
+
+---
+
+# Apéndice — la revisión de Lety contra prod (20 de octubre, por la mañana)
+
+Lety abrió el preview de #296 en Chrome contra producción, con todos los jobs
+corridos, y encontró seis cosas. **Insiders y noticias funcionaban**; lo demás,
+no del todo. Esto es lo que se arregló, en qué PR quedó cada cosa, y la lección
+que dejó.
+
+## La lección, primero
+
+**Cuatro de los seis defectos eran el mismo defecto**: la pantalla leía una
+llave que el endpoint nunca devolvió.
+
+| Pantalla | Pedía | El endpoint manda | Se veía como |
+|---|---|---|---|
+| Ficha de índice | `{time, open, high, low, close}` | `{t,o,h,l,c,v}` | "cargando SPX…" para siempre |
+| `/analiza` · UPA | `earnings`, `date`, `eps_est` | `history`, `period`, `eps_estimate` | "sin trimestres" para NVDA |
+| Fondos · 13F | `name` | `fund` | "1067983" en vez de Berkshire |
+| `/analiza` · EDGAR | nada: esperaba el CIK en la URL | — | "no devolvió conceptos us-gaap" |
+
+Los cuatro pasaron **todas** las comprobaciones, porque los fixtures de las
+corridas en Chromium estaban **escritos a mano con la forma que yo suponía**.
+Un fixture inventado no puede desmentirme: repite lo que supuse. Y como el
+síntoma era "no cargó", apuntaba al endpoint, que estaba contestando perfecto.
+
+**Lo que cambia de raíz:** los fixtures de las tres corridas ahora **corren el
+endpoint de verdad** —el mismo archivo que Vercel sirve— y fingen sólo la RED,
+cada fuente en su forma cruda (Yahoo v8, el SIE con sus fechas DD/MM/AAAA, los
+submissions y el infoTable de la SEC, Finnhub). Si alguien cambia la forma de
+una vela o el nombre de una llave, la corrida lo ve el mismo día.
+
+Y hay un archivo nuevo, `tests/mercado-contratos.test.mjs`, que compara las
+llaves que cada pantalla lee contra las que su productor devuelve,
+**ejecutándolo**. No prueba que el número esté bien: prueba que la pantalla y
+el endpoint estén hablando del mismo campo, que es lo único que falló.
+
+## Los seis, uno por uno
+
+### 1 · La ficha de índice no pintaba — #292
+
+`/mercado/indice/SPX` se quedaba en "cargando SPX…", la gráfica en blanco y
+los nueve periodos en "—".
+
+La vela de `/api/candles` es `{t,o,h,l,c,v}`; media pantalla leía la forma de
+Lightweight Charts. Con la forma de verdad, `setData` recibía `time: undefined`
+y **lanzaba**; como `pintar()` era una lista de llamadas seguidas, la gráfica
+se llevaba por delante a la tabla, los datos y el pie. De ahí los tres
+síntomas a la vez.
+
+- La forma se fija **en la puerta** (`normalizaVelas`), y la de la librería se
+  arma sólo al dibujar, en un único sitio.
+- **Un panel que truena ya no congela la ficha**: cada uno se pinta por su
+  cuenta, el que falla lo dice en su sitio, y el pie no puede quedarse en
+  "cargando" con los datos en la mano.
+- De camino: con Yahoo limitando las peticiones la pantalla decía "el handler
+  respondió 502". La causa la tiraba `enProceso`, que se quedaba con el número.
+  Ahora dice **"Yahoo respondió HTTP 429: está limitando las peticiones"**.
+
+### 2 · `/analiza` casi vacía — #294
+
+- **(a) El CIK se resuelve solo**, desde `company_tickers.json` de la SEC, con
+  caché de 12 horas por instancia. No adivina: un ticker que no está devuelve
+  null con su causa, y `.MX` la dice entera (la BMV no reporta a la SEC, así
+  que no hay 10-Q que citar).
+- **(b) La UPA** leía `earnings`/`date`/`eps_est` y el endpoint manda
+  `history`/`period`/`eps_estimate`. El próximo reporte ya venía resuelto
+  (`next_earnings`): deducirlo filtrando el historial era buscar fechas futuras
+  donde nunca las hay.
+- **(c) El 429 de Yahoo**, con tres capas: caché de 10 minutos por ticker —la
+  que de verdad lo quita—, reintento con espera creciente **sólo** ante 429 y
+  5xx (un 401 o un 404 no mejoran por insistir), y la última respuesta buena
+  dicha **como vieja, con su edad**. Si nada alcanza, la valuación se arma con
+  los fundamentales de **Finnhub** y la pantalla avisa arriba de la tabla que
+  cambió de proveedor.
+
+  **Dos trampas de unidades**, con prueba propia: Finnhub da la capitalización
+  en MILLONES (el tropiezo que ya costó que Apple midiera lo mismo que una
+  small cap) y los márgenes, ROA, ROE y dividendo en POR CIENTO, mientras
+  Yahoo los da en fracción. Sin convertir, un ROE de 90.5 % se pintaría
+  9050 %.
+
+### 3 · Noticias: las fotos, las destacadas y el pie — #290
+
+- **Las cuatro destacadas eran del mismo medio.** `conFoto.slice(0,4)` le daba
+  la franja entera al que más publica con imagen (Valor BR publica todo con
+  foto). Ahora se elige **por fuente**, y si no hay cuatro fuentes vivas se
+  repite medio **y se dice**.
+- **Sin foto se reservaba el hueco de la foto.** El bloque de color del
+  artboard se pintaba también cuando el feed nunca trajo imagen: cuatro
+  cuadros grises. El bloque se queda como **relevo** de una foto que falla
+  —ahí el hueco ya está medido—, no como anuncio de que no hay nada. Y la
+  tarjeta sin foto ya no se estira al alto de las que la tienen.
+  Dos mecanismos más del cuadro gris: `loading="lazy"` en un carrusel
+  horizontal (tres de las cuatro nacen fuera de la ventana) y la foto que
+  llega tarde, que no dispara `error`. Ahora hay plazo.
+- **El pie se encimaba sobre la lista.** `align-items:start` del layout base
+  sobrevivía dentro del escritorio sin scroll, así que cada columna se medía
+  por su contenido y se salía de su fila hacia abajo. Con nueve notas no se
+  veía; con las de producción (16 fuentes, decenas de notas) la lista de
+  medios llegaba **600 px más abajo del pie**. El fixture tenía tres notas por
+  columna: por eso la comprobación pasaba sobre una página corta.
+
+### 4 · El chip, una sola función — #290 y adelante
+
+Las cuatro pantallas nuevas pintaban el texto crudo de `estadoDeBolsa`, que
+con la bolsa cerrada y sin pasarle el último cierre dice **"no se sabe de qué
+día es el último cierre"**: cierto, y una queja en pantalla sobre un dato que
+esa pantalla no está mostrando.
+
+`chipDeMercado` sale de donde estaba —dentro del `pintarChip` del mapa— y pasa
+a `qd-mercados.js`. La fecha del dato se nombra **sólo donde hay un dato con
+fecha** (la ficha de índice y la de ticker la sacan de su última vela); donde
+no, el chip dice "cerrado" a secas y la causa va al `title`. Una prueba fija
+que ninguna pantalla vuelva a componer ese renglón a mano.
+
+### 5 · Los fondos salían como su CIK — #293
+
+La página leía `f.name`; el endpoint manda `fund` (y `persona`). Ahora dice
+**"Berkshire Hathaway · Warren Buffett"**.
+
+### 6 · Jerga en pantalla — #293, #294 y #290
+
+| Decía | Dice |
+|---|---|
+| la ventana del feed `getcurrent` de EDGAR | los Form 4 que EDGAR publica en su lista de lo recién presentado |
+| "le quedan" sale de `sharesOwnedFollowingTransaction` | "le quedan" es la tenencia que el propio formulario 4 declara después de la operación |
+| el caso NO-GO de la Fase 0.8: Yahoo quoteSummary pide crumb | Yahoo pide una credencial que sólo le da a un navegador, no a un servidor como el nuestro |
+| lectura fallida: Falta DATABASE_URL (connection string) | no se pudo leer nuestra base de datos en este momento |
+| el P/U agregado necesita el `metric` de Finnhub | el P/U agregado necesita los fundamentales de cada componente |
+| 14 notas leídas de 9 fuentes GO | 14 notas leídas de 9 fuentes registradas |
+| (RSS/Atom de api/_lib/news-sources.json) | (titulares de los feeds RSS/Atom de las fuentes registradas) |
+
+Hay una comprobación nueva en las tres corridas que **recorre todo el texto
+visible, incluidos los `title`**, buscando comillas de código, rutas del repo
+y nombres internos de endpoints o campos.
+
+**Lo que NO se tocó, y es una decisión:** las fuentes declaradas
+—`yahoo:v8/chart`, `banxico:SF43718`, `edgar:companyfacts`, `finnhub:metric`—
+siguen visibles. Son la procedencia que pide la regla 3, van en su columna y
+no en la prosa, y llevan meses en el pie del mapa. La comprobación las exime a
+propósito. **Si quieres que también esas se traduzcan, es un cambio chico y
+dímelo.**
+
+## Cómo quedó el conteo
+
+| | Antes | Ahora |
+|---|---|---|
+| Archivos de prueba | 164 | **165** |
+| `/mercado` | 191 | **191** |
+| `/mercado/noticias` | 45 | **55** |
+| `/mercado/indice/:idx` | 38 | **42** |
+| `/mercado/insiders` | 26 | **29** |
+| `/analiza/:ticker` | 32 | **42** |
+
+Todo en verde, más `arena-carga-vercel`.
+
+## Lo que sigue sin poder probarse aquí
+
+Lo mismo de anoche —este sandbox no sale a internet— con una diferencia que
+importa: ahora las corridas ejercen **el código de producción** contra esas
+fuentes fingidas, en vez de un fixture escrito a mano. Lo que falta por ver en
+prod es el comportamiento de las fuentes reales:
+
+- si `quoteSummary` contesta, da 429 o da 401 desde Vercel (las tres rutas
+  están probadas; cuál toca, lo dice prod);
+- si la lista de emisoras de la SEC baja completa desde la IP de Vercel;
+- si `range=5y` trae cinco años de verdad;
+- `navigator.share` con archivo, que Chromium headless no expone;
+- el redirect de `/hoy`, que lo hace Vercel y no la página.
