@@ -25,6 +25,11 @@
 // salía como "le ganó por 0.98" — un número inventado con dos datos reales.
 // Lo encontró la prueba del trimestre sin estimado, que estaba escrita antes
 // que el arreglo.
+// Las grafías de los campos de Finnhub viven en un solo sitio del proyecto:
+// el censo de la Fase 0 ya tuvo que resolver que Finnhub mezcla sufijos
+// (TTM / Annual / Quarterly) y no documenta cuáles trae el tier gratis.
+import { CAMPOS_METRIC } from './mercado-fase0.js';
+
 const num = (v) => {
   if (v == null || v === '') return null;
   const n = Number(v);
@@ -82,27 +87,68 @@ export function serieDeRendimiento(velas) {
  * sobre los trimestres que convienen.
  */
 export function upaRealVsEstimado(filas, { tope = 8, motivoFuente = null } = {}) {
-  // LOS NOMBRES SON LOS DE `/api/earnings`, NO LOS QUE YO SUPUSE.
+  // ── LOS NOMBRES SON LOS DE `/api/earnings` ──────────────────────────
   // Ese endpoint manda `period` y `eps_estimate`; esta función pedía `date` y
   // `eps_est`, y el resultado era un bloque vacío sobre un historial completo.
   // Se aceptan los dos nombres —no cuesta nada y hay fixtures viejos— pero el
   // que manda es el del productor.
-  const fs = (filas || [])
+  const crudas = (filas || [])
     .filter((e) => e && (e.eps_actual != null || e.eps_estimate != null || e.eps_est != null))
     .map((e) => {
       const real = num(e.eps_actual);
       const est = num(e.eps_estimate != null ? e.eps_estimate : e.eps_est);
+      const fecha = e.period || e.date || null;
       return {
-        fecha: e.period || e.date || null,
-        trimestre: e.quarter != null && e.year != null ? `${e.year} T${e.quarter}` : null,
+        fecha,
+        // EL TRIMESTRE SE NOMBRA POR SU FECHA DE CIERRE, NO POR SU AÑO FISCAL.
+        //
+        // En producción la tabla de NVDA enseñaba "2027 T2" y "2026 T2" con el
+        // mismo real y el mismo estimado (Lety, 2026-10-21). NVDA cierra su
+        // ejercicio en enero, así que su año fiscal va ADELANTADO: el trimestre
+        // que termina en julio de 2026 es el T2 del fiscal 2027. Cuando la
+        // fuente manda unas filas con el año fiscal y otras con el calendario,
+        // el MISMO trimestre sale dos veces con dos nombres, y el lector no
+        // tiene forma de saber que es uno solo.
+        //
+        // La fecha de cierre no tiene esa ambigüedad: es un hecho del filing.
+        // El nombre fiscal se conserva aparte —es el que usa la empresa en su
+        // reporte— pero rotulado como fiscal, no como si fuera el calendario.
+        trimestre: fecha,
+        trimestre_fiscal: e.quarter != null && e.year != null ? `T${e.quarter} del fiscal ${e.year}` : null,
         real, estimado: est,
         sorpresa: real != null && est != null ? real - est : null,
         sorpresa_motivo: real != null && est != null ? null
           : (real == null ? 'todavía no reporta' : 'la fuente no trae estimado de consenso para ese trimestre'),
       };
     })
-    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')))
-    .slice(0, tope);
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+
+  // ── UN TRIMESTRE, UNA FILA ──────────────────────────────────────────
+  // Dos defensas, porque el duplicado puede llegar de dos formas: la misma
+  // fecha de cierre repetida, o dos fechas a pocos días una de otra —el mismo
+  // trimestre fechado al cierre contable y al cierre del calendario—. Un
+  // trimestre dura ~91 días, así que dos filas a menos de 45 son la misma.
+  const DIAS_MISMO_TRIMESTRE = 45;
+  const unicas = [];
+  let duplicados = 0;
+  for (const f of crudas) {
+    const t = Date.parse(f.fecha || '');
+    const ya = unicas.find((u) => {
+      if (u.fecha === f.fecha) return true;
+      const tu = Date.parse(u.fecha || '');
+      return Number.isFinite(t) && Number.isFinite(tu)
+        && Math.abs(t - tu) / 864e5 < DIAS_MISMO_TRIMESTRE;
+    });
+    if (!ya) { unicas.push(f); continue; }
+    duplicados++;
+    // Gana la fila más completa: una con el real ya publicado dice más que
+    // una que todavía sólo trae el estimado.
+    if (ya.real == null && f.real != null) Object.assign(ya, f);
+    // Y si la descartada traía el nombre fiscal, se conserva.
+    if (!ya.trimestre_fiscal && f.trimestre_fiscal) ya.trimestre_fiscal = f.trimestre_fiscal;
+  }
+
+  const fs = unicas.slice(0, tope);
   const conSorpresa = fs.filter((f) => f.sorpresa != null);
   return {
     filas: fs,
@@ -110,6 +156,12 @@ export function upaRealVsEstimado(filas, { tope = 8, motivoFuente = null } = {})
     // sobre cuántos: "4 de 4" y "4 de 8" no son la misma afirmación.
     gano: conSorpresa.filter((f) => f.sorpresa > 0).length,
     medidos: conSorpresa.length,
+    duplicados,
+    // Si hubo que juntar filas, se dice: un conteo que cambió en silencio es
+    // un conteo en el que no se puede confiar.
+    motivo_duplicados: duplicados
+      ? `la fuente mandó ${duplicados} fila(s) repetida(s) del mismo trimestre, con el año fiscal y el calendario mezclados; se cuenta una vez`
+      : null,
     fuente: 'finnhub:earnings',
     nota: 'la sorpresa es contra el CONSENSO de analistas, no contra el movimiento de la acción',
     // Y si no hay trimestres, se dice POR QUÉ: "la fuente no devolvió" tapa
@@ -118,8 +170,6 @@ export function upaRealVsEstimado(filas, { tope = 8, motivoFuente = null } = {})
       : (motivoFuente || 'la fuente no devolvió trimestres con UPA para este ticker'),
   };
 }
-
-import { CAMPOS_METRIC } from './mercado-fase0.js';
 
 const CONCEPTOS_INGRESO = [
   'RevenueFromContractWithCustomerExcludingAssessedTax',
@@ -146,48 +196,79 @@ export function trimestresDeCompanyFacts(facts, { tope = 8 } = {}) {
   if (!conceptos) {
     return { filas: [], motivo: 'EDGAR no devolvió conceptos us-gaap para esta emisora', fuente: 'edgar:companyfacts' };
   }
-  const tomar = (nombres) => {
-    for (const n of nombres) {
-      const c = conceptos[n];
-      const uds = c && c.units && (c.units.USD || Object.values(c.units)[0]);
-      if (Array.isArray(uds) && uds.length) return { concepto: n, filas: uds };
-    }
-    return null;
-  };
-  const ing = tomar(CONCEPTOS_INGRESO);
-  const uti = tomar(CONCEPTOS_UTILIDAD);
-  if (!ing && !uti) {
-    return {
-      filas: [],
-      motivo: `EDGAR no trae ninguno de los conceptos de ingresos (${CONCEPTOS_INGRESO[0]}…) ni de utilidad (${CONCEPTOS_UTILIDAD[0]})`,
-      fuente: 'edgar:companyfacts',
-    };
-  }
   const esTrimestre = (u) => {
     if (!u.start || !u.end) return false;
     const d = (Date.parse(u.end) - Date.parse(u.start)) / 864e5;
     return d > 60 && d < 120;
   };
+
+  // ── EL CONCEPTO SE ELIGE POR LO QUE TRAE, NO POR EXISTIR ────────────
+  //
+  // Esto era "el primer concepto de la lista que exista en el archivo", y en
+  // producción dejó los ingresos de NVDA en "—" en los ocho trimestres
+  // mientras la utilidad salía perfecta (Lety, 2026-10-21).
+  //
+  // La causa: una emisora puede tener `RevenueFromContractWithCustomer…`
+  // declarado SÓLO con periodos anuales y reportar el trimestre bajo
+  // `Revenues`. El primero existía, así que ganaba, y no tenía ni un periodo
+  // trimestral que ofrecer. "Existe" y "sirve" no son lo mismo.
+  //
+  // Y hay un segundo caso, igual de real: la emisora CAMBIA de concepto de un
+  // año a otro (la taxonomía us-gaap se mueve). Por eso no se elige uno y se
+  // descarta el resto: se recorren todos los candidatos y cada trimestre toma
+  // el del candidato de MAYOR prioridad que lo tenga. La prioridad es el orden
+  // de la lista, que no es casual: las grafías específicas van antes que
+  // `Revenues`, que es la bolsa grande.
+  const trimestresDe = (nombres) => {
+    const out = [];
+    nombres.forEach((n, prioridad) => {
+      const c = conceptos[n];
+      const uds = c && c.units && (c.units.USD || Object.values(c.units)[0]);
+      if (!Array.isArray(uds)) return;
+      for (const u of uds) if (esTrimestre(u)) out.push({ ...u, _concepto: n, _prioridad: prioridad });
+    });
+    return out;
+  };
+  const ing = trimestresDe(CONCEPTOS_INGRESO);
+  const uti = trimestresDe(CONCEPTOS_UTILIDAD);
+  if (!ing.length && !uti.length) {
+    // Se distingue "no está el concepto" de "está y no trae trimestres":
+    // son dos problemas distintos y se arreglan distinto.
+    const hayAlguno = [...CONCEPTOS_INGRESO, ...CONCEPTOS_UTILIDAD].some((n) => conceptos[n]);
+    return {
+      filas: [],
+      motivo: hayAlguno
+        ? 'EDGAR trae los conceptos de ingresos y utilidad, pero ninguno con periodos trimestrales (sólo anuales)'
+        : `EDGAR no trae ninguno de los conceptos de ingresos (${CONCEPTOS_INGRESO[0]}…) ni de utilidad (${CONCEPTOS_UTILIDAD[0]})`,
+      fuente: 'edgar:companyfacts',
+    };
+  }
   const porFin = new Map();
-  const mete = (lista, campo, concepto) => {
+  const mete = (lista, campo) => {
     for (const u of lista || []) {
-      if (!esTrimestre(u)) continue;
       const k = u.end;
       if (!porFin.has(k)) porFin.set(k, { fin: k, inicio: u.start });
       const f = porFin.get(k);
-      // Cuando el mismo trimestre aparece varias veces (reexpresiones), gana
-      // el filing MÁS RECIENTE: es el que la emisora sostiene hoy.
-      if (!f[campo] || String(u.filed || '') > String(f[campo + '_filed'] || '')) {
+      const yaHay = f[campo] != null;
+      // Entre dos candidatos, manda el de MAYOR prioridad (la grafía más
+      // específica). Dentro del mismo concepto, cuando el trimestre aparece
+      // varias veces por una reexpresión, gana el filing MÁS RECIENTE: es el
+      // que la emisora sostiene hoy.
+      const mejorPorConcepto = yaHay && u._prioridad < f[campo + '_prioridad'];
+      const mejorPorFecha = yaHay && u._prioridad === f[campo + '_prioridad']
+        && String(u.filed || '') > String(f[campo + '_filed'] || '');
+      if (!yaHay || mejorPorConcepto || mejorPorFecha) {
         f[campo] = num(u.val);
         f[campo + '_accn'] = u.accn || null;
         f[campo + '_form'] = u.form || null;
         f[campo + '_filed'] = u.filed || null;
-        f[campo + '_concepto'] = concepto;
+        f[campo + '_concepto'] = u._concepto;
+        f[campo + '_prioridad'] = u._prioridad;
       }
     }
   };
-  if (ing) mete(ing.filas, 'ingresos', ing.concepto);
-  if (uti) mete(uti.filas, 'utilidad', uti.concepto);
+  mete(ing, 'ingresos');
+  mete(uti, 'utilidad');
 
   const filas = [...porFin.values()]
     .sort((a, b) => String(b.fin).localeCompare(String(a.fin)))
@@ -200,11 +281,28 @@ export function trimestresDeCompanyFacts(facts, { tope = 8 } = {}) {
       margen_motivo: Number.isFinite(f.ingresos) && Number.isFinite(f.utilidad) && f.ingresos !== 0
         ? null : 'falta el ingreso o la utilidad del trimestre',
     }));
+  // Qué concepto terminó dando cada número. Si la emisora cambió de grafía a
+  // mitad de la serie, se usan dos y se DICE: son el mismo dato económico,
+  // pero decir que salieron del mismo campo cuando no es cierto rompe la
+  // regla 3 —y además explica un escalón que si no parecería del negocio.
+  const usados = (campo) => [...new Set(filas.map((f) => f[campo + '_concepto']).filter(Boolean))];
+  const ingUsados = usados('ingresos');
+  const utiUsados = usados('utilidad');
   return {
     filas,
     fuente: 'edgar:companyfacts',
-    conceptos: { ingresos: ing ? ing.concepto : null, utilidad: uti ? uti.concepto : null },
+    conceptos: { ingresos: ingUsados[0] || null, utilidad: utiUsados[0] || null },
+    conceptos_todos: { ingresos: ingUsados, utilidad: utiUsados },
+    motivo_conceptos: ingUsados.length > 1
+      ? `la emisora reportó los ingresos bajo ${ingUsados.length} conceptos distintos de us-gaap en el periodo mostrado`
+      : null,
+    // Qué faltó, dicho por separado: "no hay trimestres" y "hay trimestres sin
+    // ingresos" son dos cosas distintas, y la segunda es la que dejó ocho
+    // barras iguales en pantalla.
     motivo: filas.length ? null : 'EDGAR trae los conceptos pero ningún periodo trimestral',
+    motivo_ingresos: filas.length && !filas.some((f) => Number.isFinite(f.ingresos))
+      ? 'EDGAR no trae ingresos trimestrales para esta emisora bajo ninguno de los conceptos conocidos'
+      : null,
   };
 }
 

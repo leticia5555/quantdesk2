@@ -123,6 +123,10 @@
     letter-spacing:.06em;text-transform:uppercase}
   td.falta{color:var(--apagado)}
   td.f{font-size:9px;color:var(--apagado)}
+  /* El nombre fiscal del trimestre, al lado de su fecha de cierre y en
+     gris: es el que usa la empresa en su reporte, y no puede competir con
+     la fecha, que es la que no tiene ambigüedad. */
+  td .f{font-size:9px;color:var(--apagado);margin-left:4px}
   .pos{color:var(--verde)} .neg{color:var(--rojo)}
 
   .barras{display:flex;gap:3px;align-items:flex-end;height:90px;padding:10px}
@@ -231,18 +235,31 @@
     return Number.isFinite(r.pct) ? r.pct : null;
   }
 
-  function fmtUsd(v){
-    if(!Number.isFinite(v)) return '—';
-    var a = Math.abs(v);
-    if(a >= 1e12) return (v/1e12).toFixed(2) + ' B';
-    if(a >= 1e9) return (v/1e9).toFixed(2) + ' mil M';
-    if(a >= 1e6) return (v/1e6).toFixed(1) + ' M';
-    if(a >= 1e3) return Math.round(v/1e3) + ' mil';
-    return v.toFixed(2);
+  // ═══════════════════════════════════════════════════════════════
+  // LOS MONTOS SE ESCRIBEN CON `qdCap`, EL MISMO DEL MAPA.
+  //
+  // Acá había una escala propia que abreviaba 5.16 billones como "5.16 B".
+  // Esa "B" es la del inglés —billion, 10⁹— y en español un billón es 10¹²:
+  // la misma letra para dos números que se llevan un factor de mil. Lety lo
+  // leyó mal en pantalla el 2026-10-21, que es exactamente lo que esa
+  // abreviatura provoca.
+  //
+  // `qdCap` ya resolvía esto en el mapa: escribe la escala con palabras
+  // —millones, mil millones, billones— y la moneda al lado, porque 60 mil
+  // millones de pesos y 60 mil millones de dólares no son la misma empresa.
+  // Tener dos escalas en el proyecto era tener dos opiniones sobre cuánto
+  // vale una empresa.
+  function fmtMonto(v, moneda){
+    return qdCap(v, moneda != null ? moneda : (datos && datos.moneda) || null);
+  }
+  // Un PRECIO por acción no es un monto agregado: 180 dólares se escriben
+  // "180.00", no "180 USD". Por eso son dos funciones y no una.
+  function fmtPrecio(v){
+    return Number.isFinite(v) ? fmtPrice(v) : '—';
   }
   function fmtValor(v, formato){
     if(v == null) return '—';
-    if(formato === 'usd') return fmtUsd(v);
+    if(formato === 'usd') return fmtMonto(v);
     if(formato === 'x') return Number(v).toFixed(2) + '×';
     if(formato === 'pct1') return (Number(v) * 100).toFixed(1) + '%';
     // Dos decimales para el dividendo: 0.03% con un decimal se pinta "0.0%",
@@ -296,7 +313,13 @@
     html += '<div class="panel"><table><thead><tr><th>Trimestre</th><th>Real</th>'
       + '<th>Estimado</th><th>Le ganó</th></tr></thead><tbody>';
     html += u.filas.map(function(f){
-      return '<tr><td class="izq">' + esc(f.trimestre || f.fecha || '—') + '</td>'
+      // El rótulo es la FECHA DE CIERRE. El nombre fiscal va al lado y
+      // dicho como fiscal: "2027 T2" a secas se lee como el calendario y es
+      // cómo el mismo trimestre salía dos veces.
+      return '<tr><td class="izq" title="' + esc(f.trimestre_fiscal || '') + '">'
+        + esc(f.trimestre || f.fecha || '—')
+        + (f.trimestre_fiscal ? ' <span class="f">' + esc(f.trimestre_fiscal) + '</span>' : '')
+        + '</td>'
         + '<td>' + (f.real == null ? '<span class="falta">—</span>' : f.real.toFixed(2)) + '</td>'
         + '<td>' + (f.estimado == null ? '<span class="falta">—</span>' : f.estimado.toFixed(2)) + '</td>'
         + (f.sorpresa == null
@@ -306,6 +329,7 @@
         + '</tr>';
     }).join('');
     html += '</tbody></table></div>';
+    if(u.motivo_duplicados) html += '<div class="aviso">' + esc(u.motivo_duplicados) + '</div>';
     html += '<p class="vacio" style="border-style:solid;border-color:var(--linea);margin-top:6px">'
       + esc(u.nota || '') + '</p>';
     var pr = datos.proximo_reporte || {};
@@ -322,22 +346,57 @@
     var html = '<h2>Ingresos y utilidad por trimestre<span>cada barra cita su 10-Q</span></h2>';
     if(!f.filas || !f.filas.length) return html + '<div class="vacio">' + esc(f.motivo || 'sin datos de EDGAR') + '</div>';
     var filas = f.filas.slice().reverse();
-    var maxIng = Math.max.apply(null, filas.map(function(x){ return Math.abs(x.ingresos || 0); }).concat([1]));
-    html += '<div class="panel"><div class="barras">' + filas.map(function(x){
-      var hi = Math.round(Math.abs(x.ingresos || 0) / maxIng * 56);
-      var hu = Math.round(Math.abs(x.utilidad || 0) / maxIng * 56);
-      return '<div class="barra" title="' + esc(x.fin + ' · ' + (x.ingresos_form || '')) + '">'
-        + '<i style="height:' + hi + 'px"></i>'
-        + '<i class="u' + (x.utilidad < 0 ? ' neg' : '') + '" style="height:' + Math.max(1, hu) + 'px"></i>'
-        + '<b>' + esc(String(x.fin || '').slice(2, 7)) + '</b></div>';
-    }).join('') + '</div></div>';
+
+    // ── SIN INGRESOS NO HAY BARRAS ────────────────────────────────────
+    //
+    // En producción salían OCHO BARRAS DE LA MISMA ALTURA con los ingresos
+    // en "—" (Lety, 2026-10-21). La escala se calculaba sobre los ingresos y
+    // caía a 1 cuando no había ninguno —`concat([1])`—, así que la utilidad
+    // se dividía entre 1 y toda barra se iba más allá del alto del recuadro:
+    // recortadas todas al mismo tope, se veían idénticas. Una gráfica donde
+    // ocho trimestres distintos miden lo mismo afirma algo falso, y lo
+    // afirma más fuerte que el "—" de la tabla de abajo.
+    //
+    // La escala se calcula ahora sobre lo que DE VERDAD se va a dibujar, y si
+    // no hay ingresos no se pinta el bloque: se dice por qué.
+    var conIngresos = filas.filter(function(x){ return Number.isFinite(x.ingresos); });
+    var conUtilidad = filas.filter(function(x){ return Number.isFinite(x.utilidad); });
+    if(!conIngresos.length){
+      html += '<div class="aviso">' + esc(f.motivo_ingresos
+        || 'EDGAR no trae ingresos trimestrales para esta emisora: la tabla de abajo muestra lo que sí llegó')
+        + '</div>';
+    }
+    if(conIngresos.length || conUtilidad.length){
+      // El máximo sale de las dos series juntas: con la utilidad medida
+      // contra el máximo de ingresos, un trimestre de pérdida grande se salía
+      // igual del recuadro.
+      var maxBarra = Math.max.apply(null, filas
+        .map(function(x){ return Math.max(Math.abs(x.ingresos || 0), Math.abs(x.utilidad || 0)); })
+        .concat([0]));
+      if(maxBarra > 0){
+        html += '<div class="panel"><div class="barras">' + filas.map(function(x){
+          var alto = function(v){
+            return Number.isFinite(v) ? Math.max(1, Math.round(Math.abs(v) / maxBarra * 56)) : 0;
+          };
+          var piezas = '';
+          // Sólo se dibuja la barra del dato que existe. Una barra de 0 px
+          // para un dato ausente se lee como "fue cero".
+          if(Number.isFinite(x.ingresos)) piezas += '<i style="height:' + alto(x.ingresos) + 'px"></i>';
+          if(Number.isFinite(x.utilidad)) piezas += '<i class="u' + (x.utilidad < 0 ? ' neg' : '')
+            + '" style="height:' + alto(x.utilidad) + 'px"></i>';
+          return '<div class="barra" title="' + esc(x.fin + ' · ' + (x.ingresos_form || x.utilidad_form || '')) + '">'
+            + piezas + '<b>' + esc(String(x.fin || '').slice(2, 7)) + '</b></div>';
+        }).join('') + '</div></div>';
+      }
+    }
+    if(f.motivo_conceptos) html += '<div class="aviso">' + esc(f.motivo_conceptos) + '</div>';
     html += '<div class="panel" style="margin-top:6px"><table><thead><tr>'
       + '<th>Trimestre</th><th>Ingresos</th><th>Utilidad</th><th>Margen</th><th class="izq">Filing</th>'
       + '</tr></thead><tbody>' + f.filas.map(function(x){
         return '<tr><td class="izq">' + esc(x.fin) + '</td>'
-          + '<td>' + (x.ingresos == null ? '<span class="falta">—</span>' : fmtUsd(x.ingresos)) + '</td>'
+          + '<td>' + (x.ingresos == null ? '<span class="falta">—</span>' : fmtMonto(x.ingresos)) + '</td>'
           + '<td class="' + (x.utilidad < 0 ? 'neg' : '') + '">'
-            + (x.utilidad == null ? '<span class="falta">—</span>' : fmtUsd(x.utilidad)) + '</td>'
+            + (x.utilidad == null ? '<span class="falta">—</span>' : fmtMonto(x.utilidad)) + '</td>'
           + (x.margen_pct == null
             ? '<td class="falta" title="' + esc(x.margen_motivo || '') + '">—</td>'
             : '<td>' + x.margen_pct.toFixed(1) + '%</td>')
@@ -355,8 +414,8 @@
     var po = a.precio_objetivo || {};
     if(po.disponible){
       html += '<div class="panel"><table><tbody>'
-        + '<tr><td class="izq">Precio objetivo</td><td>bajo ' + fmtUsd(po.bajo)
-        + '</td><td>promedio ' + fmtUsd(po.medio) + '</td><td>alto ' + fmtUsd(po.alto) + '</td>'
+        + '<tr><td class="izq">Precio objetivo</td><td>bajo ' + fmtPrecio(po.bajo)
+        + '</td><td>promedio ' + fmtPrecio(po.medio) + '</td><td>alto ' + fmtPrecio(po.alto) + '</td>'
         + '<td class="f">' + esc(po.fuente) + '</td></tr></tbody></table></div>';
     } else {
       html += '<div class="punteado"><b>Precio objetivo</b><p>' + esc(po.motivo || 'no disponible') + '</p></div>';
@@ -409,7 +468,7 @@
       + (n.neto_usd == null
         ? '<td class="falta" title="' + esc(n.motivo || '') + '">—</td>'
         : '<td class="' + (n.neto_usd >= 0 ? 'pos' : 'neg') + '">'
-          + (n.neto_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(n.neto_usd)) + '</td>')
+          + (n.neto_usd >= 0 ? '+' : '−') + fmtMonto(Math.abs(n.neto_usd)) + '</td>')
       + '<td>' + (n.compras || 0) + ' compra(s) · ' + (n.ventas || 0) + ' venta(s)</td>'
       + '</tr></tbody></table></div>';
     if(!i.ultimas || !i.ultimas.length){
@@ -421,7 +480,7 @@
           return '<tr><td class="izq">' + esc(t.name || '—') + '</td>'
             + '<td class="izq">' + esc(t.type || t.code || '—') + '</td>'
             + '<td>' + (t.shares ? Number(t.shares).toLocaleString('es-MX') : '—') + '</td>'
-            + '<td>' + (t.value ? fmtUsd(t.value) : '—') + '</td>'
+            + '<td>' + (t.value ? fmtMonto(t.value) : '—') + '</td>'
             + '<td>' + esc(t.transactionDate || t.filingDate || '—') + '</td></tr>';
         }).join('') + '</tbody></table></div>';
     }
