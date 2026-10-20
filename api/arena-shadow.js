@@ -387,6 +387,9 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     cache_prefix: cachePrefixReport(agent, [system, shared]),
     lens: cola.lens, tail_tokens: cola.tokens_est,
     tier: tier ? { tier: tier.tier, tools_max: toolsMax } : null,
+    // Qué entró al universo por la puerta en vivo en esta corrida (igual para
+    // los siete). Es lo que contesta "¿IONQ llegó a estar frente a los agentes?".
+    puerta_en_vivo: (buffet && buffet.puerta_en_vivo) || null,
   };
 
   let loop;
@@ -1025,6 +1028,7 @@ export default async function handler(req, res) {
       cost_usd: +costo.toFixed(4),
       board: buffet.board_meta || null,
       universe: (buffet.universe_diagnostics && buffet.universe_diagnostics.base) || null,
+      puerta_en_vivo: buffet.puerta_en_vivo || null,
       agents: results,
       verdict: verdes.length === results.length
         ? `VERDE: los ${verdes.length} produjeron un objetivo que pasa los rieles. Costo de la sombra: $${costo.toFixed(4)}.`
