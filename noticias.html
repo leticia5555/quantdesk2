@@ -33,16 +33,30 @@
   devolviera huecos y que el conteo de la sección no cuadrara con lo que se ve.
   ═══════════════════════════════════════════════════════════════════
 -->
+<!-- ── IBM PLEX (§4 del encargo) ────────────────────────────────────────
+     `display=swap` y la pila del sistema como respaldo en `--sans`/`--mono`:
+     el texto se pinta de inmediato con la fuente del aparato y cambia cuando
+     Plex llega. La meta de la regla 7 es /mercado interactivo en menos de
+     1.5 s en 4G, y una pantalla en blanco esperando una tipografía es
+     exactamente lo que eso prohíbe. Si Google Fonts no responde, la página se
+     ve con la fuente del sistema y no se rompe nada. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
 <style>
+  /* La paleta del §4, los MISMOS tokens que `mercado.html`: las dos pantallas
+     son la misma capa y dos grises distintos se ven como un error. */
   :root{
-    --bg:#0a0a0a; --panel:#111; --linea:#222; --texto:#e8e8e8; --tenue:#888;
+    --bg:#0b0f14; --panel:#0e141b; --linea:#161c24;
+    --texto:#e6edf3; --tenue:#8b98a5; --apagado:#7d8793;
     --es:#00c97d;              /* las fuentes en español, en verde (artboard 9) */
-    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:"IBM Plex Sans Condensed","IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --tap:44px;
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    font-family:var(--sans);
     -webkit-text-size-adjust:100%}
   a{color:inherit;text-decoration:none}
 
@@ -58,9 +72,9 @@
     border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
   .chip.abierto{color:var(--es)}
   #buscador{flex:1 1 100%;min-width:0;display:flex;gap:6px;align-items:center}
-  #q{flex:1;min-width:0;background:#0e0e0e;border:1px solid var(--linea);border-radius:6px;
+  #q{flex:1;min-width:0;background:#0b1118;border:1px solid var(--linea);border-radius:6px;
     color:var(--texto);font-family:var(--mono);font-size:13px;padding:0 10px;min-height:var(--tap)}
-  #q::placeholder{color:#666}
+  #q::placeholder{color:var(--apagado)}
 
   nav,.toggles{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea);
     overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
@@ -76,11 +90,11 @@
     font-family:var(--mono);font-size:13px;cursor:pointer;white-space:nowrap;
     -webkit-tap-highlight-color:transparent}
   nav button[aria-selected="true"],.toggles button[aria-pressed="true"]{
-    background:#1a1a1a;border-color:#3a3a3a;color:var(--texto)}
+    background:#18212b;border-color:#2b3845;color:var(--texto)}
   nav button[disabled]{opacity:.45;cursor:default;border-style:dashed}
   .toggles{gap:14px;align-items:center}
   .grupo{display:flex;gap:6px}
-  .grupo-nom{font-family:var(--mono);font-size:10px;color:#666;align-self:center}
+  .grupo-nom{font-family:var(--mono);font-size:10px;color:var(--apagado);align-self:center}
 
   /* ── CHIPS DE FUENTE ────────────────────────────────────────────── */
   #fuentes{display:flex;flex-wrap:nowrap;gap:6px;padding:8px 16px;overflow-x:auto;
@@ -91,16 +105,16 @@
     font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap}
   .fchip.es{color:var(--es);border-color:#1d4a38}
   .fchip[aria-pressed="true"]{background:#16211c;border-color:#2c6b51;color:var(--texto)}
-  .fchip .pt{width:6px;height:6px;border-radius:50%;background:#2a2a2a;flex:none}
+  .fchip .pt{width:6px;height:6px;border-radius:50%;background:#243040;flex:none}
   .fchip.ok .pt{background:var(--es)}
   .fchip.caida .pt{background:#ff5d5d}
   .fchip.caida{border-style:dashed}
-  .fchip .n{font-variant-numeric:tabular-nums;color:#666}
+  .fchip .n{font-variant-numeric:tabular-nums;color:var(--apagado)}
 
   main{padding:10px 16px 0}
   h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
     letter-spacing:.6px;text-transform:uppercase;margin:14px 0 8px}
-  h2 span{color:#555;font-weight:400;text-transform:none;letter-spacing:0}
+  h2 span{color:var(--apagado);font-weight:400;text-transform:none;letter-spacing:0}
   .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
     border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
 
@@ -116,7 +130,7 @@
   #destacadas::-webkit-scrollbar{display:none}
   .dest{scroll-snap-align:start;background:var(--panel);border:1px solid var(--linea);
     border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:var(--tap)}
-  .dest .foto{aspect-ratio:16/9;width:100%;object-fit:cover;display:block;background:#161616}
+  .dest .foto{aspect-ratio:16/9;width:100%;object-fit:cover;display:block;background:#121a22}
   /* El bloque de color: el nombre de la fuente sobre su propio tono. No es
      decoración — es la declaración de que el feed no trajo foto. */
   .dest .bloque{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
@@ -133,15 +147,15 @@
   .fila .tit{font-size:13px;line-height:1.35}
   .fila .meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:3px;
     display:flex;flex-wrap:wrap;gap:5px;align-items:center}
-  .fila .meta b{color:#aaa;font-weight:600}
+  .fila .meta b{color:var(--tenue);font-weight:600}
   .fila .meta .es{color:var(--es)}
   .chip-tk{min-height:28px;display:inline-flex;align-items:center;padding:0 7px;
     border:1px solid var(--linea);border-radius:4px;font-family:var(--mono);font-size:10px;
-    color:#bbb;cursor:pointer;-webkit-tap-highlight-color:transparent}
+    color:var(--tenue);cursor:pointer;-webkit-tap-highlight-color:transparent}
   .chip-tk[aria-pressed="true"]{background:#16211c;border-color:#2c6b51;color:var(--texto)}
-  .grupo-fuente{padding:7px 11px;background:#141414;border-bottom:1px solid #1a1a1a;
-    font-family:var(--mono);font-size:11px;color:#aaa;display:flex;gap:8px;align-items:center}
-  .grupo-fuente .n{color:#666;margin-left:auto}
+  .grupo-fuente{padding:7px 11px;background:#10171f;border-bottom:1px solid #1a1a1a;
+    font-family:var(--mono);font-size:11px;color:var(--tenue);display:flex;gap:8px;align-items:center}
+  .grupo-fuente .n{color:var(--apagado);margin-left:auto}
   #mas-medios{width:100%;min-height:var(--tap);margin-top:8px;background:transparent;
     border:1px solid var(--linea);border-radius:8px;color:var(--tenue);
     font-family:var(--mono);font-size:12px;cursor:pointer}
@@ -162,9 +176,9 @@
 
   .aviso{font-family:var(--mono);font-size:11px;color:#c9a227;line-height:1.5;
     border:1px dashed #3a3222;border-radius:8px;padding:9px 11px;margin:10px 0}
-  footer{font-family:var(--mono);font-size:10px;color:#666;line-height:1.6;
+  footer{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.6;
     padding:14px 16px calc(18px + env(safe-area-inset-bottom));border-top:1px solid var(--linea);margin-top:16px}
-  footer a{color:#888;text-decoration:underline}
+  footer a{color:var(--tenue);text-decoration:underline}
 
   /* ── ESCRITORIO 1440×1000 SIN SCROLL ────────────────────────────── */
   @media (min-width:1000px){

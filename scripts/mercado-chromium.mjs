@@ -464,7 +464,17 @@ try {
   const p = await movil.newPage();
   const errores = [];
   p.on('pageerror', (e) => errores.push(String(e)));
-  p.on('console', (m) => { if (m.type() === 'error') errores.push(m.text()); });
+  // Google Fonts no se alcanza desde este sandbox (el proxy no trae su CA).
+  // No es un error de la página: la pila de `--sans`/`--mono` declara una
+  // fuente del sistema detrás de IBM Plex justamente para esto, y abajo hay
+  // una comprobación que lo EXIGE en vez de taparlo.
+  const esFuente = (t, u) => /fonts\.(googleapis|gstatic)\.com/.test(u || '')
+    || /ERR_CERT_AUTHORITY_INVALID|fonts\.(googleapis|gstatic)/.test(t || '');
+  p.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    if (esFuente(m.text(), (m.location && m.location().url) || '')) return;
+    errores.push(m.text());
+  });
 
   await p.goto(`${BASE}/mercado`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.cuadro');
@@ -504,12 +514,26 @@ try {
     const sel = ['nav button', '.toggle button', '#cerrar'];
     const malos = [];
     for (const s of sel) for (const el of document.querySelectorAll(s)) {
+      // Lo que NO se pinta en el celular no se mide: R3(c) deja el buscador,
+      // las pestañas de Cripto/ETFs y el toggle de agrupación sólo en
+      // escritorio —el encargo los lista ahí— y un control con caja 0×0 no es
+      // un control chico, es un control que no está.
+      if (el.offsetParent === null) continue;
       const r = el.getBoundingClientRect();
       if (r.width < 44 || r.height < 44) malos.push(`${s}[${el.textContent.trim()}] ${Math.round(r.width)}×${Math.round(r.height)}`);
     }
     return malos;
   });
-  chequeo('todo control interactivo mide ≥44 px', taps.length === 0, taps.join(', '));
+  chequeo('todo control interactivo VISIBLE mide ≥44 px', taps.length === 0, taps.join(', '));
+
+  // R3(c): lo de escritorio NO aparece en el teléfono. El encargo lo lista
+  // bajo la línea del escritorio, y en 390 px esas piezas le quitaban ~100 px
+  // al mapa — que tiene que caber en UNA pantalla (decisión del 2026-10-02).
+  const soloEscritorio = await p.evaluate(() =>
+    ['buscador', 'tab-cripto', 'tab-etfs', 'agrupar']
+      .map((id) => ({ id, visible: document.getElementById(id).offsetParent !== null })));
+  chequeo('el buscador, Cripto/ETFs y el toggle de agrupar NO salen a 390 px',
+    soloEscritorio.every((x) => !x.visible), JSON.stringify(soloEscritorio));
 
   const nSectores = await p.locator('.cuadro').count();
   chequeo('al abrir se ven EMPRESAS, no sólo sectores', nSectores >= 20, `${nSectores} cuadros`);
@@ -1694,16 +1718,23 @@ try {
   await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.cuadro');
 
-  // EL MAPA sigue cabiendo en una pantalla; lo que ahora se recorre son las
-  // TABLAS de R3, que van debajo a propósito. La regla del encargo es que el
-  // mapa quepa sin scroll, no que la página entera mida una pantalla.
+  // ── R3(c): EN ESCRITORIO YA NO HAY "DEBAJO" ────────────────────────
+  // Hasta R3 las tablas iban bajo el mapa y la página se recorría; el
+  // artboard 5 las manda a las columnas 1 y 3 y pide la pantalla ENTERA sin
+  // scroll. La comprobación vieja medía `.pantalla`, que con
+  // `display:contents` ya no tiene caja — y daba 0. Se mide lo que de verdad
+  // importa ahora: que NADA se recorra.
   const escD = await d.evaluate(() => ({
-    pantalla: Math.round(document.querySelector('.pantalla').getBoundingClientRect().height),
-    ventana: window.innerHeight,
-    horizontal: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    scrollV: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
+    scrollH: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    cols: getComputedStyle(document.querySelector('body')).gridTemplateColumns,
+    mapa: Math.round(document.querySelector('main').getBoundingClientRect().height),
   }));
-  chequeo('escritorio: el mapa cabe en 1440×900 sin scroll, y las tablas van debajo',
-    escD.pantalla === escD.ventana && !escD.horizontal, JSON.stringify(escD));
+  chequeo('escritorio: 1440×900 sin scroll, ni vertical ni horizontal',
+    !escD.scrollV && !escD.scrollH, JSON.stringify(escD));
+  chequeo('y las tres columnas son las del artboard 5: 292 / resto / 336',
+    /^292px .* 336px$/.test(escD.cols), escD.cols);
+  chequeo('con el mapa quedándose con lo que sobra de alto', escD.mapa > 300, String(escD.mapa));
 
   // ── EL GRIS ES DEL TAMAÑO, NO DEL NÚMERO (con sitio para verlo) ────
   // En escritorio la gris sí tiene espacio, así que acá la regla se mide de
@@ -1770,6 +1801,230 @@ try {
   });
   chequeo('en escritorio la hoja es un panel lateral, pegado al borde y DENTRO de la pantalla',
     panel.ancho > 300 && panel.der === panel.vp && panel.izq > 0, JSON.stringify(panel));
+
+  // ══════════════════════════════════════════════════════════════════
+  // R3(c): LO QUE EL ARTBOARD 5 AGREGA EN ESCRITORIO
+  // ══════════════════════════════════════════════════════════════════
+  console.log('\n── R3(c): artboard 5 a 1440 × 1000 ──');
+  const mil = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await mil.addInitScript(RELOJ_FIJO);
+  const w = await mil.newPage();
+  const erroresW = [];
+  w.on('pageerror', (e) => erroresW.push(String(e)));
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  await w.waitForSelector('#tiras .t, #tiras .vacio');
+
+  chequeo('1440×1000 sin errores de consola', erroresW.length === 0, erroresW.slice(0, 2).join(' | '));
+
+  const cajaMil = await w.evaluate(() => ({
+    scrollV: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
+    scrollH: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    izq: Math.round(document.getElementById('p-tablas').getBoundingClientRect().width),
+    der: Math.round(document.getElementById('p-lado').getBoundingClientRect().width),
+    pie: (() => { const r = document.getElementById('pie').getBoundingClientRect();
+      return r.bottom <= window.innerHeight + 1 && r.top >= 0; })(),
+  }));
+  chequeo('1440×1000 SIN scroll (regla 8)', !cajaMil.scrollV && !cajaMil.scrollH, JSON.stringify(caja));
+  chequeo('la columna de tablas mide 292 px y la lateral 336',
+    cajaMil.izq === 292 && cajaMil.der === 336, `${cajaMil.izq} / ${cajaMil.der}`);
+  chequeo('y el pie se ve sin recorrer', cajaMil.pie);
+
+  // ── LA TIPOGRAFÍA DEL §4, CON RESPALDO ──────────────────────────────
+  const tipo = await w.evaluate(() => ({
+    sans: getComputedStyle(document.body).fontFamily,
+    mono: getComputedStyle(document.querySelector('.chip')).fontFamily,
+  }));
+  chequeo('la pila declara IBM Plex primero y una del sistema detrás',
+    /IBM Plex Sans Condensed/.test(tipo.sans) && /(-apple-system|sans-serif)/.test(tipo.sans)
+    && /IBM Plex Mono/.test(tipo.mono) && /(ui-monospace|monospace)/.test(tipo.mono),
+    tipo.sans.slice(0, 60));
+
+  // ── LA PALETA DEL §4 ────────────────────────────────────────────────
+  const paleta = await w.evaluate(() => {
+    const v = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    return { bg: v('--bg'), panel: v('--panel'), linea: v('--linea'),
+             fondoReal: getComputedStyle(document.body).backgroundColor };
+  });
+  chequeo('la paleta es la del §4: #0b0f14 / #0e141b / #161c24',
+    paleta.bg === '#0b0f14' && paleta.panel === '#0e141b' && paleta.linea === '#161c24',
+    JSON.stringify(paleta));
+
+  // ── CONTRASTE ≥ 4.5 EN EL TEXTO DE LA INTERFAZ ──────────────────────
+  // EL ALCANCE IMPORTA: este piso es para el CROMO —paneles, tablas,
+  // cabeceras, pie, chips—, no para el texto sobre los cuadros del mapa. La
+  // escala de color del mapa es la del mockup y ahí el piso declarado sigue
+  // siendo 2.5 (blanco sobre el verde claro da 2.71); eso es decisión tuya y
+  // se mide en su propia comprobación, más arriba.
+  const contrasteUi = await w.evaluate(() => {
+    const lum = (c) => {
+      const m = c.match(/\d+(\.\d+)?/g).map(Number);
+      const f = m.slice(0, 3).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+      return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+    };
+    const ratio = (a, b) => { const la = lum(a), lb = lum(b);
+      const hi = Math.max(la, lb), lo = Math.min(la, lb); return (hi + 0.05) / (lo + 0.05); };
+    // El fondo EFECTIVO: se sube por los padres hasta encontrar uno opaco.
+    const fondoDe = (el) => {
+      let n = el;
+      while (n && n !== document.documentElement) {
+        const b = getComputedStyle(n).backgroundColor;
+        if (b && !/rgba\(0, 0, 0, 0\)|transparent/.test(b)) return b;
+        n = n.parentElement;
+      }
+      return getComputedStyle(document.body).backgroundColor;
+    };
+    const malos = [];
+    const mirados = [];
+    for (const el of document.querySelectorAll(
+      'header *, nav button, .toggle button, #p-tablas *, #p-lado *, footer, #aviso, #tiras .rot, #tiras .vacio')) {
+      // Sólo nodos con texto PROPIO y visibles.
+      const propio = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+      if (!propio) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || !el.getClientRects().length) continue;
+      const r = Math.round(ratio(cs.color, fondoDe(el)) * 100) / 100;
+      const donde = el.tagName.toLowerCase() + (el.className ? '.' + String(el.className).split(' ')[0] : '');
+      mirados.push({ donde, r });
+      if (r < 4.5) malos.push({ donde, r, color: cs.color, texto: el.textContent.trim().slice(0, 24) });
+    }
+    return { malos, n: mirados.length, peor: mirados.reduce((a, b) => (b.r < a.r ? b : a), { r: 99 }) };
+  });
+  chequeo(`ningún texto de la interfaz baja de 4.5 de contraste (${contrasteUi.n} nodos)`,
+    contrasteUi.malos.length === 0,
+    contrasteUi.malos.slice(0, 3).map((m) => `${m.donde} ${m.r} "${m.texto}"`).join(' · '));
+  console.log(`     ↳ el peor de la interfaz: ${contrasteUi.peor.r} en ${contrasteUi.peor.donde}`);
+
+  // ── LAS DOS TIRAS ───────────────────────────────────────────────────
+  const tiras = await w.evaluate(() => ({
+    ipc: [...document.querySelectorAll('#tira-ipc .t')].map((t) => t.dataset.sym),
+    ipcRot: (document.querySelector('#tira-ipc .rot') || {}).textContent || '',
+    idx: [...document.querySelectorAll('#tira-idx .t')].map((t) => ({
+      sym: t.dataset.sym,
+      gris: !!t.querySelector('.qd-pct') && t.querySelector('.qd-pct').textContent.startsWith('—'),
+      titulo: t.getAttribute('title'),
+    })),
+    idxRot: (document.querySelector('#tira-idx .rot') || {}).textContent || '',
+  }));
+  chequeo('la tira del IPC trae emisoras de México y dice que es el IPC',
+    tiras.ipc.length > 0 && /IPC/.test(tiras.ipcRot), `${tiras.ipc.length}: ${tiras.ipc.slice(0, 4).join(',')}`);
+  chequeo('la tira de índices trae los NUEVE de R4 y dice que es en pesos',
+    tiras.idx.length === 9 && /pesos/.test(tiras.idxRot),
+    `${tiras.idx.length} · ${tiras.idxRot}`);
+  // El noveno (^DJI) no está en el catálogo de Mundo: va GRIS y con su causa,
+  // no omitido. Ocho cuadritos llamados "nueve índices" sería mentir.
+  const dji = tiras.idx.find((t) => t.sym === '^DJI');
+  chequeo('^DJI, que no está en el catálogo, va gris y DICE por qué',
+    dji && dji.gris && /catálogo/.test(dji.titulo || ''), JSON.stringify(dji));
+  chequeo('y los demás no salen todos grises: la tira mide algo',
+    tiras.idx.filter((t) => !t.gris).length >= 4,
+    JSON.stringify(tiras.idx.map((t) => t.sym + (t.gris ? '·gris' : ''))));
+
+  // ── EL MAPA NO QUEDA CORTADO POR LAS TIRAS ──────────────────────────
+  // Las tiras se piden DESPUÉS del mapa y estrenan una fila de la rejilla:
+  // <main> se encoge y el treemap, que se dibuja con píxeles medidos, quedaba
+  // partido por la mitad en la última hilera. Se vio en la captura y ninguna
+  // comprobación lo miraba. Lo arregla un ResizeObserver; esto lo vigila.
+  const recorte = await w.evaluate(() => {
+    const l = document.getElementById('lienzo').getBoundingClientRect();
+    const cs = [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null);
+    const fuera = cs.filter((c) => c.getBoundingClientRect().bottom > l.bottom + 1);
+    const masBajo = cs.reduce((a, c) => Math.max(a, c.getBoundingClientRect().bottom), 0);
+    return { fuera: fuera.length, sobra: Math.round(l.bottom - masBajo), alto: Math.round(l.height) };
+  });
+  chequeo('ningún cuadro queda cortado por el borde de abajo del mapa',
+    recorte.fuera === 0, JSON.stringify(recorte));
+  chequeo('y el mapa llena su caja: no deja una franja muerta abajo',
+    recorte.sobra >= 0 && recorte.sobra <= 4, JSON.stringify(recorte));
+
+  // Tocar un cuadrito lleva a su hoja.
+  await w.click('#tira-ipc .t');
+  await w.waitForFunction(() => location.search.includes('mapa=mx') && location.search.includes('symbol='),
+    null, { timeout: 3000 });
+  chequeo('tocar un cuadrito del IPC abre su hoja en el mapa de México',
+    (await w.evaluate(() => location.search)).includes('mapa=mx'),
+    await w.evaluate(() => location.search));
+
+  // ── SECTOR / SIN AGRUPAR ────────────────────────────────────────────
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  const conSector = await w.evaluate(() => ({
+    // `.cabecera` (no `.cab`): es la banda con el nombre del sector. Los
+    // nodos se RECICLAN, así que los que sobran siguen en el DOM escondidos —
+    // hay que contar los visibles, no los existentes.
+    cabeceras: [...document.querySelectorAll('.cabecera')].filter((e) => e.offsetParent !== null).length,
+    cuadros: [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null).length,
+  }));
+  await w.click('#agrupar button[data-agrupar="plano"]');
+  await w.waitForFunction(() => location.search.includes('agrupar=plano'), null, { timeout: 2000 });
+  await w.waitForTimeout(150);
+  const sinSector = await w.evaluate(() => ({
+    cabeceras: [...document.querySelectorAll('.cabecera')].filter((e) => e.offsetParent !== null).length,
+    cuadros: [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null).length,
+  }));
+  chequeo('"Sin agrupar" quita las cabeceras de sector',
+    conSector.cabeceras > 0 && sinSector.cabeceras === 0,
+    `${conSector.cabeceras} → ${sinSector.cabeceras}`);
+  chequeo('y NO cambia qué emisoras entran: las mismas, repartidas distinto',
+    sinSector.cuadros === conSector.cuadros, `${conSector.cuadros} → ${sinSector.cuadros}`);
+  chequeo('la agrupación queda en la URL (regla 9)',
+    (await w.evaluate(() => location.search)).includes('agrupar=plano'));
+  // Y una URL con `agrupar=plano` abre sin agrupar del otro lado.
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M&agrupar=plano`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  chequeo('una URL pegada con agrupar=plano abre sin agrupar',
+    (await w.evaluate(() => [...document.querySelectorAll('.cabecera')]
+      .filter((e) => e.offsetParent !== null).length)) === 0);
+
+  // ── EL BUSCADOR DE TICKER ───────────────────────────────────────────
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  // El símbolo de un cuadro vive en `aria-label` (y en `qdItem.key`), no en
+  // un `data-sym`: los cuadros se reciclan y el símbolo se repone en cada
+  // pintado junto con la etiqueta accesible.
+  const primerSym = await w.evaluate(() => {
+    const c = [...document.querySelectorAll('.cuadro')]
+      .find((e) => e.offsetParent !== null && e.getAttribute('aria-label'));
+    return c ? c.getAttribute('aria-label') : null;
+  });
+  chequeo('hay un cuadro con símbolo para buscar', !!primerSym, String(primerSym));
+  await w.fill('#qtk', String(primerSym).slice(0, 2));
+  await w.waitForSelector('#sugerencias .sug', { timeout: 2000 });
+  const sugs = await w.evaluate(() => [...document.querySelectorAll('#sugerencias .sug')].map((o) => o.dataset.sym));
+  chequeo('el buscador sugiere desde el mapa que ya viajó',
+    sugs.length > 0 && sugs.every((x) => !!x), JSON.stringify(sugs.slice(0, 5)));
+  chequeo('y ofrece SÓLO lo que esta pantalla sabe dibujar',
+    await w.evaluate((lista) => {
+      const enMapa = new Set([...document.querySelectorAll('.cuadro')]
+        .map((e) => e.getAttribute('aria-label')).filter(Boolean));
+      return lista.every((x) => enMapa.has(x));
+    }, sugs), JSON.stringify(sugs.slice(0, 5)));
+  await w.click('#sugerencias .sug');
+  await w.waitForFunction(() => location.search.includes('symbol='), null, { timeout: 2000 });
+  chequeo('elegir una sugerencia abre su hoja y lo escribe en la URL',
+    (await w.evaluate(() => document.getElementById('hoja').getAttribute('data-abierta'))) === '1',
+    await w.evaluate(() => location.search));
+  // Lo que NO está en este mapa se DICE, no sale como "sin resultados".
+  await w.fill('#qtk', 'ZZZZQ');
+  await w.waitForSelector('#sugerencias .vacio', { timeout: 2000 });
+  const vacio = await w.textContent('#sugerencias .vacio');
+  chequeo('un ticker que no está en el mapa lo dice, con el mapa en el que mira',
+    /no está en el mapa/.test(vacio) && /EE\.UU\./.test(vacio), vacio.slice(0, 90));
+
+  // ── CRIPTO Y ETFs ───────────────────────────────────────────────────
+  const pestanas = await w.evaluate(() => ['cripto', 'etfs'].map((k) => {
+    const b = document.getElementById('tab-' + k);
+    return { k, off: b.disabled, txt: b.textContent, titulo: b.getAttribute('title') };
+  }));
+  chequeo('Cripto y ETFs van deshabilitadas, con "pronto" y su motivo',
+    pestanas.every((x) => x.off && /pronto/.test(x.txt) && /pronto/.test(x.titulo || '')),
+    JSON.stringify(pestanas.map((x) => x.k + ':' + x.off)));
+
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('#tiras .t, #tiras .vacio');
+  await w.screenshot({ path: join(OUT, 'mercado-1440x1000.png') });
+  console.log(`  → ${join(OUT, 'mercado-1440x1000.png')}`);
+  await mil.close();
 
   await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.cuadro');

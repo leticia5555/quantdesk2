@@ -34,15 +34,43 @@
   los mismos y el "+N más" global también.
   ═══════════════════════════════════════════════════════════════════
 -->
+<!-- ── IBM PLEX (§4 del encargo) ────────────────────────────────────────
+     `display=swap` y la pila del sistema como respaldo en `--sans`/`--mono`:
+     el texto se pinta de inmediato con la fuente del aparato y cambia cuando
+     Plex llega. La meta de la regla 7 es /mercado interactivo en menos de
+     1.5 s en 4G, y una pantalla en blanco esperando una tipografía es
+     exactamente lo que eso prohíbe. Si Google Fonts no responde, la página se
+     ve con la fuente del sistema y no se rompe nada. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
 <style>
+  /* ── LA PALETA DEL §4 DEL ENCARGO ──────────────────────────────────
+     Fondo #0b0f14, paneles #0e141b, bordes #161c24, IBM Plex Sans Condensed
+     + IBM Plex Mono. Decisión ya tomada en el encargo; acá sólo se aplica.
+
+     LOS COLORES DE TEXTO SON TOKENS Y NO LITERALES porque el piso de
+     contraste (≥4.5, AA) se prueba contra ellos: con los grises repartidos
+     por el archivo, "subir el gris del pie" era buscar y reemplazar, y lo
+     que no se encontraba se quedaba abajo del piso sin que nada avisara.
+     Los dos que no llegaban —#6b7785 (4.06) y #555 (2.48)— se reemplazaron
+     por `--apagado`, que es el gris más tenue que SÍ pasa AA sobre el panel.
+
+     EL MAPA ES OTRA COSA, a propósito: la escala de color de los cuadros es
+     la del mockup y ahí el piso declarado es 2.5, no 4.5 (blanco sobre el
+     verde claro da 2.71). Esa es tu decisión, no un efecto de esta paleta, y
+     la comprobación de Chromium la mide aparte. */
   :root{
-    --bg:#0a0a0a; --panel:#111; --linea:#222; --texto:#e8e8e8; --tenue:#888;
-    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --bg:#0b0f14; --panel:#0e141b; --linea:#161c24;
+    --texto:#e6edf3; --tenue:#8b98a5; --apagado:#7d8793;
+    --verde:#00c97d; --rojo:#ff5d5d;
+    --sans:"IBM Plex Sans Condensed","IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --tap:44px;
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    font-family:var(--sans);
     -webkit-text-size-adjust:100%}
   /* La página vuelve a recorrerse: debajo del mapa están las tablas de R3. El
      MAPA no se estira — eso vive en `.pantalla`, que mide una pantalla exacta. */
@@ -67,7 +95,7 @@
     background:transparent;border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
     font-family:var(--mono);font-size:13px;cursor:pointer;-webkit-tap-highlight-color:transparent}
   nav button[aria-selected="true"],.toggle button[aria-pressed="true"]{
-    background:#1a1a1a;border-color:#3a3a3a;color:var(--texto)}
+    background:#18212b;border-color:#2b3845;color:var(--texto)}
   main{flex:1;position:relative;margin:8px 16px;min-height:0}
   /* overflow:hidden NO es cosmético: sin él, un cuadro calculado con una
      altura vieja se dibuja encima del pie y tapa la fuente del dato. */
@@ -110,7 +138,7 @@
   .tabla .nom{flex:1 1 auto;font-size:12px;color:var(--tenue);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .tabla .val{flex:0 0 auto;font:600 12px var(--mono);text-align:right;white-space:nowrap}
-  @media (pointer:fine){ .tabla .fila:hover{background:#171717} }
+  @media (pointer:fine){ .tabla .fila:hover{background:#141c25} }
   .vacio{padding:12px 10px;font-size:12px;color:var(--tenue);line-height:1.5}
   /* ── R3(b): "lo de hoy" ─────────────────────────────────────────────
      Titular + hora + fuente + link, y nada más. El cuerpo de la nota no se
@@ -128,10 +156,10 @@
      mide como todo lo que se toca aunque el texto sea corto. */
   .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
   .chip-tk{display:inline-flex;align-items:center;min-height:28px;padding:0 8px;
-    border:1px solid var(--linea);border-radius:999px;background:#161616;
+    border:1px solid var(--linea);border-radius:999px;background:#121a22;
     font-family:var(--mono);font-size:10px;color:var(--texto);cursor:pointer;
     -webkit-tap-highlight-color:transparent}
-  @media (pointer:fine){ .nota-fila:hover{background:#171717} .chip-tk:hover{border-color:#3a3a3a} }
+  @media (pointer:fine){ .nota-fila:hover{background:#141c25} .chip-tk:hover{border-color:#2b3845} }
   /* "Esta semana" y Arena: listas de dos líneas, no tablas de números. */
   .evento{display:flex;gap:10px;align-items:baseline;min-height:36px;
     padding:7px 10px;border-top:1px solid var(--linea)}
@@ -141,13 +169,13 @@
   .evento .que b{font-weight:600}
   .evento .que small{display:block;color:var(--tenue);font-size:11px}
   .evento .cuando{flex:0 0 auto;font:11px var(--mono);color:var(--tenue)}
-  .evento.reporte .dia{color:#6b7785}
+  .evento.reporte .dia{color:var(--apagado)}
   /* Volver a 1×. Flota sobre el mapa porque pertenece al mapa, y mide 44px
      como todo lo que se toca (regla 8). Sólo aparece cuando hay a qué
      volver: un botón que no hace nada es ruido. */
   #reset{position:absolute;right:8px;bottom:8px;z-index:5;display:none;
     min-width:var(--tap);min-height:var(--tap);background:rgba(20,20,20,.88);
-    border:1px solid #3a3a3a;border-radius:8px;color:var(--texto);
+    border:1px solid #2b3845;border-radius:8px;color:var(--texto);
     font-size:18px;line-height:1;cursor:pointer;-webkit-tap-highlight-color:transparent}
   main[data-zoom="1"] #reset{display:block}
   /* ── MUNDO: REJILLA, NO TREEMAP (artboard 4) ─────────────────────────
@@ -170,10 +198,10 @@
     padding:12px 0 6px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;
     color:#9aa5b1;font-weight:600}
   #mundo .reg span{font-size:10px;letter-spacing:.04em;text-transform:none;
-    color:#6b7785;font-weight:400;text-align:right}
+    color:var(--apagado);font-weight:400;text-align:right}
   #mundo .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}
   .c{box-sizing:border-box;height:78px;display:flex;flex-direction:column;
-    justify-content:space-between;padding:8px 10px;color:#fff;border:1px solid #0a0a0a;
+    justify-content:space-between;padding:8px 10px;color:#fff;border:1px solid #0b0f14;
     position:relative;overflow:hidden;cursor:pointer;-webkit-tap-highlight-color:transparent}
   .c .n{font-size:12px;font-weight:600;line-height:1.1}
   .c .r{font-size:10px;opacity:.85}
@@ -190,10 +218,10 @@
   .c .v .qd-pct, .c .v .qd-pct-per, .c .v .qd-pct *{color:#fff !important}
   .c .v .qd-pct{text-shadow:0 1px 2px rgba(0,0,0,.6)}
   .c .l{font-family:var(--mono);font-size:10px;opacity:.85}
-  .c.punteado{border-style:dashed;border-color:#555}
+  .c.punteado{border-style:dashed;border-color:#3a4652}
   @media (pointer:fine){ .c:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
   #mundo .nota{padding:2px 0 4px;font-size:10px;color:#f59e0b}
-  .cuadro{position:absolute;overflow:hidden;border:1px solid #0a0a0a;border-radius:2px;
+  .cuadro{position:absolute;overflow:hidden;border:1px solid #0b0f14;border-radius:2px;
     display:flex;flex-direction:column;justify-content:center;align-items:center;
     cursor:pointer;-webkit-tap-highlight-color:transparent;padding:2px}
   .cuadro .sym{font-family:var(--mono);font-weight:600;line-height:1.05;
@@ -201,7 +229,7 @@
   .cuadro .val{font-family:var(--mono);line-height:1.05;color:rgba(255,255,255,.92)}
   /* La "ficha" de la hoja: iniciales en mono en vez de logo. Ver abrirHoja. */
   .ficha{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-  .iniciales{flex:0 0 auto;width:44px;height:44px;border-radius:6px;background:#1f1f1f;border:1px solid #333;
+  .iniciales{flex:0 0 auto;width:44px;height:44px;border-radius:6px;background:#1b242e;border:1px solid #333;
     display:flex;align-items:center;justify-content:center;font:600 13px var(--mono);color:#ddd;letter-spacing:.02em}
   .ficha h2{margin:0}
   /* Aviso de sistema: ámbar, porque no es un error rojo ni un dato gris. */
@@ -210,14 +238,14 @@
   .cuadro.punteado{border:1px dashed #555}
   /* La cabecera de sector del artboard 1: 14 px, tocable, y abre el sector. */
   .cabecera{position:absolute;display:flex;align-items:center;padding:0 6px;
-    background:#141414;border:1px solid #0a0a0a;color:#cfcfcf;
+    background:#10171f;border:1px solid #0b0f14;color:#cfcfcf;
     font-family:var(--mono);font-size:11px;letter-spacing:.3px;
     cursor:pointer;overflow:hidden;white-space:nowrap;-webkit-tap-highlight-color:transparent}
   /* La ruta vive en su propia franja. Flotando sobre el lienzo tapaba el
      cuadro de arriba a la izquierda, que además es el más grande del sector. */
   #ruta{display:none;padding:0 16px 8px}
   #ruta[data-visible="1"]{display:block}
-  .volver{min-height:var(--tap);padding:0 14px;background:#151515;
+  .volver{min-height:var(--tap);padding:0 14px;background:#111820;
     border:1px solid var(--linea);border-radius:6px;
     color:var(--texto);font-family:var(--mono);font-size:13px;cursor:pointer}
   #mas{padding:0 16px 6px;font-family:var(--mono);font-size:11px;color:var(--tenue)}
@@ -236,14 +264,69 @@
   .hoja dl{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;margin:0;font-size:13px}
   .hoja dt{color:var(--tenue);font-family:var(--mono);font-size:11px}
   .hoja dd{margin:0;font-family:var(--mono)}
-  .hoja .motivo{margin-top:10px;padding:8px 10px;border-left:2px solid #555;background:#161616;
+  .hoja .motivo{margin-top:10px;padding:8px 10px;border-left:2px solid #555;background:#121a22;
     color:#ccc;font-size:12px;line-height:1.45}
   .cerrar{position:absolute;right:10px;top:10px;min-height:var(--tap);min-width:var(--tap);
     background:transparent;border:0;color:var(--tenue);font-size:22px;cursor:pointer}
-  #tip{position:fixed;z-index:20;display:none;pointer-events:none;background:#161616;
+  #tip{position:fixed;z-index:20;display:none;pointer-events:none;background:#121a22;
     border:1px solid var(--linea);border-radius:6px;padding:6px 9px;font-family:var(--mono);font-size:11px}
   /* Hover SÓLO donde hay puntero fino. En táctil, :hover se queda pegado. */
   @media (pointer:fine){ .cuadro:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
+  /* ── R3(c): LAS PIEZAS NUEVAS SON DE ESCRITORIO ────────────────────
+     El encargo las lista bajo la línea de escritorio del artboard 5:
+     "Desktop 1440×1000 sin scroll: 3 columnas … Header con buscador de
+     ticker, tabs Cripto/ETFs (vacíos con 'pronto') y toggle Sector / Sin
+     agrupar". En el celular salen por default y la captura a 390 px enseñó
+     por qué importa: las dos pestañas nuevas y el tercer toggle le quitaban
+     ~100 px al mapa, y el mapa en una pantalla es la decisión del 2026-10-02.
+
+     Así que debajo de 1200 px no se pintan. No es que "no quepan": es que
+     ahí no van. La pantalla del teléfono queda exactamente como estaba. */
+  #buscador,.ir-noticias,#tab-cripto,#tab-etfs,#agrupar{display:none}
+  @media (min-width:1200px){
+    #buscador{display:block}
+    .ir-noticias{display:inline-block}
+    #tab-cripto,#tab-etfs{display:block}
+    #agrupar{display:flex}
+    #agrupar[hidden]{display:none}
+  }
+
+  /* ── R3(c): LAS PIEZAS NUEVAS DEL ARTBOARD 5 ──────────────────────── */
+  #buscador{position:relative;margin-left:auto}
+  #qtk{background:#0b1118;border:1px solid var(--linea);border-radius:6px;color:var(--texto);
+    font-family:var(--mono);font-size:13px;padding:0 10px;min-height:36px;width:150px}
+  #qtk::placeholder{color:var(--apagado)}
+  #sugerencias{position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:230px;
+    max-height:280px;overflow-y:auto;background:var(--panel);border:1px solid var(--linea);
+    border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6)}
+  #sugerencias[hidden]{display:none}
+  #sugerencias .sug{display:flex;align-items:center;gap:8px;min-height:var(--tap);
+    padding:0 10px;border-top:1px solid var(--linea);cursor:pointer}
+  #sugerencias .sug:first-child{border-top:0}
+  #sugerencias .sug[aria-selected="true"]{background:#141c25}
+  #sugerencias .sug .tk{font:600 12px var(--mono);min-width:56px}
+  #sugerencias .sug .nom{font-size:12px;color:var(--tenue);overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  #sugerencias .vacio{padding:10px;font:11px var(--mono);color:var(--tenue);line-height:1.5}
+  .ir-noticias{font-family:var(--mono);font-size:11px;color:var(--tenue);text-decoration:none;
+    border:1px solid var(--linea);border-radius:6px;padding:7px 9px;white-space:nowrap}
+
+  /* LAS TIRAS. Alto fijo y chico: son contexto bajo el mapa, no un segundo
+     mapa. Cada cuadrito es tocable igual que uno del mapa. */
+  #tiras{padding:0 16px}
+  #tiras[hidden]{display:none}
+  .tira{display:flex;gap:2px;align-items:stretch;overflow-x:auto;scrollbar-width:none;
+    margin-top:6px}
+  .tira::-webkit-scrollbar{display:none}
+  .tira .rot{flex:0 0 auto;align-self:center;font:600 9px var(--mono);color:var(--tenue);
+    letter-spacing:.06em;text-transform:uppercase;padding-right:6px;white-space:nowrap}
+  .tira .t{flex:0 0 auto;min-width:54px;height:34px;border-radius:3px;padding:3px 5px;
+    display:flex;flex-direction:column;justify-content:center;cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .tira .t b{font:600 10px var(--mono);color:#fff;line-height:1.1}
+  .tira .t span{font:10px var(--mono);color:#fff;opacity:.92;line-height:1.1}
+  .tira .vacio{font:10px var(--mono);color:var(--tenue);line-height:1.5;padding:4px 0}
+
   @media (min-width:900px){
     header,nav,.toggle,#mas,footer{padding-left:24px;padding-right:24px}
     nav,.toggle{justify-content:flex-start}
@@ -252,6 +335,63 @@
     .hoja{left:auto;right:0;top:0;bottom:0;width:380px;border-radius:0;border-left:1px solid var(--linea);
       border-top:0;max-height:none;transform:translateX(102%)}
     .hoja[data-abierta="1"]{transform:translateX(0)}
+  }
+
+  /* ── R3(c): ESCRITORIO 1440×1000 SIN SCROLL, TRES COLUMNAS ──────────
+     El artboard 5 manda 292 / 748 / 336. La del medio va en `minmax(0,1fr)`
+     y no en 748 px fijos: a 1440 da 748 con los paddings, y en una pantalla
+     más ancha el mapa crece en vez de dejar una franja muerta. Las laterales
+     sí son fijas, porque son listas de una línea.
+
+     `display:contents` en `.pantalla` y en `#paneles` es lo que hace que sus
+     hijos sean celdas de ESTA rejilla sin duplicar el HTML: la misma página
+     se apila en el celular y se reparte en escritorio.
+
+     SIN SCROLL DE PÁGINA (regla 8): el alto es `100dvh` y lo que sobra se lo
+     queda la fila del medio; cada columna lateral se recorre por dentro. No
+     hay ninguna resta de píxeles adivinada — la cuenta la hace la rejilla. */
+  @media (min-width:1200px){
+    /* SEIS FILAS, y las tiras tienen la suya. La primera versión las puso en
+       la MISMA celda que el mapa con `align-self:end`, y en la captura se
+       veían encima de los cuadros de abajo: tapaban dos filas del mapa. Una
+       tira bajo el mapa tiene que estar bajo el mapa. */
+    body{height:100dvh;overflow:hidden;display:grid;
+      grid-template-columns:292px minmax(0,1fr) 336px;
+      grid-template-rows:auto auto auto minmax(0,1fr) auto auto auto;
+      column-gap:14px;padding:0 20px;align-content:stretch}
+    .pantalla{display:contents}
+    #paneles{display:contents}
+    header{grid-column:1/-1;grid-row:1;padding-left:0;padding-right:0}
+    nav{grid-column:1/-1;grid-row:2;border-bottom:0;padding:8px 0 0}
+    #toggle,#moneda,#agrupar{grid-row:3;border-bottom:0;padding:8px 0}
+    #toggle{grid-column:1}
+    #moneda{grid-column:2;justify-content:center}
+    #agrupar{grid-column:3;justify-content:flex-end}
+    #moneda[hidden],#agrupar[hidden]{display:none}
+    #ruta{grid-column:2;grid-row:4;align-self:start;z-index:2}
+    main{grid-column:2;grid-row:4;margin:0;align-self:stretch;min-height:0;margin-top:26px}
+    /* El "+N más" y las tiras van BAJO el mapa, cada uno en su fila. Las dos
+       columnas laterales se estiran hasta abajo para acompañarlas. */
+    #mas{grid-column:2;grid-row:5;padding:4px 0 0}
+    #tiras{grid-column:2;grid-row:6;padding:0 0 6px}
+    #p-tablas{grid-column:1;grid-row:4/7;overflow-y:auto;min-height:0;padding-bottom:8px}
+    #p-lado{grid-column:3;grid-row:4/7;overflow-y:auto;min-height:0;padding-bottom:8px}
+    #aviso{grid-column:1/-1;grid-row:7}
+    footer{grid-column:1/-1;grid-row:7;padding:8px 0 10px;align-self:end}
+    #paneles{padding:0;max-width:none}
+    #paneles h2{margin:0 0 5px;font-size:11px}
+    #p-tablas h2:not(:first-child),#p-lado h2:not(:first-child){margin-top:12px}
+    .tabla .fila{min-height:30px;font-size:12px}
+    .nota-fila{padding:6px 9px}
+    .ver-todas{min-height:32px}
+  }
+
+  /* Entre 900 y 1199 px la pantalla no da para tres columnas de verdad: se
+     queda con el mapa a lo ancho y los paneles abajo, en dos columnas. No se
+     fuerza el artboard en una pantalla donde no cabe. */
+  @media (min-width:900px) and (max-width:1199px){
+    #paneles{display:grid;grid-template-columns:1fr 1fr;gap:0 18px;
+      max-width:none;padding:0 24px 24px}
   }
 </style>
 </head>
@@ -265,27 +405,66 @@
 <header>
   <div class="marca">/<b>mercado</b></div>
   <div class="chip" id="chip">—</div>
+  <!-- R3(c): el buscador del artboard 5. Busca en el mapa QUE YA VIAJÓ: no
+       pide nada, no llama a ninguna API y por lo tanto no puede ofrecer una
+       emisora que la pantalla no sepa dibujar. -->
+  <div id="buscador">
+    <input id="qtk" type="search" inputmode="search" autocomplete="off" spellcheck="false"
+           placeholder="buscar ticker" aria-label="Buscar un ticker en este mapa"
+           aria-expanded="false" aria-controls="sugerencias" role="combobox">
+    <div id="sugerencias" role="listbox" hidden></div>
+  </div>
+  <a class="ir-noticias" href="/mercado/noticias">noticias →</a>
 </header>
 
 <nav role="tablist" aria-label="Mercado">
   <button role="tab" id="tab-us" data-mapa="us" aria-selected="true">EE.UU.</button>
   <button role="tab" id="tab-mx" data-mapa="mx" aria-selected="false">México</button>
   <button role="tab" id="tab-mundo" data-mapa="mundo" aria-selected="false">Mundo</button>
+  <!-- CRIPTO Y ETFs: en la cabecera del artboard y SIN datos. Deshabilitadas
+       con "pronto", no vacías con una promesa: una pestaña que se puede tocar
+       y no lleva a nada se lee como una pantalla rota. -->
+  <button role="tab" id="tab-cripto" disabled aria-selected="false"
+          title="pronto: todavía no hay un mapa de cripto con capitalización verificada">Cripto · pronto</button>
+  <button role="tab" id="tab-etfs" disabled aria-selected="false"
+          title="pronto: todavía no hay un universo de ETFs declarado">ETFs · pronto</button>
 </nav>
 
 <div class="toggle" id="toggle" role="group" aria-label="Periodo"></div>
 <div class="toggle" id="moneda" role="group" aria-label="Moneda" hidden></div>
+<!-- R3(c): Sector / Sin agrupar. Cambia CÓMO se reparte el área, no qué
+     entra: las mismas emisoras, los mismos tamaños, sin las cabeceras. -->
+<div class="toggle" id="agrupar" role="group" aria-label="Agrupación">
+  <button type="button" data-agrupar="sector" aria-pressed="true">Sector</button>
+  <button type="button" data-agrupar="plano" aria-pressed="false">Sin agrupar</button>
+</div>
 
 <div id="ruta"></div>
 <main><div id="lienzo"></div><div id="mundo" hidden></div><button type="button" id="reset" aria-label="Volver al mapa completo">⤢</button></main>
+<!-- R3(c): las dos tiras del artboard 5, bajo el mapa. Se piden DESPUÉS de
+     que el mapa pintó y cada una dice su causa si no llega: son contexto, y
+     una tira que falla no puede dejar la pantalla sin mapa. -->
+<div id="tiras" hidden>
+  <div class="tira" id="tira-ipc"></div>
+  <div class="tira" id="tira-idx"></div>
+</div>
 <div id="aviso"></div>
 <div id="mas"></div>
 <footer id="pie">cargando…</footer>
 </div><!-- /.pantalla -->
 
 <!-- R3: lo que va DEBAJO del mapa. Fuera de `.pantalla` a propósito: el mapa
-     sigue ocupando una pantalla exacta y esto aparece al recorrer. -->
-<section id="paneles" hidden></section>
+     sigue ocupando una pantalla exacta y esto aparece al recorrer.
+
+     R3(c): PARTIDO EN DOS a propósito. En el celular los dos bloques se
+     apilan y se ven exactamente como antes —`#p-tablas` primero, `#p-lado`
+     después—; en escritorio el artboard 5 los manda a las columnas 1 y 3, con
+     el mapa en medio. Partirlo acá y no con CSS de reordenamiento es lo que
+     permite que cada columna se recorra por su cuenta sin mover a la otra. -->
+<section id="paneles" hidden>
+  <div id="p-tablas"></div>
+  <div id="p-lado"></div>
+</section>
 
 <aside class="hoja" id="hoja" aria-hidden="true">
   <button class="cerrar" id="cerrar" aria-label="Cerrar">×</button>
@@ -321,6 +500,9 @@
     var mapa = (pm==='mx' || pm==='mundo') ? pm : 'us';
     var per  = PERIODOS.indexOf(p.get('periodo'))>=0 ? p.get('periodo') : '1D';
     return { mapa:mapa, periodo:per, sector:p.get('sector')||null, symbol:p.get('symbol')||null,
+             // R3(c): la agrupación también es estado. Un mapa sin agrupar
+             // pegado en WhatsApp tiene que abrir sin agrupar.
+             agrupar: p.get('agrupar')==='plano' ? 'plano' : 'sector',
              // Regla 9: `&moneda=usd|mxn`. En la URL se llama "usd" porque así
              // lo fijó el encargo; el botón dice "Local", porque un índice en
              // yenes no está en dólares — lo que el botón promete es "en su
@@ -333,6 +515,7 @@
     if(estado.mapa==='mundo') p.set('moneda', estado.moneda);
     if(estado.sector) p.set('sector', estado.sector);
     if(estado.symbol) p.set('symbol', estado.symbol);
+    if(estado.agrupar==='plano') p.set('agrupar', 'plano');
     var url = location.pathname + '?' + p.toString();
     if(push) history.pushState(estado, '', url); else history.replaceState(estado, '', url);
   }
@@ -400,6 +583,7 @@
     });
     pintarToggle();
     pintarMonedaToggle();
+    pintarAgruparToggle();
     var d = cache[estado.mapa];
     if(!d){ cargar(estado.mapa); return; }
     dActual = d;
@@ -582,7 +766,7 @@
       // el bug. "No hay cuadros" manda a revisar la cosecha; un error de
       // lectura manda a revisar la consulta, y son dos búsquedas distintas.
       l.innerHTML = '<div class="aviso"' + (d.error ? ' data-error="1"' : '')
-        + ' style="padding:24px;color:#888;font:12px var(--mono);line-height:1.5">'
+        + ' style="padding:24px;color:var(--tenue);font:12px var(--mono);line-height:1.5">'
         + (d.error ? esc(d.error) : 'no hay cuadros con capitalización medida para pintar')
         + (d.detalle ? '<br><br>' + esc(JSON.stringify(d.detalle)) : '')
         + '</div>';
@@ -618,7 +802,29 @@
   // resto que era el 100% de lo que decía resumir. El agregado había dejado
   // de resumir para tapar.
   function basePrimerNivel(cs, w, h){
+    // ── SIN AGRUPAR (R3(c)) ───────────────────────────────────────────
+    // El MISMO conjunto de emisoras y los MISMOS tamaños: lo único que
+    // cambia es que el área no se reparte primero entre sectores. Por eso no
+    // hay cabeceras y por eso el "+N más" de cada sector no aplica: acá no
+    // hay sectores que abrir, y un cuadro que no lleva a ningún lado sería
+    // peor que no ponerlo.
     var grupos = agrupaPorSector(cs).grupos;
+    // ── SIN AGRUPAR (R3(c)) ───────────────────────────────────────────
+    // Las MISMAS emisoras y los MISMOS tamaños: lo único que cambia es que el
+    // área no se reparte primero entre sectores.
+    //
+    // Se arma DESDE `grupos` y no desde `cs` a propósito: el `area` de cada
+    // cuadro lo calcula `agrupaPorSector` —la verificada vale su
+    // capitalización y la gris toma el mínimo de su sector—, así que partir
+    // de `cs` dejaría `area` en `undefined` y todos los cuadros medirían
+    // igual. Un cuadro no puede cambiar de tamaño al apagar la agrupación:
+    // sería cambiar el dato con un botón de vista.
+    if(estado.agrupar === 'plano'){
+      var planos = [];
+      grupos.forEach(function(g){ g.items.forEach(function(it){ planos.push(it); }); });
+      planos.sort(function(a, b){ return b.area - a.area; });
+      return { cuadros: squarify(itemsDe(planos), { x:0, y:0, w:w, h:h }), cabeceras: [], w: w, h: h };
+    }
     var rects = squarify(grupos.map(function(g){ return { key:g.sector, value:g.cap_total, grupo:g }; }), { x:0, y:0, w:w, h:h });
     var cuadros = [], cabeceras = [];
     rects.forEach(function(r){
@@ -1571,13 +1777,15 @@
       html += bloqueTabla('Más bajan', t.bajan, t.conteo, 'bajan', 'pct');
       html += bloqueTabla('Más operadas', t.operadas, t.conteo, 'operadas', 'importe');
     }
-    html += bloqueHoy();
-    html += bloqueSemana();
-    html += bloqueArena();
-    el.innerHTML = html;
+    // R3(c): las tablas van a la columna izquierda y el resto a la derecha.
+    // En el celular los dos contenedores se apilan en este mismo orden, así
+    // que la pantalla de 390 px no cambia.
+    document.getElementById('p-tablas').innerHTML = html;
+    document.getElementById('p-lado').innerHTML = bloqueHoy() + bloqueSemana() + bloqueArena();
     el.hidden = false;
     if(!panelesPedido) cargarPaneles();
     if(!noticiasPedido) cargarNoticias();
+    cargarTiras();
   }
 
   function cargarNoticias(){
@@ -1661,10 +1869,319 @@
     var b = ev.target.closest('button[data-per]'); if(!b) return;
     estado.periodo = b.dataset.per; escribirUrl(true); render();
   });
+
+  // ══════════════════════════════════════════════════════════════════
+  // R3(c): LAS DOS TIRAS DEL ARTBOARD 5
+  //
+  // Son CONTEXTO bajo el mapa, no un segundo mapa: alto fijo, una línea, cada
+  // cuadrito tocable. Se piden DESPUÉS de que el mapa pintó y sólo en
+  // escritorio, que es donde el artboard las pone y donde hay sitio.
+  //
+  // LAS DOS DICEN SU CAUSA SI NO LLEGAN (regla 2). Una tira vacía bajo el
+  // mapa se lee como "el IPC no se movió", que es una afirmación sobre el
+  // mercado que nadie midió.
+  //
+  // LOS NUEVE ÍNDICES SON LOS DE R4 —SPX, NDX, DJI, IPC, BOVESPA, KOSPI,
+  // NIKKEI, DAX, HSI— y el catálogo de Mundo hoy tiene OCHO: le falta ^DJI.
+  // El noveno se pinta igual, en gris y con su causa, en vez de enseñar ocho
+  // y llamarlos nueve. Cuando ^DJI entre al catálogo de `/api/macro-markets`,
+  // esta tira lo toma sola.
+  // ══════════════════════════════════════════════════════════════════
+  var NUEVE_INDICES = [
+    { symbol: '^GSPC', nombre: 'S&P 500' },
+    { symbol: '^NDX',  nombre: 'Nasdaq 100' },
+    { symbol: '^DJI',  nombre: 'Dow Jones' },
+    { symbol: '^MXX',  nombre: 'IPC' },
+    { symbol: '^BVSP', nombre: 'Bovespa' },
+    { symbol: '^KS11', nombre: 'KOSPI' },
+    { symbol: '^N225', nombre: 'Nikkei 225' },
+    { symbol: '^GDAXI', nombre: 'DAX' },
+    { symbol: '^HSI',  nombre: 'Hang Seng' },
+  ];
+  var TOPE_TIRA_IPC = 14;        // los más grandes del IPC: una línea, no un mapa
+  var tirasPedidas = false;
+
+  function esEscritorioAncho(){
+    return window.matchMedia && window.matchMedia('(min-width:1200px)').matches;
+  }
+
+  function cuadritoDeTira(sym, nombre, pct, etiqueta, motivo){
+    // El MISMO color del mapa (`colorDe`) y el MISMO pintor del % que todo lo
+    // demás (`qdPctTag`, regla 1): una tira con su propia escala o su propio
+    // formato sería un segundo mapa que dice otra cosa.
+    var gris = !Number.isFinite(pct);
+    var fondo = gris ? '#1b242e' : colorDe(pct);
+    return '<div class="t" style="background:' + fondo + '"'
+      + ' data-sym="' + esc(sym) + '" role="button" tabindex="0"'
+      + ' title="' + esc(nombre + (gris && motivo ? ' · ' + motivo : '')) + '">'
+      + '<b>' + esc(nombre) + '</b>'
+      + '<span>' + qdPctTag(gris ? null : pct, etiqueta, { motivo: motivo || null }) + '</span></div>';
+  }
+
+  function pintarTiraIpc(){
+    var el = document.getElementById('tira-ipc');
+    var d = cache.mx;
+    if(!d){ el.innerHTML = '<span class="rot">IPC</span><span class="vacio">cargando…</span>'; return; }
+    if(d.error){
+      el.innerHTML = '<span class="rot">IPC</span><span class="vacio">'
+        + esc('sin dato: ' + d.error) + '</span>';
+      return;
+    }
+    var cs = (d.cuadros || []).slice().sort(function(a, b){ return (b.cap || 0) - (a.cap || 0); })
+      .slice(0, TOPE_TIRA_IPC);
+    if(!cs.length){
+      el.innerHTML = '<span class="rot">IPC</span><span class="vacio">'
+        + esc('el mapa de México no trajo emisoras') + '</span>';
+      return;
+    }
+    el.innerHTML = '<span class="rot">IPC</span>' + cs.map(function(c){
+      // `cambio()` usa el periodo y la moneda que estén puestos: la tira se
+      // mueve con el toggle, como el mapa.
+      var x = cambio(c);
+      return cuadritoDeTira(c.symbol, c.symbol, x.pct, x.periodLabel || estado.periodo, x.motivo);
+    }).join('');
+  }
+
+  function pintarTiraIndices(){
+    var el = document.getElementById('tira-idx');
+    var d = cache.mundo;
+    if(!d){ el.innerHTML = '<span class="rot">Índices en pesos</span><span class="vacio">cargando…</span>'; return; }
+    var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null, omitidos: (d && d.omitidos) || {} });
+    var porSym = {};
+    (m.regiones || []).forEach(function(r){
+      (r.cuadros || []).forEach(function(c){ porSym[c.symbol] = c; });
+    });
+    var faltantes = (m.faltantes || []).reduce(function(acc, f){ acc[f.symbol] = f.motivo; return acc; }, {});
+    el.innerHTML = '<span class="rot">9 índices en pesos</span>' + NUEVE_INDICES.map(function(ix){
+      var caja = porSym[ix.symbol];
+      if(!caja){
+        // El cuadrito gris DICE por qué: "no está en el catálogo" y "la
+        // fuente no lo trajo hoy" son cosas distintas y se arreglan distinto.
+        return cuadritoDeTira(ix.symbol, ix.nombre, null, estado.periodo,
+          faltantes[ix.symbol] || 'no está en el catálogo de /api/macro-markets todavía');
+      }
+      // EN PESOS SIEMPRE, que es lo que el rótulo de la tira promete: no
+      // depende del toggle de moneda. `enPesosDe` es el MISMO convertidor que
+      // usa la pestaña Mundo — una sola cuenta del peso en toda la pantalla.
+      var mx = enPesosDe(caja, d);
+      return cuadritoDeTira(ix.symbol, ix.nombre, mx.pct, estado.periodo, mx.motivo);
+    }).join('');
+  }
+
+  function pintarTiras(){
+    var cont = document.getElementById('tiras');
+    if(!esEscritorioAncho()){ cont.hidden = true; return; }
+    cont.hidden = false;
+    pintarTiraIpc();
+    pintarTiraIndices();
+  }
+
+  /** Pide lo que las tiras necesitan, UNA vez y después del mapa. */
+  function cargarTiras(){
+    if(tirasPedidas || !esEscritorioAncho()) return;
+    tirasPedidas = true;
+    pintarTiras();
+    if(!cache.mx){
+      fetch('/api/mercado-mapa?map=mx').then(function(r){ return r.json(); })
+        .then(function(j){ cache.mx = j; pintarTiras(); })
+        .catch(function(e){ cache.mx = { error: e.message, cuadros: [] }; pintarTiras(); });
+    }
+    if(!cache.mundo){
+      Promise.all([
+        fetch('/api/macro-markets').then(function(r){ return r.json(); }),
+        traerFix(),
+      ]).then(function(rs){ var d = rs[0] || {}; d.fix = rs[1]; cache.mundo = d; pintarTiras(); })
+        .catch(function(e){ cache.mundo = { data: {}, omitidos: {}, error: e.message }; pintarTiras(); });
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // R3(c): EL BUSCADOR DE TICKER DEL ARTBOARD 5
+  //
+  // BUSCA EN EL MAPA QUE YA VIAJÓ. No pide nada, no llama a ninguna API y
+  // por lo tanto NO PUEDE OFRECER una emisora que esta pantalla no sepa
+  // dibujar — que es la falla clásica de un buscador conectado a un catálogo
+  // más grande que el mapa: encuentra, el lector toca, y no pasa nada.
+  //
+  // Lo que no está en el mapa se DICE, con el mapa en el que sí está si lo
+  // sabemos: "NVDA no está en el mapa de México · está en EE.UU." es una
+  // respuesta; "sin resultados" manda a buscar a ciegas.
+  // ══════════════════════════════════════════════════════════════════
+  var sugActiva = -1;
+
+  function normalizaBusqueda(t){
+    return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+  }
+
+  /** Las emisoras del mapa actual, como {symbol, nombre}. Mundo incluido. */
+  function catalogoDelMapa(){
+    var d = cache[estado.mapa];
+    if(!d) return [];
+    if(estado.mapa === 'mundo'){
+      var m = armaMundo({ data: (d && d.data) || {}, fix: (d && d.fix) || null, omitidos: (d && d.omitidos) || {} });
+      var out = [];
+      (m.regiones || []).forEach(function(r){
+        (r.cajas || []).forEach(function(c){ out.push({ symbol: c.symbol, nombre: c.nombre || c.symbol }); });
+      });
+      return out;
+    }
+    return (d.cuadros || []).map(function(c){ return { symbol: c.symbol, nombre: c.nombre || c.symbol }; });
+  }
+
+  /** ¿En qué OTRO mapa ya cargado está este símbolo? Para no decir sólo "no". */
+  function enQueOtroMapa(sym){
+    var nombres = { us: 'EE.UU.', mx: 'México', mundo: 'Mundo' };
+    for(var k in cache){
+      if(k === estado.mapa || !cache[k]) continue;
+      var hay = (cache[k].cuadros || []).some(function(c){ return c.symbol === sym; });
+      if(hay) return nombres[k] || k;
+    }
+    return null;
+  }
+
+  function buscaEnMapa(txt){
+    var q = normalizaBusqueda(txt);
+    if(!q) return [];
+    return catalogoDelMapa().filter(function(c){
+      return normalizaBusqueda(c.symbol).indexOf(q) === 0
+          || normalizaBusqueda(c.nombre).indexOf(q) >= 0
+          || normalizaBusqueda(c.symbol).indexOf(q) >= 0;
+    }).sort(function(a, b){
+      // El que EMPIEZA con lo tecleado va primero: quien escribe "AM" busca
+      // AMD o AMX, no "Advanced Micro" por el medio.
+      var ea = normalizaBusqueda(a.symbol).indexOf(q) === 0 ? 0 : 1;
+      var eb = normalizaBusqueda(b.symbol).indexOf(q) === 0 ? 0 : 1;
+      return ea - eb || a.symbol.localeCompare(b.symbol);
+    }).slice(0, 8);
+  }
+
+  function pintarSugerencias(txt){
+    var caja = document.getElementById('sugerencias');
+    var campo = document.getElementById('qtk');
+    var q = normalizaBusqueda(txt);
+    if(!q){
+      caja.hidden = true; caja.innerHTML = ''; sugActiva = -1;
+      campo.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    var res = buscaEnMapa(txt);
+    if(!res.length){
+      var otro = enQueOtroMapa(q);
+      caja.innerHTML = '<div class="vacio">' + esc(
+        otro ? (q + ' no está en este mapa · está en ' + otro)
+             : (q + ' no está en el mapa de ' + (estado.mapa === 'mx' ? 'México' : estado.mapa === 'us' ? 'EE.UU.' : 'Mundo')
+                + '. Este buscador sólo ofrece lo que la pantalla sabe dibujar.')) + '</div>';
+    } else {
+      caja.innerHTML = res.map(function(c, i){
+        return '<div class="sug" role="option" data-sym="' + esc(c.symbol) + '"'
+          + ' aria-selected="' + (i === sugActiva) + '">'
+          + '<span class="tk">' + esc(c.symbol) + '</span>'
+          + '<span class="nom">' + esc(c.nombre) + '</span></div>';
+      }).join('');
+    }
+    caja.hidden = false;
+    campo.setAttribute('aria-expanded', 'true');
+  }
+
+  function elegirSugerencia(sym){
+    var campo = document.getElementById('qtk');
+    campo.value = '';
+    pintarSugerencias('');
+    campo.blur();
+    estado.symbol = sym;
+    escribirUrl(true);
+    render();
+  }
+
+  (function montarBuscador(){
+    var campo = document.getElementById('qtk');
+    var caja = document.getElementById('sugerencias');
+    campo.addEventListener('input', function(){ sugActiva = -1; pintarSugerencias(campo.value); });
+    campo.addEventListener('keydown', function(ev){
+      var opciones = [].slice.call(caja.querySelectorAll('.sug'));
+      if(ev.key === 'ArrowDown' || ev.key === 'ArrowUp'){
+        if(!opciones.length) return;
+        ev.preventDefault();
+        sugActiva = (sugActiva + (ev.key === 'ArrowDown' ? 1 : -1) + opciones.length) % opciones.length;
+        pintarSugerencias(campo.value);
+      } else if(ev.key === 'Enter'){
+        if(!opciones.length) return;
+        var i = sugActiva >= 0 ? sugActiva : 0;
+        elegirSugerencia(opciones[i].dataset.sym);
+      } else if(ev.key === 'Escape'){
+        campo.value = ''; pintarSugerencias('');
+      }
+    });
+    caja.addEventListener('click', function(ev){
+      var o = ev.target.closest('.sug'); if(!o) return;
+      elegirSugerencia(o.dataset.sym);
+    });
+    document.addEventListener('click', function(ev){
+      if(!ev.target.closest('#buscador')) pintarSugerencias('');
+    });
+  })();
+
+  // ── R3(c): SECTOR / SIN AGRUPAR ────────────────────────────────────
+  // En Mundo no aplica: ahí los cuadros son índices de tamaño fijo por
+  // región, no emisoras con capitalización, y "sin agrupar" no significaría
+  // nada. El toggle se esconde en vez de quedarse sin efecto, que es lo que
+  // hacía el de moneda en México antes de que lo arregláramos.
+  document.getElementById('agrupar').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-agrupar]'); if(!b) return;
+    estado.agrupar = b.dataset.agrupar;
+    estado.sector = null;      // el nivel de sector no existe sin agrupación
+    escribirUrl(true); render();
+  });
+  function pintarAgruparToggle(){
+    var t = document.getElementById('agrupar');
+    t.hidden = estado.mapa === 'mundo';
+    [].forEach.call(t.querySelectorAll('button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.agrupar === estado.agrupar));
+    });
+  }
+  // Tocar un cuadrito de tira hace lo MISMO que tocar un cuadro del mapa: el
+  // IPC abre la hoja de la emisora en el mapa de México, y un índice abre su
+  // hoja en Mundo. Se cambia de mapa porque la hoja vive ahí; dejar el tap sin
+  // efecto convertiría la tira en un adorno.
+  document.getElementById('tiras').addEventListener('click', function(ev){
+    var t = ev.target.closest('.t[data-sym]'); if(!t) return;
+    var sym = t.dataset.sym;
+    var destino = t.parentNode.id === 'tira-idx' ? 'mundo' : 'mx';
+    estado.mapa = destino; estado.sector = null; estado.symbol = sym;
+    escribirUrl(true); render();
+  });
   document.getElementById('cerrar').addEventListener('click', function(){ cerrarHoja(); });
   document.addEventListener('keydown', function(ev){ if(ev.key==='Escape') cerrarHoja(); });
+  // ── EL MAPA SE REPINTA CUANDO SU CAJA CAMBIA, NO SÓLO CON `resize` ──
+  // El treemap se dibuja con píxeles MEDIDOS, así que cualquier cosa que le
+  // cambie el alto a <main> después del pintado lo deja cortado. `resize` de
+  // la ventana no cubre el caso que apareció en la captura de R3(c): las
+  // tiras llegan DESPUÉS (se piden tras el mapa), estrenan una fila de la
+  // rejilla, <main> se encoge ~40 px y la última hilera de cuadros quedaba
+  // partida por la mitad. El observador lo ve pase lo que pase.
+  if(window.ResizeObserver){
+    var ultimoAlto = 0, ultimoAncho = 0, ro = null;
+    ro = new ResizeObserver(function(entradas){
+      var r = entradas[0] && entradas[0].contentRect;
+      if(!r) return;
+      var h = Math.round(r.height), a = Math.round(r.width);
+      // Sólo cuando cambia de verdad: el observador también dispara al
+      // montarse, y repintar en bucle sería peor que el corte.
+      if(h === ultimoAlto && a === ultimoAncho) return;
+      ultimoAlto = h; ultimoAncho = a;
+      if(cache[estado.mapa] && estado.mapa !== 'mundo') pintarMapa(cache[estado.mapa]);
+    });
+    ro.observe(document.querySelector('main'));
+  }
+
   var rt; window.addEventListener('resize', function(){
-    clearTimeout(rt); rt=setTimeout(function(){ if(cache[estado.mapa]) pintarMapa(cache[estado.mapa]); }, 120);
+    clearTimeout(rt); rt=setTimeout(function(){
+      if(cache[estado.mapa]) pintarMapa(cache[estado.mapa]);
+      // Las tiras existen sólo donde el artboard las pone: al cruzar los
+      // 1200 px se encienden o se apagan, y si se encienden por primera vez
+      // hay que pedirles sus datos.
+      if(esEscritorioAncho()) cargarTiras(); else document.getElementById('tiras').hidden = true;
+    }, 120);
   });
 
   montarGestos();
