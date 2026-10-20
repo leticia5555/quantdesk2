@@ -25,7 +25,8 @@ import { enProceso } from './mercado-paneles.js';
 import { tickersDeFila } from './_lib/noticias.js';
 import {
   serieDeRendimiento, upaRealVsEstimado, trimestresDeCompanyFacts, linkDeFiling,
-  recomendaciones, precioObjetivo, tablaValuacion, tablaValuacionFinnhub, netoInsiders, DE_PAGO,
+  recomendaciones, precioObjetivo, tablaValuacion, tablaValuacionFinnhub, netoInsiders,
+  empataUpaConEdgar, DE_PAGO,
 } from './_lib/analiza.js';
 import { urlCompanyFacts, UA_DEFAULT, URL_TICKERS } from './_lib/edgar.js';
 
@@ -378,7 +379,15 @@ export default async function handler(req, res) {
       // pedía `earnings`, `date` y `eps_est` —nombres que yo supuse— así que
       // el bloque de UPA salía "sin trimestres" para NVDA, que tiene años de
       // historial (Lety, 2026-10-20). El endpoint estaba contestando bien.
-      upa: upaRealVsEstimado((cal.json && cal.json.history) || [], { motivoFuente: cal.error || (cal.json && cal.json.error) || null }),
+      // Y FECHADA CON EL CIERRE DE EDGAR, no con el de la fuente de UPA.
+      // Finnhub normaliza el trimestre al cierre del trimestre de CALENDARIO
+      // que lo contiene, así que el trimestre fiscal de NVDA que cerró el 26
+      // de julio salía fechado 2026-09-30 — en la misma página en la que los
+      // ingresos decían 2026-07-26 (Lety, 2026-10-22).
+      upa: empataUpaConEdgar(
+        upaRealVsEstimado((cal.json && cal.json.history) || [],
+          { motivoFuente: cal.error || (cal.json && cal.json.error) || null }),
+        financieros.filas),
       // Y el próximo reporte YA VIENE RESUELTO por el endpoint, con su
       // calendario propio: no hay que deducirlo filtrando el historial, que
       // además nunca trae fechas futuras.

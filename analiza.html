@@ -127,6 +127,10 @@
      gris: es el que usa la empresa en su reporte, y no puede competir con
      la fecha, que es la que no tiene ambigüedad. */
   td .f{font-size:9px;color:var(--apagado);margin-left:4px}
+  /* "derivado": el número se calculó, no se leyó de un formulario. */
+  .der{font-size:9px;color:var(--ambar);border:1px solid #3a3222;border-radius:3px;padding:0 3px}
+  /* La fila del trimestre que falta: visible como fila, vacía como dato. */
+  tr.hueco td{color:var(--apagado);font-style:italic}
   .pos{color:var(--verde)} .neg{color:var(--rojo)}
 
   .barras{display:flex;gap:3px;align-items:flex-end;height:90px;padding:10px}
@@ -316,9 +320,13 @@
       // El rótulo es la FECHA DE CIERRE. El nombre fiscal va al lado y
       // dicho como fiscal: "2027 T2" a secas se lee como el calendario y es
       // cómo el mismo trimestre salía dos veces.
-      return '<tr><td class="izq" title="' + esc(f.trimestre_fiscal || '') + '">'
+      // El rótulo es el cierre de EDGAR cuando se pudo empatar —el mismo que
+      // usan los ingresos— y la fecha de la fuente de UPA cuando no, DICHO.
+      var tituloFecha = [f.trimestre_fiscal || '', f.fecha_motivo || ''].filter(Boolean).join(' · ');
+      return '<tr><td class="izq" title="' + esc(tituloFecha) + '">'
         + esc(f.trimestre || f.fecha || '—')
         + (f.trimestre_fiscal ? ' <span class="f">' + esc(f.trimestre_fiscal) + '</span>' : '')
+        + (f.fecha_motivo ? ' <span class="f">fecha de la fuente de UPA</span>' : '')
         + '</td>'
         + '<td>' + (f.real == null ? '<span class="falta">—</span>' : f.real.toFixed(2)) + '</td>'
         + '<td>' + (f.estimado == null ? '<span class="falta">—</span>' : f.estimado.toFixed(2)) + '</td>'
@@ -330,6 +338,7 @@
     }).join('');
     html += '</tbody></table></div>';
     if(u.motivo_duplicados) html += '<div class="aviso">' + esc(u.motivo_duplicados) + '</div>';
+    if(u.motivo_fechas) html += '<div class="aviso">' + esc(u.motivo_fechas) + '</div>';
     html += '<p class="vacio" style="border-style:solid;border-color:var(--linea);margin-top:6px">'
       + esc(u.nota || '') + '</p>';
     var pr = datos.proximo_reporte || {};
@@ -390,9 +399,21 @@
       }
     }
     if(f.motivo_conceptos) html += '<div class="aviso">' + esc(f.motivo_conceptos) + '</div>';
+    if(f.derivados) html += '<div class="aviso">' + esc(f.derivados === 1
+      ? 'un trimestre no tiene formulario propio y se calculó con el 10-K: el ejercicio menos los tres trimestres reportados'
+      : f.derivados + ' trimestres se calcularon con el 10-K: el ejercicio menos los tres trimestres reportados')
+      + '</div>';
     html += '<div class="panel" style="margin-top:6px"><table><thead><tr>'
       + '<th>Trimestre</th><th>Ingresos</th><th>Utilidad</th><th>Margen</th><th class="izq">Filing</th>'
       + '</tr></thead><tbody>' + f.filas.map(function(x){
+        // EL TRIMESTRE QUE FALTA NO SE SALTA: sale vacío y con su causa.
+        if(x.falta){
+          return '<tr class="hueco"><td class="izq">' + esc(x.inicio) + ' a ' + esc(x.fin) + '</td>'
+            + '<td class="falta" title="' + esc(x.falta_motivo || '') + '">—</td>'
+            + '<td class="falta" title="' + esc(x.falta_motivo || '') + '">—</td>'
+            + '<td class="falta">—</td>'
+            + '<td class="izq f">' + esc(x.falta_motivo || '') + '</td></tr>';
+        }
         return '<tr><td class="izq">' + esc(x.fin) + '</td>'
           + '<td>' + (x.ingresos == null ? '<span class="falta">—</span>' : fmtMonto(x.ingresos)) + '</td>'
           + '<td class="' + (x.utilidad < 0 ? 'neg' : '') + '">'
@@ -400,10 +421,19 @@
           + (x.margen_pct == null
             ? '<td class="falta" title="' + esc(x.margen_motivo || '') + '">—</td>'
             : '<td>' + x.margen_pct.toFixed(1) + '%</td>')
-          + '<td class="izq f">' + (x.ingresos_link
+          // LA CITA DICE SI EL NÚMERO SE LEYÓ O SE CALCULÓ.
+          // El cuarto trimestre no tiene formulario propio: sale de restarle
+          // al ejercicio los tres que sí lo tienen. Citarlo como "10-K" a
+          // secas diría que está escrito ahí, y no lo está.
+          + '<td class="izq f"'
+            + (x.ingresos_derivado ? ' title="' + esc('derivado del ejercicio ' + (x.ingresos_derivado_de || '')
+                + ' menos los tres trimestres reportados') + '"' : '')
+            + '>' + (x.ingresos_link
               ? '<a href="' + esc(x.ingresos_link) + '" target="_blank" rel="noopener noreferrer">'
                 + esc(x.ingresos_form || 'filing') + ' ↗</a>'
-              : esc(x.ingresos_form || '—')) + '</td></tr>';
+              : esc(x.ingresos_form || '—'))
+            + (x.ingresos_derivado ? ' <span class="der">derivado</span>' : '')
+            + '</td></tr>';
       }).join('') + '</tbody></table></div>';
     return html;
   }

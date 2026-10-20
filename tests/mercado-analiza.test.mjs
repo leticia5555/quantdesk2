@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  dato, serieDeRendimiento, upaRealVsEstimado, trimestresDeCompanyFacts,
+  dato, serieDeRendimiento, upaRealVsEstimado, trimestresDeCompanyFacts, empataUpaConEdgar,
   linkDeFiling, recomendaciones, precioObjetivo, tablaValuacion, netoInsiders, DE_PAGO,
 } from '../api/_lib/analiza.js';
 
@@ -390,9 +390,14 @@ test('si la emisora cambió de concepto a mitad de la serie, se usan los dos y s
     ] } },
   } } };
   const r = trimestresDeCompanyFacts(facts);
-  assert.equal(r.filas.length, 2);
+  const conDato = r.filas.filter((f) => !f.falta);
+  assert.equal(conDato.length, 2);
   assert.equal(r.conceptos_todos.ingresos.length, 2);
   assert.match(r.motivo_conceptos, /conceptos distintos/);
+  // Entre los dos hay un año: el hueco se declara en vez de saltarse, que es
+  // lo que pidió Lety.
+  assert.equal(r.huecos, 1);
+  assert.match(r.filas.find((f) => f.falta).falta_motivo, /faltan 3 trimestres/);
 });
 
 test('con trimestres pero sin NINGÚN ingreso, se dice — y es lo que apaga las barras', () => {
@@ -419,4 +424,160 @@ test('el concepto que existe pero sólo con periodos anuales se declara como tal
   const r = trimestresDeCompanyFacts(facts);
   assert.equal(r.filas.length, 0);
   assert.match(r.motivo, /ninguno con periodos trimestrales/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL TRIMESTRE QUE NO TIENE 10-Q
+//
+// Una emisora presenta tres 10-Q al año y un 10-K: el cuarto trimestre no
+// tiene formulario propio, así que en `companyfacts` no existe como periodo
+// de 90 días. La tabla saltaba de octubre a abril SIN DECIRLO (Lety,
+// 2026-10-22), y un hueco callado en una serie trimestral se lee como que la
+// empresa no operó ese trimestre.
+// ═══════════════════════════════════════════════════════════════════════
+const EJERCICIO_NVDA = {
+  facts: { 'us-gaap': { Revenues: { units: { USD: [
+    u('2025-01-27', '2025-04-27', 26_044_000_000),
+    u('2025-04-28', '2025-07-27', 30_040_000_000),
+    u('2025-07-28', '2025-10-26', 35_082_000_000),
+    u('2025-01-27', '2026-01-25', 130_497_000_000, { form: '10-K', accn: '0001045810-26-000090', filed: '2026-02-26' }),
+  ] } } } },
+};
+
+test('el cuarto trimestre se deriva: ejercicio menos los tres reportados', () => {
+  const r = trimestresDeCompanyFacts(EJERCICIO_NVDA);
+  const q4 = r.filas.find((f) => f.fin === '2026-01-25');
+  assert.ok(q4, 'la fila tiene que existir: ' + JSON.stringify(r.filas.map((f) => f.fin)));
+  // 130,497 − 26,044 − 30,040 − 35,082
+  assert.equal(q4.ingresos, 39_331_000_000);
+  assert.equal(q4.inicio, '2025-10-27', 'arranca el día después del cierre anterior');
+  assert.equal(r.derivados, 1);
+});
+
+test('y la cita dice que se DERIVÓ del 10-K, no que esté escrito ahí', () => {
+  const q4 = trimestresDeCompanyFacts(EJERCICIO_NVDA).filas.find((f) => f.fin === '2026-01-25');
+  assert.equal(q4.ingresos_form, '10-K');
+  assert.equal(q4.ingresos_derivado, true);
+  assert.match(q4.ingresos_derivado_de, /2025-01-27 a 2026-01-25/);
+  // El link sigue siendo al filing que sostiene la resta: el 10-K.
+  assert.equal(q4.ingresos_accn, '0001045810-26-000090');
+});
+
+test('el anual NO se cuela como un trimestre más', () => {
+  const r = trimestresDeCompanyFacts(EJERCICIO_NVDA);
+  assert.ok(!r.filas.some((f) => f.ingresos === 130_497_000_000));
+  assert.equal(r.filas.length, 4, 'tres 10-Q y el derivado');
+});
+
+test('con sólo DOS trimestres dentro del ejercicio no se deriva nada', () => {
+  // Restarle al ejercicio dos trimestres daría un medio año rotulado como
+  // trimestre. Es exactamente el error que el derivado vendría a evitar.
+  const facts = { facts: { 'us-gaap': { Revenues: { units: { USD: [
+    u('2025-01-27', '2025-04-27', 26_044_000_000),
+    u('2025-04-28', '2025-07-27', 30_040_000_000),
+    u('2025-01-27', '2026-01-25', 130_497_000_000, { form: '10-K' }),
+  ] } } } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.derivados, 0);
+  assert.ok(!r.filas.some((f) => f.fin === '2026-01-25'));
+});
+
+test('ni cuando el ejercicio y los trimestres vienen de conceptos distintos', () => {
+  // Restarle a un `RevenueFromContractWithCustomer…` anual tres `Revenues`
+  // trimestrales daría un número con dos definiciones adentro.
+  const facts = { facts: { 'us-gaap': {
+    RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: [
+      u('2025-01-27', '2026-01-25', 130_497_000_000, { form: '10-K' }),
+    ] } },
+    Revenues: { units: { USD: [
+      u('2025-01-27', '2025-04-27', 26_044_000_000),
+      u('2025-04-28', '2025-07-27', 30_040_000_000),
+      u('2025-07-28', '2025-10-26', 35_082_000_000),
+    ] } },
+  } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.derivados, 0);
+});
+
+test('el hueco que no se pudo derivar APARECE como fila, con su causa', () => {
+  // Lo que pidió Lety: "que no se salte en silencio".
+  const facts = { facts: { 'us-gaap': { Revenues: { units: { USD: [
+    u('2026-01-26', '2026-04-26', 44_062_000_000),
+    u('2025-07-28', '2025-10-26', 35_082_000_000),
+  ] } } } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.huecos, 1);
+  const hueco = r.filas.find((f) => f.falta);
+  assert.ok(hueco, JSON.stringify(r.filas.map((f) => f.fin)));
+  assert.equal(hueco.inicio, '2025-10-27');
+  assert.equal(hueco.fin, '2026-01-25');
+  assert.match(hueco.falta_motivo, /no tiene formulario propio|EDGAR no los trae/);
+  // Y la fila no finge un número.
+  assert.equal(hueco.ingresos, undefined);
+});
+
+// ── LA UPA, FECHADA CON EL CIERRE DE EDGAR ───────────────────────────
+const CIERRES = [{ fin: '2026-07-26' }, { fin: '2026-04-26' }, { fin: '2026-01-25' }, { fin: '2025-10-26' }];
+
+test('la UPA toma el cierre de EDGAR, no la fecha de calendario de la fuente', () => {
+  // Finnhub normaliza al cierre del trimestre de CALENDARIO que contiene al
+  // fiscal: el que cerró el 26 de julio sale fechado 2026-09-30, y en la
+  // misma página los ingresos decían 2026-07-26 (Lety, 2026-10-22).
+  const upa = upaRealVsEstimado([
+    { period: '2026-09-30', year: 2027, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+    { period: '2026-06-30', year: 2027, quarter: 1, eps_actual: 1.96, eps_estimate: 1.90 },
+  ]);
+  const r = empataUpaConEdgar(upa, CIERRES);
+  assert.deepEqual(r.filas.map((f) => f.fecha), ['2026-07-26', '2026-04-26']);
+  // La fecha de la fuente no se tira: queda para poder rastrear el dato.
+  assert.equal(r.filas[0].fecha_fuente, '2026-09-30');
+  assert.equal(r.empatados, 2);
+  assert.equal(r.motivo_fechas, null);
+});
+
+test('se empareja con el último cierre que NO pasa la fecha, no con el más cercano', () => {
+  // 2026-09-30 está a 66 días del cierre del 26 de julio y a 25 del 25 de
+  // octubre. Por cercanía se iría al trimestre SIGUIENTE y la tabla entera
+  // quedaría corrida un trimestre.
+  const r = empataUpaConEdgar(
+    upaRealVsEstimado([{ period: '2026-09-30', year: 2027, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 }]),
+    [{ fin: '2026-10-25' }, { fin: '2026-07-26' }]);
+  assert.equal(r.filas[0].fecha, '2026-07-26');
+});
+
+test('dos filas no pueden reclamar el mismo cierre', () => {
+  const r = empataUpaConEdgar(
+    upaRealVsEstimado([
+      { period: '2026-09-30', year: 2027, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+      { period: '2026-08-15', year: 2026, quarter: 2, eps_actual: 2.22, eps_estimate: 2.10 },
+    ]),
+    [{ fin: '2026-07-26' }]);
+  const empatadas = r.filas.filter((f) => f.fecha_edgar === '2026-07-26');
+  assert.equal(empatadas.length, 1);
+});
+
+test('el trimestre que EDGAR no tiene conserva su fecha y lo DICE', () => {
+  // El que todavía no reporta: no hay filing, así que no hay cierre con el
+  // que empatar. Callarlo sería volver a tener dos fechas sin explicación.
+  const r = empataUpaConEdgar(
+    upaRealVsEstimado([{ period: '2026-12-31', year: 2027, quarter: 3, eps_actual: null, eps_estimate: 1.31 }]),
+    CIERRES);
+  assert.equal(r.filas[0].fecha, '2026-12-31');
+  assert.match(r.filas[0].fecha_motivo, /fecha de la fuente/);
+  assert.match(r.motivo_fechas, /1 trimestre/);
+});
+
+test('sin cierres de EDGAR, la UPA se queda como estaba y se dice por qué', () => {
+  const upa = upaRealVsEstimado([{ period: '2026-09-30', year: 2027, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 }]);
+  const r = empataUpaConEdgar(upa, []);
+  assert.equal(r.filas[0].fecha, '2026-09-30');
+  assert.match(r.motivo_fechas, /no hay cierres de EDGAR/);
+});
+
+test('una fila de hueco NO sirve para empatar: no es un cierre', () => {
+  const r = empataUpaConEdgar(
+    upaRealVsEstimado([{ period: '2026-03-31', year: 2026, quarter: 4, eps_actual: 1.4, eps_estimate: 1.33 }]),
+    [{ fin: '2026-01-25', falta: true, falta_motivo: 'no tiene formulario propio' }]);
+  assert.equal(r.filas[0].fecha, '2026-03-31');
+  assert.equal(r.empatados, 0);
 });

@@ -171,6 +171,64 @@ export function upaRealVsEstimado(filas, { tope = 8, motivoFuente = null } = {})
   };
 }
 
+/**
+ * LA UPA, FECHADA CON EL CIERRE DE EDGAR.
+ *
+ * Lety, 2026-10-22: *"La UPA usa fechas de Finnhub (2026-09-30, 2026-06-30),
+ * mientras los ingresos usan el cierre real de EDGAR (2026-07-26). Mismo
+ * trimestre, dos fechas en la misma página."*
+ *
+ * Finnhub normaliza el trimestre al cierre del TRIMESTRE DE CALENDARIO que lo
+ * contiene: el trimestre fiscal de NVDA que cerró el 26 de julio cae en el
+ * calendario julio–septiembre, y sale fechado 2026-09-30. EDGAR trae la fecha
+ * de verdad, la del filing.
+ *
+ * LA REGLA DEL EMPAREJAMIENTO, y por qué no es "la fecha más cercana": la de
+ * Finnhub siempre va DESPUÉS del cierre real (es el fin del trimestre de
+ * calendario que lo contiene), nunca antes. Así que cada fila se empareja con
+ * el ÚLTIMO cierre de EDGAR que no la pasa. Con la fecha más cercana, el
+ * 2026-09-30 se iría al trimestre que cierra el 25 de octubre —que es otro— y
+ * la tabla quedaría corrida un trimestre entero.
+ *
+ * La tolerancia es de 95 días (un trimestre y pico) y el emparejamiento es
+ * UNO A UNO: dos filas no pueden reclamar el mismo cierre. Lo que no empareja
+ * conserva su fecha y lo DICE: una fecha de otra fuente, dicha, es honesta;
+ * callada, es la misma confusión de antes.
+ */
+export function empataUpaConEdgar(upa, filasEdgar, { toleranciaDias = 95 } = {}) {
+  const filas = (upa && upa.filas) || [];
+  const cierres = (filasEdgar || [])
+    .filter((f) => f && f.fin && !f.falta)
+    .map((f) => f.fin)
+    .sort((a, b) => b.localeCompare(a));
+  if (!filas.length || !cierres.length) {
+    return { ...upa, empatados: 0, motivo_fechas: cierres.length ? null : 'no hay cierres de EDGAR con los que empatar' };
+  }
+  const usados = new Set();
+  let empatados = 0;
+  const nuevas = filas.map((f) => {
+    const t = Date.parse(f.fecha || '');
+    if (!Number.isFinite(t)) return f;
+    // El último cierre que no pasa la fecha de la fuente.
+    const cierre = cierres.find((c) => !usados.has(c)
+      && Date.parse(c) <= t
+      && (t - Date.parse(c)) / 864e5 <= toleranciaDias);
+    if (!cierre) {
+      return { ...f, fecha_fuente: f.fecha, fecha_edgar: null,
+        fecha_motivo: 'fecha de la fuente de UPA: EDGAR no trae un cierre que le corresponda' };
+    }
+    usados.add(cierre); empatados++;
+    return { ...f, fecha: cierre, trimestre: cierre, fecha_fuente: f.fecha, fecha_edgar: cierre, fecha_motivo: null };
+  });
+  return {
+    ...upa,
+    filas: nuevas,
+    empatados,
+    motivo_fechas: empatados === nuevas.length ? null
+      : `${nuevas.length - empatados} trimestre(s) conservan la fecha de la fuente de UPA porque EDGAR no trae su cierre`,
+  };
+}
+
 const CONCEPTOS_INGRESO = [
   'RevenueFromContractWithCustomerExcludingAssessedTax',
   'RevenueFromContractWithCustomerIncludingAssessedTax',
@@ -219,16 +277,24 @@ export function trimestresDeCompanyFacts(facts, { tope = 8 } = {}) {
   // el del candidato de MAYOR prioridad que lo tenga. La prioridad es el orden
   // de la lista, que no es casual: las grafías específicas van antes que
   // `Revenues`, que es la bolsa grande.
-  const trimestresDe = (nombres) => {
+  // El ejercicio completo. Es de donde sale el trimestre que no tiene 10-Q.
+  const esAnual = (u) => {
+    if (!u.start || !u.end) return false;
+    const d = (Date.parse(u.end) - Date.parse(u.start)) / 864e5;
+    return d > 330 && d < 400;
+  };
+  const periodosDe = (nombres, filtro) => {
     const out = [];
     nombres.forEach((n, prioridad) => {
       const c = conceptos[n];
       const uds = c && c.units && (c.units.USD || Object.values(c.units)[0]);
       if (!Array.isArray(uds)) return;
-      for (const u of uds) if (esTrimestre(u)) out.push({ ...u, _concepto: n, _prioridad: prioridad });
+      for (const u of uds) if (filtro(u)) out.push({ ...u, _concepto: n, _prioridad: prioridad });
     });
     return out;
   };
+  const trimestresDe = (nombres) => periodosDe(nombres, esTrimestre);
+  const anualesDe = (nombres) => periodosDe(nombres, esAnual);
   const ing = trimestresDe(CONCEPTOS_INGRESO);
   const uti = trimestresDe(CONCEPTOS_UTILIDAD);
   if (!ing.length && !uti.length) {
@@ -270,8 +336,104 @@ export function trimestresDeCompanyFacts(facts, { tope = 8 } = {}) {
   mete(ing, 'ingresos');
   mete(uti, 'utilidad');
 
-  const filas = [...porFin.values()]
-    .sort((a, b) => String(b.fin).localeCompare(String(a.fin)))
+  // ═══════════════════════════════════════════════════════════════════
+  // EL TRIMESTRE QUE NO TIENE 10-Q
+  //
+  // Una emisora presenta tres 10-Q al año y un 10-K; el CUARTO trimestre no
+  // tiene formulario propio, así que en `companyfacts` no existe como periodo
+  // de 90 días. La tabla saltaba de octubre a abril SIN DECIRLO (Lety,
+  // 2026-10-22), y un hueco callado en una serie trimestral se lee como que
+  // la empresa no operó ese trimestre.
+  //
+  // Se deriva: ejercicio menos los tres trimestres que sí están. Es
+  // aritmética sobre cifras del mismo archivo, no una estimación — pero sólo
+  // se hace cuando se sostiene:
+  //
+  //   · los tres trimestres tienen que estar DENTRO del mismo ejercicio;
+  //   · tienen que venir del MISMO concepto que el anual. Restarle a un
+  //     `RevenueFromContractWithCustomer…` anual tres `Revenues` trimestrales
+  //     daría un número con dos definiciones adentro, y nadie podría
+  //     explicar la diferencia;
+  //   · y no puede existir ya un trimestre con esa fecha de cierre.
+  //
+  // Cuando no se sostiene, la fila igual aparece, en "—" y con la causa. Lo
+  // que no se hace es saltarla.
+  const anuales = { ingresos: anualesDe(CONCEPTOS_INGRESO), utilidad: anualesDe(CONCEPTOS_UTILIDAD) };
+  const derivaciones = [];
+  for (const campo of ['ingresos', 'utilidad']) {
+    // Una entrada anual por periodo, la del filing más reciente.
+    const porPeriodo = new Map();
+    for (const a of anuales[campo]) {
+      const k = a.start + '|' + a.end;
+      const prev = porPeriodo.get(k);
+      if (!prev || a._prioridad < prev._prioridad
+          || (a._prioridad === prev._prioridad && String(a.filed || '') > String(prev.filed || ''))) {
+        porPeriodo.set(k, a);
+      }
+    }
+    for (const a of porPeriodo.values()) {
+      const t0 = Date.parse(a.start); const t1 = Date.parse(a.end);
+      // Los trimestres de ESE ejercicio y de ESE concepto. El margen de tres
+      // días cubre que el ejercicio arranque el día siguiente al cierre
+      // anterior.
+      const dentro = [...porFin.values()].filter((f) => {
+        if (f[campo] == null || f[campo + '_concepto'] !== a._concepto) return false;
+        return Date.parse(f.inicio) >= t0 - 3 * 864e5 && Date.parse(f.fin) <= t1 + 3 * 864e5;
+      }).sort((x, y) => String(x.fin).localeCompare(String(y.fin)));
+
+      if (dentro.length !== 3) continue;           // no hay exactamente tres: no se deriva
+      const ultimo = dentro[2];
+      if (Date.parse(ultimo.fin) >= t1 - 3 * 864e5) continue;   // el ejercicio ya está cubierto
+      const inicio = new Date(Date.parse(ultimo.fin) + 864e5).toISOString().slice(0, 10);
+      const fin = a.end;
+      const ya = porFin.get(fin);
+      if (ya && ya[campo] != null) continue;       // ya existe, no se pisa
+
+      const valor = num(a.val) - dentro.reduce((suma, f) => suma + f[campo], 0);
+      if (!Number.isFinite(valor)) continue;
+      if (!porFin.has(fin)) porFin.set(fin, { fin, inicio });
+      const f = porFin.get(fin);
+      f[campo] = valor;
+      f[campo + '_accn'] = a.accn || null;
+      f[campo + '_form'] = a.form || '10-K';
+      f[campo + '_filed'] = a.filed || null;
+      f[campo + '_concepto'] = a._concepto;
+      f[campo + '_prioridad'] = a._prioridad;
+      // La cita NO dice "10-Q": este número no está escrito en ningún
+      // formulario, se calculó con cifras del 10-K. Decirlo es la regla 3.
+      f[campo + '_derivado'] = true;
+      f[campo + '_derivado_de'] = `${a.start} a ${a.end}`;
+      derivaciones.push(fin);
+    }
+  }
+
+  // ── EL HUECO QUE QUEDA, DICHO ──────────────────────────────────────
+  // Si el trimestre no se pudo derivar —porque el anual y los trimestres
+  // vienen de conceptos distintos, o porque falta alguno de los tres— la fila
+  // aparece igual, vacía y con su causa. Una serie trimestral a la que le
+  // falta un trimestre sin avisar se lee como que la empresa no operó.
+  const ordenadas = [...porFin.values()].sort((a, b) => String(b.fin).localeCompare(String(a.fin)));
+  const conHuecos = [];
+  for (let i = 0; i < ordenadas.length; i++) {
+    conHuecos.push(ordenadas[i]);
+    const sig = ordenadas[i + 1];
+    if (!sig) continue;
+    // Entre el cierre de una y el inicio de la siguiente (que es la ANTERIOR
+    // en el tiempo) no debería haber más que un día.
+    const dias = (Date.parse(ordenadas[i].inicio) - Date.parse(sig.fin)) / 864e5;
+    if (!(dias > 10)) continue;
+    const cuantos = Math.max(1, Math.round(dias / 91));
+    conHuecos.push({
+      fin: new Date(Date.parse(ordenadas[i].inicio) - 864e5).toISOString().slice(0, 10),
+      inicio: new Date(Date.parse(sig.fin) + 864e5).toISOString().slice(0, 10),
+      falta: true,
+      falta_motivo: cuantos === 1
+        ? 'este trimestre no tiene formulario propio: la emisora lo reporta dentro del 10-K del ejercicio, y acá no se pudo derivar'
+        : `faltan ${cuantos} trimestres entre estas dos fechas: EDGAR no los trae como periodo propio`,
+    });
+  }
+
+  const filas = conHuecos
     .slice(0, tope)
     .map((f) => ({
       ...f,
@@ -279,7 +441,7 @@ export function trimestresDeCompanyFacts(facts, { tope = 8 } = {}) {
       margen_pct: Number.isFinite(f.ingresos) && Number.isFinite(f.utilidad) && f.ingresos !== 0
         ? (f.utilidad / f.ingresos) * 100 : null,
       margen_motivo: Number.isFinite(f.ingresos) && Number.isFinite(f.utilidad) && f.ingresos !== 0
-        ? null : 'falta el ingreso o la utilidad del trimestre',
+        ? null : (f.falta ? f.falta_motivo : 'falta el ingreso o la utilidad del trimestre'),
     }));
   // Qué concepto terminó dando cada número. Si la emisora cambió de grafía a
   // mitad de la serie, se usan dos y se DICE: son el mismo dato económico,
@@ -300,6 +462,9 @@ export function trimestresDeCompanyFacts(facts, { tope = 8 } = {}) {
     // ingresos" son dos cosas distintas, y la segunda es la que dejó ocho
     // barras iguales en pantalla.
     motivo: filas.length ? null : 'EDGAR trae los conceptos pero ningún periodo trimestral',
+    // Cuántas filas se calcularon con el 10-K en vez de leerse de un 10-Q.
+    derivados: filas.filter((f) => f.ingresos_derivado || f.utilidad_derivado).length,
+    huecos: filas.filter((f) => f.falta).length,
     motivo_ingresos: filas.length && !filas.some((f) => Number.isFinite(f.ingresos))
       ? 'EDGAR no trae ingresos trimestrales para esta emisora bajo ninguno de los conceptos conocidos'
       : null,
