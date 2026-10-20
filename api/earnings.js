@@ -163,6 +163,43 @@ async function nextEarningsFromCalendar(calRes, sym) {
   return null;
 }
 
+// Calendario de Finnhub SIN el corte silencioso.
+//
+// /calendar/earnings tiene tope de filas por respuesta y las devuelve en orden
+// de fecha DESCENDENTE: en temporada de reportes una ventana de 30 días se
+// trunca y lo que sobrevive son las fechas MÁS TARDÍAS. Por eso el 20-oct el
+// calendario "empezaba" el 10-nov — no era el rango ni el sort ascendente de
+// abajo, eran las 3 semanas tempranas (NFLX incluido) recortadas en origen.
+//
+// Si la fecha más temprana recibida es posterior a `from`, se vuelve a pedir
+// [from, esa fecha] (inclusive: ese día pudo quedar a medias) hasta cubrir el
+// rango, sin progreso, o MAX_TRAMOS. Fuera de temporada: 1 request, como antes.
+// Devuelve el array de filas (dedupe symbol|date) o null si la 1a respuesta no
+// es un calendario válido.
+const MAX_TRAMOS = 8;
+async function fetchCalendarCompleto(fromDate, toDate, finnhubKey, symbol) {
+  const filas = new Map();
+  let hasta = toDate;
+  let minPrevio = null;
+  for (let i = 0; i < MAX_TRAMOS; i++) {
+    const r = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromDate}&to=${hasta}`
+      + (symbol ? `&symbol=${encodeURIComponent(symbol)}` : '') + `&token=${finnhubKey}`);
+    const contentType = (r && r.headers && r.headers.get('content-type')) || '';
+    const data = contentType.includes('application/json') ? await r.json() : null;
+    if (!data || !Array.isArray(data.earningsCalendar)) return i === 0 ? null : [...filas.values()];
+    let min = null;
+    for (const e of data.earningsCalendar) {
+      if (!e || !e.symbol || !e.date) continue;
+      filas.set(`${e.symbol}|${e.date}`, e);
+      if (min === null || e.date < min) min = e.date;
+    }
+    if (min === null || min <= fromDate || (minPrevio !== null && min >= minPrevio)) break;
+    minPrevio = min;
+    hasta = min;
+  }
+  return [...filas.values()];
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -395,33 +432,69 @@ export default async function handler(req, res) {
 
   // ═══════════════════════════════════════════════════════════════
   // MODE 1: CALENDAR — /api/earnings?from=...&to=... (existing behavior)
+  //         /api/earnings?symbol=NFLX → solo ese ticker: próximo + últimos 4
   // ═══════════════════════════════════════════════════════════════
   if (!finnhubKey) return res.status(200).json({ earnings: [] });
 
+  // `?symbol=` antes no se leía: el handler sólo desestructuraba `ticker`, así
+  // que ?symbol=NFLX caía aquí sin filtro y devolvía el calendario entero.
+  const symbol = req.query && req.query.symbol ? String(req.query.symbol).toUpperCase().trim() : '';
+
   const nowDate = new Date();
-  const fromDate = from || nowDate.toISOString().split('T')[0];
-  const toDate = to || new Date(nowDate.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const todayStr = nowDate.toISOString().split('T')[0];
+  const dayOffset = (d) => new Date(nowDate.getTime() + d * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // Con symbol la ventana mira hacia atrás (últimos 4 trimestres ≈ 400 días)
+  // y 120 días adelante, igual que el próximo earnings de la rama ?ticker=.
+  const fromDate = from || (symbol ? dayOffset(-400) : todayStr);
+  const toDate = to || (symbol ? dayOffset(120) : dayOffset(30));
+
+  const toRow = (symMap) => (e) => ({
+    ticker: e.symbol,
+    // Nombre del symbol map (title-cased); null si el símbolo no está
+    // (no-US raro) — el frontend omite, nunca inventa.
+    company: (symMap && symMap[e.symbol]) || null,
+    date: e.date,
+    time: e.hour === 'bmo' ? 'BMO' : e.hour === 'amc' ? 'AMC' : 'TBD',
+    eps_est: e.epsEstimate,
+    eps_actual: e.epsActual,
+    revenue_est: e.revenueEstimate,
+    revenue_actual: e.revenueActual,
+    quarter: e.quarter,
+    year: e.year
+  });
 
   try {
     // El symbol map corre en paralelo al calendario: con cache caliente son
     // 0 requests extra; frío, 1 request que no suma latencia secuencial.
-    const [r, symMap] = await Promise.all([
-      fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromDate}&to=${toDate}&token=${finnhubKey}`),
+    const [calendar, symMap] = await Promise.all([
+      fetchCalendarCompleto(fromDate, toDate, finnhubKey, symbol),
       getSymbolMap(finnhubKey)
     ]);
-    const contentType = r.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      return res.status(200).json({ earnings: [] });
-    }
-    const data = await r.json();
-    if (!data.earningsCalendar) {
-      return res.status(200).json({ earnings: [] });
+    if (!calendar) {
+      return res.status(200).json(symbol ? { symbol, earnings: [], count: 0, next: null } : { earnings: [] });
     }
     // No se filtra por epsEstimate: en el free tier muchos earnings
     // CONFIRMADOS de corto plazo vienen sin estimate y el filtro los
     // borraba — el panel "this week" quedaba mostrando solo fechas
     // lejanas que sí traían estimate (Aug 7/10 bajo "this week" en jul).
-    const conFecha = data.earningsCalendar.filter(e => e.symbol && e.date);
+    const conFecha = calendar.filter(e => e.symbol && e.date);
+
+    if (symbol) {
+      // Filtro estricto aunque Finnhub ya reciba &symbol=: nunca devolver
+      // filas de otro ticker. Próximo = primera fecha >= hoy; pasados = los 4
+      // más recientes con fecha < hoy (si la fuente los trae).
+      const propias = conFecha.filter(e => String(e.symbol).toUpperCase() === symbol);
+      const asc = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+      const proximo = propias.filter(e => e.date >= todayStr).sort(asc)[0] || null;
+      const pasados = propias.filter(e => e.date < todayStr).sort(asc).slice(-4);
+      const earnings = [...pasados, ...(proximo ? [proximo] : [])].map(toRow(symMap));
+      return res.status(200).json({
+        symbol,
+        earnings,
+        count: earnings.length,
+        next: proximo ? toRow(symMap)(proximo) : null,
+      });
+    }
     // LO QUE EL FILTRO DESCARTA, CONTADO Y CON NOMBRE.
     //
     // `?mega=1` se queda con ~55 nombres curados, y en plena temporada de
@@ -437,20 +510,7 @@ export default async function handler(req, res) {
     const earnings = conFecha
       // ?mega=1: intersecta con el set curado de mega-caps (calendario /hoy).
       .filter(e => !megaOnly || MEGA_CAPS.has(e.symbol))
-      .map(e => ({
-        ticker: e.symbol,
-        // Nombre del symbol map (title-cased); null si el símbolo no está
-        // (no-US raro) — el frontend omite, nunca inventa.
-        company: (symMap && symMap[e.symbol]) || null,
-        date: e.date,
-        time: e.hour === 'bmo' ? 'BMO' : e.hour === 'amc' ? 'AMC' : 'TBD',
-        eps_est: e.epsEstimate,
-        eps_actual: e.epsActual,
-        revenue_est: e.revenueEstimate,
-        revenue_actual: e.revenueActual,
-        quarter: e.quarter,
-        year: e.year
-      }))
+      .map(toRow(symMap))
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     return res.status(200).json({
       earnings, count: earnings.length,
