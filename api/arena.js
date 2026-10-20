@@ -9,6 +9,15 @@
 // Nunca expone keys ni el account_number completo. Si Alpaca no responde,
 // devuelve el journal igual con el error visible (honestidad > panel roto).
 //
+// ── CUÁNTO TARDA, MEDIDO EN CADA RESPUESTA (2026-10-20) ─────────────
+// Corre bajo el comodín `api/*.js` de 60s y no tiene timeouts propios: ni el
+// fetch a Neon ni el de Alpaca llevan AbortSignal, así que el único techo es
+// el de Vercel. Para decidir su techo hace falta saber cuánto tarda DE VERDAD,
+// y eso solo se mide en producción. Cada respuesta trae el desglose en
+// `tiempos_ms` y en la cabecera `Server-Timing` (la ve el navegador en la
+// pestaña de red). Medir no cambia lo que hace: mismas llamadas, mismo orden.
+// Ver docs/arena-js-60s.md y scripts/arena-js-medir.mjs.
+//
 // ENV VARS: ARENA_ENABLED · ALPACA_PAPER_KEY/SECRET · DATABASE_URL
 // ═══════════════════════════════════════════════════════════════
 
@@ -26,6 +35,8 @@ export default async function handler(req, res) {
   // Vista single-agent del INSIGNIA (Claude PM · Agente #6): app.html la usa para
   // su card de siempre y su historial se preserva bajo agent_id='claude'. El
   // panorama multi-modelo (la liga) vive en /api/leaderboard.
+  const t0 = Date.now();
+  const tiempos = { schema_ms: null, journal_ms: null, alpaca_ms: null, total_ms: null };
   const flagship = agentById(FLAGSHIP_AGENT_ID);
   const flagshipCreds = agentAlpacaCreds(flagship);
   const out = {
@@ -38,12 +49,16 @@ export default async function handler(req, res) {
   };
 
   try {
+    const tSchema = Date.now();
     await ensureSchema();
+    tiempos.schema_ms = Date.now() - tSchema;
+    const tJournal = Date.now();
     const [rows, stateRows] = await Promise.all([
       sql(`select run_date, status, plan, actions, account, created_at from arena_journal
            where phase = 'decide' and agent_id = $1 order by created_at desc limit 1`, [FLAGSHIP_AGENT_ID]),
       sql(`select halted, halted_at, halted_reason, resumed_at from arena_state where agent_id = $1`, [FLAGSHIP_AGENT_ID]),
     ]);
+    tiempos.journal_ms = Date.now() - tJournal;
     if (rows[0]) {
       out.journal = {
         run_date: rows[0].run_date,
@@ -69,6 +84,7 @@ export default async function handler(req, res) {
   }
 
   if (out.has_keys) {
+    const tAlpaca = Date.now();
     try {
       const [account, positions] = await Promise.all([getAccount(flagshipCreds), getPositions(flagshipCreds)]);
       out.account = { equity: Number(account.equity), cash: Number(account.cash), status: account.status };
@@ -80,7 +96,14 @@ export default async function handler(req, res) {
     } catch (err) {
       out.alpaca_error = String((err && err.message) || err);
     }
+    tiempos.alpaca_ms = Date.now() - tAlpaca;
   }
+
+  tiempos.total_ms = Date.now() - t0;
+  out.tiempos_ms = tiempos;
+  res.setHeader('Server-Timing', Object.entries(tiempos)
+    .filter(([, v]) => v != null)
+    .map(([k, v]) => `${k.replace(/_ms$/, '')};dur=${v}`).join(', '));
 
   // El equity intradía cambia poco para una card y el journal es diario.
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
