@@ -350,7 +350,10 @@ console.log('handler: cat inválida → 400 con uso');
 {
   const res = mockRes();
   await handler({ method: 'GET', query: { cat: 'congreso' } }, res);
-  ok(res.code === 400 && /insider \| 13f/.test(res.body.error), '400 con hint', JSON.stringify(res.body));
+  // R5 agregó `form4`: el hint tiene que nombrar las TRES categorías, porque
+  // es lo único que lee quien se equivocó al escribir la query.
+  ok(res.code === 400 && /insider/.test(res.body.error) && /form4/.test(res.body.error)
+     && /13f/.test(res.body.error), '400 con hint de las tres', JSON.stringify(res.body));
   const res2 = mockRes();
   await handler({ method: 'GET', query: {} }, res2);
   ok(res2.code === 400, 'sin cat → 400');

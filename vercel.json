@@ -93,6 +93,14 @@
   },
   "rewrites": [
     {
+      "source": "/",
+      "destination": "/mercado.html"
+    },
+    {
+      "source": "/inicio",
+      "destination": "/index.html"
+    },
+    {
       "source": "/app",
       "destination": "/app.html"
     },
@@ -103,6 +111,22 @@
     {
       "source": "/mercado",
       "destination": "/mercado.html"
+    },
+    {
+      "source": "/mercado/noticias",
+      "destination": "/noticias.html"
+    },
+    {
+      "source": "/mercado/indice/:idx",
+      "destination": "/indice.html"
+    },
+    {
+      "source": "/mercado/insiders",
+      "destination": "/insiders.html"
+    },
+    {
+      "source": "/analiza/:ticker",
+      "destination": "/analiza.html"
     },
     {
       "source": "/hoy",
@@ -225,6 +249,21 @@
     {
       "path": "/api/noticias?job=banxico",
       "schedule": "25 23 * * 1-5"
+    },
+    {
+      "path": "/api/stock-tracker?job=indice&dias=3",
+      "schedule": "20 23 * * *"
+    },
+    {
+      "path": "/api/stock-tracker?job=form4",
+      "schedule": "*/10 * * * *"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/hoy",
+      "destination": "/mercado",
+      "permanent": false
     }
   ]
 }

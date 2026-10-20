@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ficha de índice — /mercado — QuantDesk</title>
+<meta name="description" content="Ficha de índice: gráfica con medias de 50 y 200 días, máximo y mínimo de 52 semanas, y rendimiento por periodo en dos monedas.">
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  /mercado/indice/:idx — R4, artboard 6.
+
+  LO QUE ESTA PANTALLA PROMETE:
+
+  1. NINGÚN % SE CALCULA ACÁ. Todos salen de `qdPeriodChange` sobre la serie
+     que mandó el endpoint, y se pintan con `qdPctTag` (regla 1). La columna
+     en pesos pasa además por `qd-pesos.js`, que es el ÚNICO lugar donde se
+     compone un rendimiento con un tipo de cambio.
+  2. SOBRE LA GRÁFICA SÓLO HAY ARITMÉTICA. Medias de 50 y 200 días, máximo y
+     mínimo de 52 semanas. Ni una línea de tendencia ni un patrón: el encargo
+     los deja fuera con todas las letras, y con razón — una línea mal trazada
+     es un número mal, y encima uno que parece análisis.
+  3. LA MEDIA DE 200 DÍAS NO SE DIBUJA SI NO EXISTE. Con un año de historia
+     sólo hay media de 200 en el último tramo; el resto va vacío y la ficha
+     dice por qué. Extenderla hacia atrás sería inventarla.
+  4. LO QUE NO TENEMOS SE DECLARA. Hoy: la lista de componentes y, por lo
+     tanto, la capitalización total y el P/U agregado. El panel lo dice con
+     su causa, no se rellena con el universo del screener — que NO es la
+     composición del índice.
+  ═══════════════════════════════════════════════════════════════════
+-->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Ficha de índice — /mercado — QuantDesk">
+<meta property="og:description" content="Medias de 50 y 200 días, máximo y mínimo de 52 semanas, y rendimiento por periodo en dos monedas.">
+<meta name="twitter:card" content="summary_large_image">
+<!-- ── R7: LA IMAGEN DEL PREVIEW ───────────────────────────────────────
+     `og:image` NO está puesta a propósito, y es una decisión, no un olvido.
+     El encargo pide que el preview de WhatsApp sea EL MISMO PNG que genera
+     el botón de compartir; ese PNG se dibuja en el navegador del lector, así
+     que para servirlo como `og:image` haría falta renderizarlo en el
+     servidor — otra dependencia (un renderizador tipo Satori) que no se
+     puede instalar ni probar desde este entorno sin red.
+     Poner una imagen genérica mientras tanto sería peor: el preview diría
+     algo distinto de lo que la URL abre. Sin `og:image`, WhatsApp enseña
+     título y descripción, que SÍ son ciertos. Queda anotado en el PR. -->
+<meta name="theme-color" content="#0b0f14">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#0e141b; --linea:#161c24;
+    --texto:#e6edf3; --tenue:#8b98a5; --apagado:#7d8793;
+    --verde:#00c97d; --rojo:#E24B4A;
+    --sans:"IBM Plex Sans Condensed","IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tap:44px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
+    font-family:var(--sans);-webkit-text-size-adjust:100%}
+  a{color:inherit;text-decoration:none}
+
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 16px 8px;
+    padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
+  .marca{font-family:var(--mono);font-size:15px;letter-spacing:.5px;white-space:nowrap}
+  .marca b{color:var(--verde);font-weight:600}
+  .chip{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
+  .chip.abierto{color:var(--verde)}
+  .volver{font-family:var(--mono);font-size:11px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:6px;padding:7px 9px}
+
+  nav,.toggle{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea);
+    overflow-x:auto;scrollbar-width:none}
+  nav::-webkit-scrollbar,.toggle::-webkit-scrollbar{display:none}
+  nav button,.toggle button{flex:0 0 auto;min-height:var(--tap);min-width:var(--tap);padding:0 13px;
+    background:transparent;border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
+    font-family:var(--mono);font-size:13px;cursor:pointer;white-space:nowrap;
+    -webkit-tap-highlight-color:transparent}
+  nav button[aria-selected="true"],.toggle button[aria-pressed="true"]{
+    background:#18212b;border-color:#2b3845;color:var(--texto)}
+  .toggle button[disabled]{opacity:.45;cursor:default;border-style:dashed}
+  .toggle{gap:14px;align-items:center}
+  .grupo{display:flex;gap:6px}
+  .grupo-nom{font-family:var(--mono);font-size:10px;color:var(--apagado);align-self:center}
+
+  .titular{padding:12px 16px 0;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .titular h1{margin:0;font-size:22px;letter-spacing:-.2px}
+  .titular .nivel{font-family:var(--mono);font-size:18px}
+  .titular .sub{font-family:var(--mono);font-size:11px;color:var(--tenue);width:100%;margin-top:2px}
+
+  main{padding:10px 16px 0}
+  h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
+    letter-spacing:.6px;text-transform:uppercase;margin:16px 0 7px}
+  h2 span{color:var(--apagado);font-weight:400;text-transform:none;letter-spacing:0}
+  .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
+    border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
+  .panel{border:1px solid var(--linea);border-radius:8px;background:var(--panel);overflow:hidden}
+
+  #grafica{position:relative;height:320px;border:1px solid var(--linea);border-radius:8px;
+    background:var(--panel);overflow:hidden}
+  #grafica .aviso{position:absolute;left:0;right:0;bottom:0;padding:5px 8px;
+    font-family:var(--mono);font-size:10px;color:var(--tenue);
+    background:rgba(11,15,20,.82);line-height:1.4}
+  .leyenda{display:flex;flex-wrap:wrap;gap:12px;padding:7px 2px 0;
+    font-family:var(--mono);font-size:10px;color:var(--tenue)}
+  .leyenda i{display:inline-block;width:14px;height:0;border-top:2px solid;margin-right:5px;
+    vertical-align:middle}
+
+  /* R7: el botón de compartir y su hoja */
+  .compartir{min-height:36px;display:inline-flex;align-items:center;padding:0 10px;
+    border:1px solid var(--linea);border-radius:6px;color:var(--tenue);background:transparent;
+    font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap}
+  .compartir-caja{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:60;
+    display:flex;flex-direction:column;gap:6px;padding:12px;min-width:260px;
+    background:var(--panel);border:1px solid var(--linea);border-radius:10px;
+    box-shadow:0 14px 40px rgba(0,0,0,.6)}
+  .compartir-caja .et{font-family:var(--mono);font-size:10px;color:var(--apagado);letter-spacing:.06em}
+  .compartir-caja button{min-height:44px;background:transparent;border:1px solid var(--linea);
+    border-radius:6px;color:var(--texto);font-family:var(--mono);font-size:13px;cursor:pointer}
+  .compartir-caja .nota{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.4;
+    min-height:14px}
+
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+  th,td{padding:7px 10px;text-align:right;border-top:1px solid var(--linea);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  thead th{border-top:0;color:var(--tenue);font-weight:600;font-size:10px;
+    letter-spacing:.06em;text-transform:uppercase}
+  tbody tr:hover{background:#141c25}
+  td.falta{color:var(--apagado);font-style:normal}
+  .fuente{font-family:var(--mono);font-size:10px;color:var(--apagado)}
+
+  /* REJILLA DE DOS FILAS, no un flex con `width:100%` y margen negativo. Con
+     el flex, en la columna de 360 px la etiqueta larga ("Contra la media de
+     200 días") envolvía a tres renglones y el valor se dibujaba ENCIMA: la
+     captura lo enseñó. Acá la primera fila es etiqueta + valor y la segunda
+     es la fuente, a lo ancho. Nada puede encimarse. */
+  .datos{display:grid;grid-template-columns:1fr;gap:0}
+  .dato{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;
+    padding:8px 10px;border-top:1px solid var(--linea);align-items:baseline}
+  .dato:first-child{border-top:0}
+  .dato .k{font-family:var(--mono);font-size:11px;color:var(--tenue);min-width:0;line-height:1.3}
+  .dato .v{font-family:var(--mono);font-size:13px;text-align:right;white-space:nowrap}
+  .dato .f{grid-column:1/-1;font-family:var(--mono);font-size:9px;color:var(--apagado);
+    line-height:1.4}
+  .dato .f:empty{display:none}
+
+  .nota-fila{display:block;padding:9px 11px;border-top:1px solid var(--linea)}
+  .nota-fila:first-child{border-top:0}
+  .nota-fila .tit{font-size:13px;line-height:1.35}
+  .nota-fila .meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:3px}
+
+  footer{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.6;
+    padding:16px 16px calc(18px + env(safe-area-inset-bottom));
+    border-top:1px solid var(--linea);margin-top:18px}
+
+  /* ── ESCRITORIO: LA FICHA CABE EN UNA PANTALLA ─────────────────────
+     La regla 8 pide 1440 sin scroll. La primera versión puso la gráfica en
+     420 px fijos y la página medía 1194: la tabla de rendimiento quedaba
+     cortada por abajo, que es justo la mitad del artboard 6.
+
+     No se arregla bajando el 420 a un número más chico adivinado —el alto de
+     la cabecera y del titular cambian con el contenido—, sino con la misma
+     rejilla de R3(c): la página mide una pantalla, la gráfica se queda con
+     lo que SOBRA (`minmax(0,1fr)`) y la tabla mide lo suyo. La columna
+     lateral se recorre por dentro. */
+  @media (min-width:1000px){
+    html,body{height:100%}
+    body{height:100dvh;display:grid;overflow:hidden;
+      grid-template-columns:minmax(0,1fr) 360px;
+      grid-template-rows:auto auto auto minmax(0,1fr) auto;
+      column-gap:18px;padding:0 24px;max-width:1440px;margin:0 auto}
+    header{grid-column:1/-1;grid-row:1;padding-left:0;padding-right:0}
+    nav{grid-column:1/-1;grid-row:2;padding-left:0;padding-right:0}
+    .toggle{grid-column:1/-1;grid-row:3;padding-left:0;padding-right:0}
+    .titular{grid-column:1/-1;grid-row:4;padding:10px 0 0;align-self:start}
+    main{display:contents}
+    .col-chart{grid-column:1;grid-row:4;min-width:0;min-height:0;
+      display:flex;flex-direction:column;padding-top:62px}
+    .col-lado{grid-column:2;grid-row:4;min-width:0;min-height:0;
+      overflow-y:auto;padding-bottom:8px}
+    /* La gráfica se queda con el hueco; la tabla y los componentes miden lo
+       suyo y nunca se recortan. */
+    #grafica{flex:1;min-height:220px;height:auto}
+    .leyenda{flex:none}
+    .col-chart h2,.col-chart .panel,.col-chart #componentes{flex:none}
+    .datos{grid-template-columns:1fr}
+    footer{grid-column:1/-1;grid-row:5;padding:8px 0 10px;align-self:end;margin-top:0}
+    th,td{padding:5px 10px}
+    h2{margin:10px 0 5px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="marca">/<b>mercado</b> · índice</div>
+  <div class="chip" id="chip">—</div>
+  <button type="button" class="compartir" id="btn-compartir">Compartir imagen</button>
+  <a class="volver" href="/mercado">← al mapa</a>
+</header>
+
+<nav id="indices" role="tablist" aria-label="Índices"></nav>
+
+<div class="toggle" role="group" aria-label="Opciones de la gráfica">
+  <span class="grupo-nom">RANGO</span>
+  <div class="grupo" id="t-rango"></div>
+  <span class="grupo-nom">VISTA</span>
+  <div class="grupo" id="t-tipo">
+    <button type="button" data-tipo="linea" aria-pressed="true">Línea</button>
+    <button type="button" data-tipo="velas" aria-pressed="false">Velas</button>
+  </div>
+  <span class="grupo-nom">MONEDA</span>
+  <div class="grupo" id="t-moneda"></div>
+</div>
+
+<div class="titular">
+  <h1 id="nombre">—</h1>
+  <span class="nivel" id="nivel"></span>
+  <span id="pct1d"></span>
+  <div class="sub" id="sub"></div>
+</div>
+
+<main>
+  <div class="col-chart">
+    <div id="grafica"><div class="aviso" id="grafica-aviso">cargando…</div></div>
+    <div class="leyenda" id="leyenda"></div>
+
+    <h2>Rendimiento por periodo <span id="rend-nota"></span></h2>
+    <div class="panel"><table id="tabla-rend">
+      <thead><tr><th>Periodo</th><th id="col-a">—</th><th id="col-b">—</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+
+    <h2>Componentes por peso <span id="comp-nota"></span></h2>
+    <div id="componentes"></div>
+  </div>
+
+  <div class="col-lado">
+    <h2>Datos</h2>
+    <div class="panel datos" id="datos"></div>
+
+    <h2>Noticias del índice <span id="news-nota"></span></h2>
+    <div class="panel" id="noticias"></div>
+  </div>
+
+  <footer id="pie">cargando…</footer>
+</main>
+
+<script src="/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/qd-periods.js"></script>
+<script src="/qd-mercados.js"></script>
+<script src="/qd-pesos.js"></script>
+<script src="/qd-compartir.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // ── LOS NUEVE, Y SU ARITMÉTICA ─────────────────────────────────────
+  // El catálogo y los cálculos vienen del MISMO módulo que usa el endpoint
+  // (`api/_lib/mercado-indice.js`), copiados acá como script clásico. Son
+  // nueve filas y cinco funciones; duplicar la aritmética sería la forma
+  // segura de que la media de 200 de la pantalla deje de ser la del servidor.
+  // Por eso la pantalla NO recalcula: pide lo que necesita y lo pinta.
+  var RANGOS = [
+    { id:'1mo', txt:'1M' }, { id:'3mo', txt:'3M' }, { id:'6mo', txt:'6M' },
+    { id:'ytd', txt:'YTD' }, { id:'1y', txt:'1A' }, { id:'5y', txt:'5A' }, { id:'max', txt:'Máx' }
+  ];
+  var PERIODOS = ['1D','1S','1M','3M','6M','YTD','1A','3A','5A'];
+
+  var estado = (function(){
+    var p = new URLSearchParams(location.search);
+    // La ruta es `/mercado/indice/SPX`; el rewrite de Vercel no pasa el
+    // segmento como query, así que sale del path. `?idx=` existe para que la
+    // pantalla se pueda abrir también sin el rewrite (y para las pruebas).
+    var delPath = (location.pathname.match(/\/indice\/([A-Za-z0-9^.]+)/) || [])[1];
+    var ids = ['SPX','NDX','DJI','IPC','BOVESPA','KOSPI','NIKKEI','DAX','HSI'];
+    var idx = String(p.get('idx') || delPath || 'SPX').toUpperCase();
+    if(ids.indexOf(idx) < 0) idx = 'SPX';
+    var rango = p.get('rango');
+    if(!RANGOS.some(function(r){ return r.id === rango; })) rango = '1y';
+    return {
+      idx: idx, rango: rango,
+      tipo: p.get('vista') === 'velas' ? 'velas' : 'linea',
+      moneda: p.get('moneda') === 'otra' ? 'otra' : 'local'
+    };
+  })();
+
+  var datos = null, chart = null, serieChart = null, mediasChart = [], pidiendo = false;
+
+  function escribirUrl(){
+    var p = new URLSearchParams();
+    if(estado.rango !== '1y') p.set('rango', estado.rango);
+    if(estado.tipo !== 'linea') p.set('vista', estado.tipo);
+    if(estado.moneda !== 'local') p.set('moneda', estado.moneda);
+    var qs = p.toString();
+    history.replaceState(null, '', '/mercado/indice/' + estado.idx + (qs ? '?' + qs : ''));
+  }
+
+  // ── ARITMÉTICA DE LA FICHA (espejo exacto de api/_lib/mercado-indice.js)
+  // ═══════════════════════════════════════════════════════════════
+  // LA FORMA DE UNA VELA SE FIJA EN LA PUERTA, UNA VEZ.
+  //
+  // Esta pantalla salió a producción sin pintar: "cargando SPX…" para
+  // siempre, la gráfica en blanco y los nueve periodos en "—", con
+  // `/api/mercado-indice?idx=SPX` contestando 200 y con velas (Lety,
+  // 2026-10-20).
+  //
+  // La causa: `/api/candles` —que es de donde sale la serie— devuelve
+  // `{t,o,h,l,c,v}`, y media pantalla leía `{time,open,high,low,close}`,
+  // que es la forma que pide Lightweight Charts. Las dos formas convivían
+  // porque el fixture de la corrida en Chromium estaba ESCRITO A MANO con
+  // la segunda: la comprobación pasaba sobre una forma que el endpoint
+  // nunca devolvió. Con la de verdad, `setData` recibía `time: undefined`,
+  // lanzaba, y `pintar()` moría en la gráfica — antes de la tabla y antes
+  // del pie. De ahí los tres síntomas a la vez.
+  //
+  // Así que la forma CANÓNICA de la pantalla es la del endpoint —`t,o,h,l,c`,
+  // en segundos— y la de la librería se arma sólo al dibujar. Se acepta
+  // `time/open/…` a la entrada porque nada cuesta, pero ya no circula.
+  function normalizaVela(v){
+    if(!v) return null;
+    var n = function(x){ return Number.isFinite(Number(x)) ? Number(x) : null; };
+    var t = n(v.t != null ? v.t : v.time);
+    var c = n(v.c != null ? v.c : v.close);
+    if(t == null || c == null) return null;
+    return { t: t, c: c,
+             o: n(v.o != null ? v.o : v.open),
+             h: n(v.h != null ? v.h : v.high),
+             l: n(v.l != null ? v.l : v.low) };
+  }
+  function normalizaVelas(vs){
+    var out = [];
+    (vs || []).forEach(function(v){ var x = normalizaVela(v); if(x) out.push(x); });
+    // Por tiempo, siempre: Lightweight Charts rechaza una serie desordenada,
+    // y `qdPeriodChange` cuenta sesiones hacia atrás desde el final.
+    return out.sort(function(a,b){ return a.t - b.t; });
+  }
+  function cierreDe(p){ return p && Number.isFinite(p.c) ? p.c : null; }
+
+  function mediaMovil(serie, n){
+    var out = new Array(serie.length).fill(null), suma = 0, dentro = 0;
+    for(var i = 0; i < serie.length; i++){
+      var c = cierreDe(serie[i]);
+      if(!Number.isFinite(c)){ suma = 0; dentro = 0; continue; }
+      suma += c; dentro++;
+      if(dentro > n){ var v = cierreDe(serie[i-n]); suma -= Number.isFinite(v) ? v : 0; dentro = n; }
+      if(dentro === n) out[i] = suma / n;
+    }
+    return out;
+  }
+
+  function rango52(serie){
+    var pts = serie.map(function(p){ return { t:p.t, c:p.c }; })
+      .filter(function(p){ return Number.isFinite(p.c); });
+    if(!pts.length) return { max:null, min:null, motivo:'la serie no trae cierres' };
+    var v = pts.slice(-252), max = v[0], min = v[0];
+    v.forEach(function(p){ if(p.c > max.c) max = p; if(p.c < min.c) min = p; });
+    var u = v[v.length-1];
+    return { max:max.c, max_t:max.t, min:min.c, min_t:min.t, ultimo:u.c, sesiones:v.length,
+             completa: v.length >= 252,
+             desde_max_pct: max.c > 0 ? ((u.c - max.c)/max.c)*100 : null,
+             motivo: v.length >= 252 ? null : 'la ventana trae ' + v.length + ' sesiones de las 252 de un año bursátil' };
+  }
+
+  function volatilidad(serie){
+    var cs = serie.map(cierreDe).filter(function(c){ return Number.isFinite(c) && c > 0; });
+    if(cs.length < 31) return { pct:null, motivo:'hacen falta 31 cierres y hay ' + cs.length };
+    var u = cs.slice(-31), r = [];
+    for(var i = 1; i < u.length; i++) r.push(Math.log(u[i]/u[i-1]));
+    var m = r.reduce(function(a,b){ return a+b; },0)/r.length;
+    var vr = r.reduce(function(a,x){ return a + Math.pow(x-m,2); },0)/(r.length-1);
+    return { pct: Math.sqrt(vr)*Math.sqrt(252)*100, motivo:null };
+  }
+
+  function contraMedia(serie, n){
+    var m = mediaMovil(serie, n), ult = null;
+    for(var i = m.length-1; i >= 0; i--){ if(m[i] != null){ ult = m[i]; break; } }
+    var cs = serie.map(cierreDe).filter(Number.isFinite);
+    var px = cs.length ? cs[cs.length-1] : null;
+    if(ult == null || px == null){
+      return { media:null, pct:null, arriba:null,
+               motivo:'la serie trae ' + cs.length + ' cierres y la media de ' + n + ' días necesita ' + n };
+    }
+    return { media:ult, pct:((px-ult)/ult)*100, arriba: px >= ult, motivo:null };
+  }
+
+  /**
+   * La serie en la OTRA moneda, para el toggle del artboard.
+   *
+   * Cada cierre por el tipo de cambio DE SU DÍA, no por el último: convertir
+   * con el dólar de hoy daría la forma correcta con los niveles equivocados y
+   * el cambio del periodo saldría idéntico al local — o sea, el toggle no
+   * haría nada, que es exactamente el bug que tuvo el de moneda en México.
+   */
+  function serieConvertida(velas, fx){
+    var pts = (fx || []).filter(function(p){ return p && isFinite(p.t) && isFinite(p.c) && p.c > 0; })
+      .sort(function(a,b){ return a.t - b.t; });
+    if(pts.length < 2) return { velas:[], descartadas:0,
+      motivo:'el tipo de cambio trae ' + pts.length + ' punto(s): sin dos no hay con qué convertir' };
+    var out = [], desc = 0, i = 0;
+    (velas || []).forEach(function(v){
+      var t = Number(v.t);
+      if(!isFinite(t)){ desc++; return; }
+      while(i + 1 < pts.length && pts[i+1].t <= t) i++;
+      if(pts[i].t > t){ desc++; return; }
+      var k = pts[i].c, c = { t: t };
+      ['o','h','l','c'].forEach(function(campo){
+        // `Number(null)` es 0, no NaN: un cierre ausente convertido en 0
+        // hunde la gráfica hasta el eje. Se pregunta por el finito.
+        if(Number.isFinite(v[campo])) c[campo] = v[campo] * k;
+      });
+      if(!Number.isFinite(c.c)){ desc++; return; }
+      out.push(c);
+    });
+    return { velas: out, descartadas: desc,
+      motivo: desc ? desc + ' cierre(s) quedaron fuera: son anteriores al primer tipo de cambio conocido' : null };
+  }
+
+  /** Lo que se dibuja: la serie local, o la convertida si el toggle lo pide. */
+  function velasVisibles(){
+    var velas = (datos && datos.serie && datos.serie.velas) || [];
+    if(estado.moneda !== 'otra' || !velas.length) return { velas: velas, motivo: null, convertida: false };
+    var ix = (datos && datos.indice) || {};
+    var fx = (datos && datos.fix && datos.fix.serie) || [];
+    if(ix.moneda === 'USD'){
+      var r = serieConvertida(velas, fx);     // dólares × (pesos/dólar) = pesos
+      return { velas: r.velas, motivo: r.motivo, convertida: true, etiqueta: 'en pesos (FIX de cada día)' };
+    }
+    if(ix.moneda === 'MXN'){
+      // Pesos → dólares: dividir por el FIX de cada día.
+      var inv = fx.map(function(p){ return { t: p.t, c: p.c > 0 ? 1 / p.c : null }; })
+        .filter(function(p){ return isFinite(p.c); });
+      var r2 = serieConvertida(velas, inv);
+      return { velas: r2.velas, motivo: r2.motivo, convertida: true, etiqueta: 'en dólares (FIX de cada día)' };
+    }
+    // Para las demás monedas falta el cruce contra el dólar: NO se convierte
+    // con el FIX a secas, que daría un número mal con cara de bueno.
+    return { velas: velas, convertida: false,
+      motivo: 'falta el cruce ' + ix.moneda + '/USD: la gráfica se queda en ' + ix.moneda };
+  }
+
+  // ── EL % DE UN PERIODO: SIEMPRE qdPeriodChange ─────────────────────
+  function serieParaPeriodos(){
+    return ((datos && datos.serie && datos.serie.velas) || [])
+      .map(function(v){ return { t: v.t, c: v.c }; });
+  }
+
+  function cambioLocal(periodo){
+    var s = serieParaPeriodos();
+    if(s.length < 2) return { pct:null, periodLabel:periodo, motivo:'la serie trae ' + s.length + ' cierre(s)' };
+    return qdPeriodChange(s, periodo);
+  }
+
+  function pctDelFix(periodo){
+    var f = (datos && datos.fix && datos.fix.serie) || [];
+    if(f.length < 2) return null;
+    var r = qdPeriodChange(f, periodo);
+    return Number.isFinite(r.pct) ? r.pct : null;
+  }
+
+  /** La segunda columna: en pesos, o en dólares si el índice YA está en pesos. */
+  function cambioOtraMoneda(periodo){
+    var local = cambioLocal(periodo);
+    var fx = pctDelFix(periodo);
+    var ix = (datos && datos.indice) || {};
+    if(ix.moneda === 'MXN'){
+      var d = rendimientoEnDolares(local.pct, fx);
+      return { pct: d.pct, periodLabel: periodo, motivo: d.motivo, etiqueta: 'en dólares' };
+    }
+    // Para los que NO son dólar ni peso falta el cruce de SU moneda contra el
+    // dólar, que esta pantalla no pide: se declara en vez de componer con el
+    // FIX a secas, que daría un número mal con cara de bueno.
+    if(ix.moneda !== 'USD'){
+      return { pct:null, periodLabel:periodo, etiqueta:'en pesos',
+               motivo:'falta el cruce ' + ix.moneda + '/USD del periodo: con el FIX solo, el número saldría mal' };
+    }
+    var r = enPesos({ pctLocal: local.pct, moneda:'USD', usdMxnPct: fx,
+      fix: datos.fix && datos.fix.fecha ? { serie:'SF43718', fecha:datos.fix.fecha, valor:datos.fix.valor } : null });
+    return { pct: r.pct, periodLabel: periodo, motivo: r.motivo, etiqueta: 'en pesos', fuente: r.fuente };
+  }
+
+  /** Lo que la ficha de índice pone en la tarjeta. */
+  function datosParaCompartir(){
+    var ix = (datos && datos.indice) || {};
+    var s = serieParaPeriodos();
+    var ult = s.length ? s[s.length-1] : null;
+    var filas = [];
+    if(ult) filas.push({ k: 'Nivel', v: fmtPrice(ult.c) });
+    ['1D','1S','1M','YTD','1A'].forEach(function(p){
+      var c = cambioLocal(p);
+      filas.push({ k: p, v: Number.isFinite(c.pct) ? (c.pct>=0?'+':'') + c.pct.toFixed(2) + '%' : '—',
+                   color: Number.isFinite(c.pct) ? (c.pct>=0 ? '#00c97d' : '#E24B4A') : '#7d8793' });
+    });
+    return {
+      archivo: 'indice-' + (ix.id || ''),
+      titulo: ix.nombre || 'Índice',
+      subtitulo: (ix.pais || '') + ((datos && datos.serie && datos.serie.rango) ? ' · rango ' + datos.serie.rango : ''),
+      filas: filas,
+      periodo: estado.rango,
+      moneda: ix.moneda || null,
+      fuente: (datos && datos.serie && (datos.serie.fuente || datos.serie.motivo)) || null,
+      fecha: (datos && datos.generado_en) || null,
+      url: location.host + location.pathname + location.search
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // R7: COMPARTIR IMAGEN
+  //
+  // La tarjeta se dibuja EN EL NAVEGADOR (`qd-compartir.js`): no hay un
+  // servicio de imágenes que mantener ni una llamada más al abrir la
+  // pantalla. Lo que se comparte sale de lo que ya está en la pantalla, así
+  // que no puede decir algo distinto de lo que el lector está viendo.
+  //
+  // `navigator.share` con archivo cuando existe (iOS y Android lo tienen) y
+  // descarga cuando no: en escritorio la hoja de compartir no existe y un
+  // botón que no hace nada sería peor que un archivo en Descargas.
+  // ══════════════════════════════════════════════════════════════════
+  function abrirCompartir(){
+    var caja = document.getElementById('compartir-caja');
+    if(caja){ caja.remove(); return; }
+    caja = document.createElement('div');
+    caja.id = 'compartir-caja';
+    caja.className = 'compartir-caja';
+    // EL AVANCE: lo que la imagen va a decir, antes de generarla. No es
+    // adorno — es la línea que hace que nadie mande una tarjeta cuya
+    // procedencia dice "[object Object]" sin enterarse.
+    var av = opsDeTarjeta(datosParaCompartir(), 'historia').ops
+      .filter(function(o){ return o.rol === 'meta' || o.rol === 'fuente'; })
+      .map(function(o){ return o.texto; }).join(' · ');
+    caja.innerHTML = '<div class="et">COMPARTIR IMAGEN</div>'
+      + '<div class="nota" id="compartir-avance">' + esc(av || '') + '</div>'
+      + '<button type="button" data-fmt="historia">Vertical 1080×1920</button>'
+      + '<button type="button" data-fmt="cuadrado">Cuadrado 1080×1080</button>'
+      + '<div class="nota" id="compartir-nota"></div>';
+    document.body.appendChild(caja);
+    caja.addEventListener('click', function(ev){
+      var b = ev.target.closest('button[data-fmt]'); if(!b) return;
+      generarTarjeta(b.dataset.fmt);
+    });
+  }
+
+  function generarTarjeta(formato){
+    var nota = document.getElementById('compartir-nota');
+    var datos = datosParaCompartir();
+    var r;
+    try{ r = qdDibujaTarjeta(datos, formato); }
+    catch(e){ if(nota) nota.textContent = 'no se pudo dibujar: ' + e.message; return; }
+    if(!r.canvas){ if(nota) nota.textContent = 'este navegador no tiene canvas'; return; }
+    var nombre = 'quantdesk-' + (datos.archivo || 'mercado') + '-' + formato + '.png';
+    r.canvas.toBlob(function(blob){
+      if(!blob){ if(nota) nota.textContent = 'el navegador no pudo exportar el PNG'; return; }
+      var archivo = null;
+      try{ archivo = new File([blob], nombre, { type: 'image/png' }); }catch(e){}
+      if(archivo && navigator.canShare && navigator.canShare({ files: [archivo] })){
+        navigator.share({ files: [archivo], title: datos.titulo })
+          .then(function(){ if(nota) nota.textContent = 'compartido'; })
+          .catch(function(){ descargar(blob, nombre, nota); });
+      } else {
+        descargar(blob, nombre, nota);
+      }
+    }, 'image/png');
+  }
+
+  function descargar(blob, nombre, nota){
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = nombre;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+    if(nota) nota.textContent = 'descargada: ' + nombre;
+  }
+
+  // ── PINTADO ────────────────────────────────────────────────────────
+  function pintarIndices(){
+    var nav = document.getElementById('indices');
+    var ids = [['SPX','S&P 500'],['NDX','Nasdaq 100'],['DJI','Dow Jones'],['IPC','IPC'],
+               ['BOVESPA','Bovespa'],['KOSPI','KOSPI'],['NIKKEI','Nikkei'],['DAX','DAX'],['HSI','Hang Seng']];
+    nav.innerHTML = ids.map(function(x){
+      return '<button role="tab" data-idx="' + x[0] + '" aria-selected="' + (estado.idx === x[0]) + '">'
+        + esc(x[1]) + '</button>';
+    }).join('');
+  }
+
+  function pintarToggles(){
+    document.getElementById('t-rango').innerHTML = RANGOS.map(function(r){
+      return '<button type="button" data-rango="' + r.id + '" aria-pressed="' + (estado.rango === r.id) + '">'
+        + esc(r.txt) + '</button>';
+    }).join('');
+    [].forEach.call(document.querySelectorAll('#t-tipo button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.tipo === estado.tipo));
+    });
+    var ix = (datos && datos.indice) || {};
+    var otra = ix.moneda === 'MXN' ? 'Dólares' : 'Pesos';
+    document.getElementById('t-moneda').innerHTML =
+      '<button type="button" data-moneda="local" aria-pressed="' + (estado.moneda === 'local') + '">'
+      + esc(ix.moneda || 'Local') + '</button>'
+      + '<button type="button" data-moneda="otra" aria-pressed="' + (estado.moneda === 'otra') + '">'
+      + esc(otra) + '</button>';
+  }
+
+  function pintarTitular(){
+    var ix = (datos && datos.indice) || {};
+    document.getElementById('nombre').textContent = ix.nombre || '—';
+    var s = serieParaPeriodos();
+    var ult = s.length ? s[s.length-1] : null;
+    document.getElementById('nivel').textContent = ult ? fmtPrice(ult.c) : '—';
+    var c = cambioLocal('1D');
+    document.getElementById('pct1d').innerHTML = qdPctTag(c.pct, '1D', { motivo: c.motivo });
+    var fecha = ult && ult.t ? new Date(ult.t * 1000).toISOString().slice(0,10) : null;
+    document.getElementById('sub').textContent =
+      (ix.pais || '') + ' · ' + (ix.moneda || '') + ' · ' + (ix.etf ? 'lo replica ' + ix.etf : '')
+      + (fecha ? ' · último cierre ' + fecha : '')
+      + (ix.sic ? ' · se compra en México por el SIC (GBM, Kuspit)' : '');
+  }
+
+  function pintarChip(){
+    var ix = (datos && datos.indice) || {};
+    var el = document.getElementById('chip');
+    if(!ix.bolsa){ el.textContent = '—'; return; }
+    // La MISMA función que el mapa (`chipDeMercado`). Antes se pintaba el
+    // texto crudo de `estadoDeBolsa`, que con la bolsa cerrada y sin pasarle
+    // el último cierre decía "no se sabe de qué día es el último cierre" —
+    // y esta ficha SÍ sabe de qué día es: lo tiene en la última vela.
+    var velas = (datos && datos.serie && datos.serie.velas) || [];
+    var ult = velas.length ? velas[velas.length - 1] : null;
+    var cierre = ult && Number.isFinite(ult.t)
+      ? new Date(ult.t * 1000).toISOString().slice(0, 10) : null;
+    var c = chipDeMercado(ix.bolsa, { ahora: new Date(), ultimoCierre: cierre, muestra: 'la serie' });
+    el.textContent = c.chip;
+    el.title = c.motivo;
+    el.className = 'chip' + (c.abierto ? ' abierto' : '');
+  }
+
+  function pintarTablaRendimiento(){
+    var ix = (datos && datos.indice) || {};
+    var tb = document.querySelector('#tabla-rend tbody');
+    document.getElementById('col-a').textContent = 'en ' + (ix.moneda || '—');
+    document.getElementById('col-b').textContent = ix.moneda === 'MXN' ? 'en USD' : 'en MXN';
+    var s = serieParaPeriodos();
+    document.getElementById('rend-nota').textContent =
+      '· ' + s.length + ' sesiones · rango ' + ((datos && datos.serie && datos.serie.rango) || '—');
+    tb.innerHTML = PERIODOS.map(function(p){
+      var a = cambioLocal(p), b = cambioOtraMoneda(p);
+      return '<tr><td>' + esc(p) + '</td>'
+        + '<td>' + qdPctTag(a.pct, p, { motivo: a.motivo }) + '</td>'
+        + '<td>' + qdPctTag(b.pct, p, { motivo: b.motivo }) + '</td></tr>';
+    }).join('');
+  }
+
+  function filaDato(k, v, fuente, motivo){
+    return '<div class="dato"><span class="k">' + esc(k) + '</span>'
+      + '<span class="v' + (v == null ? ' falta' : '') + '">' + (v == null ? '—' : v) + '</span>'
+      + '<span class="f">' + esc(motivo ? motivo : (fuente || '')) + '</span></div>';
+  }
+
+  function pintarDatos(){
+    var el = document.getElementById('datos');
+    var velas = (datos && datos.serie && datos.serie.velas) || [];
+    if(!velas.length){
+      el.innerHTML = '<div class="vacio">' + esc('sin serie: '
+        + ((datos && datos.serie && datos.serie.motivo) || (datos && datos.error) || 'la fuente no contestó')) + '</div>';
+      return;
+    }
+    var r52 = rango52(velas), vol = volatilidad(velas);
+    var m50 = contraMedia(velas, 50), m200 = contraMedia(velas, 200);
+    var ix = datos.indice || {};
+    var sinDato = datos.sin_dato || {};
+    var html = '';
+    html += filaDato('Máximo 52 semanas', r52.max == null ? null : fmtPrice(r52.max) + (r52.max_t ? ' · ' + new Date(r52.max_t*1000).toISOString().slice(0,10) : ''),
+      'calc sobre la serie', r52.max == null ? r52.motivo : (r52.completa ? '' : r52.motivo));
+    html += filaDato('Mínimo 52 semanas', r52.min == null ? null : fmtPrice(r52.min) + (r52.min_t ? ' · ' + new Date(r52.min_t*1000).toISOString().slice(0,10) : ''),
+      'calc sobre la serie', r52.min == null ? r52.motivo : '');
+    html += filaDato('Distancia al máximo',
+      r52.desde_max_pct == null ? null : qdPctTag(r52.desde_max_pct, 'vs máx 52s'), 'calc', r52.desde_max_pct == null ? r52.motivo : '');
+    html += filaDato('Contra la media de 50 días',
+      m50.pct == null ? null : (m50.arriba ? 'arriba ' : 'abajo ') + qdPctTag(m50.pct, 'vs MM50'), 'calc', m50.motivo);
+    html += filaDato('Contra la media de 200 días',
+      m200.pct == null ? null : (m200.arriba ? 'arriba ' : 'abajo ') + qdPctTag(m200.pct, 'vs MM200'), 'calc', m200.motivo);
+    html += filaDato('Volatilidad 30 días (anualizada)',
+      vol.pct == null ? null : vol.pct.toFixed(1) + '%', 'calc · log diario × √252', vol.motivo);
+    html += filaDato('ETF que lo replica', ix.etf ? esc(ix.etf) : null, 'catálogo', ix.etf ? '' : 'sin ETF declarado');
+    html += filaDato('Se compra en México', ix.sic ? 'sí, por el SIC (GBM, Kuspit)' : 'no por el SIC', 'catálogo', '');
+    // Lo que NO se puede decir, dicho (regla 2).
+    html += filaDato('Capitalización total', null, null, sinDato.cap_total || 'sin lista de componentes');
+    html += filaDato('P/U agregado', null, null, sinDato.pu_agregado || 'sin lista de componentes');
+    el.innerHTML = html;
+  }
+
+  function pintarComponentes(){
+    var el = document.getElementById('componentes');
+    var c = (datos && datos.componentes) || {};
+    if(!c.componentes || !c.componentes.length){
+      document.getElementById('comp-nota').textContent = '';
+      el.innerHTML = '<div class="vacio">' + esc(c.motivo || 'sin lista de componentes') + '</div>';
+      return;
+    }
+    document.getElementById('comp-nota').textContent = '· ' + (c.fuente || '');
+    el.innerHTML = '<div class="panel">' + c.componentes.map(function(x){
+      return '<div class="dato"><span class="k">' + esc(x.symbol) + '</span>'
+        + '<span class="v">' + x.peso_pct.toFixed(2) + '%</span></div>';
+    }).join('') + (c.resto ? '<div class="dato"><span class="k">+' + c.resto + ' más</span>'
+        + '<span class="v">' + c.resto_pct.toFixed(2) + '%</span></div>' : '') + '</div>';
+  }
+
+  function pintarNoticias(){
+    var el = document.getElementById('noticias');
+    var n = (datos && datos.noticias) || {};
+    document.getElementById('news-nota').textContent = n.metodo ? '· ' + n.metodo : '';
+    if(!n.filas || !n.filas.length){
+      el.innerHTML = '<div class="vacio">' + esc(n.motivo || 'sin noticias') + '</div>';
+      return;
+    }
+    el.innerHTML = n.filas.map(function(x){
+      var hora = '';
+      try{ hora = new Date(x.publicado_en).toLocaleString('es-MX',
+        { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false }); }catch(e){}
+      return '<a class="nota-fila" href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">'
+        + '<div class="tit">' + esc(x.titular) + '</div>'
+        + '<div class="meta">' + esc(hora) + ' · ' + esc(x.fuente_nombre || x.fuente_id) + '</div></a>';
+    }).join('');
+  }
+
+  function pintarPie(){
+    var el = document.getElementById('pie');
+    if(!datos){ el.textContent = 'cargando…'; return; }
+    var s = datos.serie || {}, f = datos.fix || {};
+    var hora = '';
+    try{ hora = new Date(datos.generado_en).toLocaleString('es-MX',
+      { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false }); }catch(e){}
+    el.textContent = 'Fuente: ' + (s.fuente || 'sin serie')
+      + (f.fuente ? ' · tipo de cambio ' + f.fuente + (f.fecha ? ' del ' + f.fecha : '') : ' · sin tipo de cambio: ' + (f.motivo || ''))
+      + ' · medias, máximos y volatilidad calculados sobre esta serie'
+      + ' · actualizado ' + hora
+      + ' · Información, no asesoría.';
+  }
+
+  // ── LA GRÁFICA ─────────────────────────────────────────────────────
+  function destruirChart(){
+    if(chart){ try{ chart.remove(); }catch(e){} }
+    chart = null; serieChart = null; mediasChart = [];
+  }
+
+  function pintarGrafica(){
+    var cont = document.getElementById('grafica');
+    var aviso = document.getElementById('grafica-aviso');
+    var vis = velasVisibles();
+    var velas = vis.velas;
+    destruirChart();
+    cont.innerHTML = '<div class="aviso" id="grafica-aviso"></div>';
+    aviso = document.getElementById('grafica-aviso');
+    if(typeof LightweightCharts === 'undefined'){
+      aviso.textContent = 'la librería de gráficas no cargó: la ficha sigue, la gráfica no';
+      return;
+    }
+    if(!velas.length){
+      aviso.textContent = 'sin serie: ' + ((datos && datos.serie && datos.serie.motivo) || 'la fuente no contestó');
+      return;
+    }
+    chart = LightweightCharts.createChart(cont, {
+      autoSize: true,
+      layout: { background:{ type:'solid', color:'#0e141b' }, textColor:'#8b98a5', fontSize:10,
+                fontFamily:"'IBM Plex Mono',monospace", attributionLogo:true },
+      grid: { vertLines:{ color:'#161c24' }, horzLines:{ color:'#161c24' } },
+      rightPriceScale: { borderColor:'#243040' },
+      timeScale: { borderColor:'#243040', timeVisible:false },
+      crosshair: { vertLine:{ color:'#2b3845' }, horzLine:{ color:'#2b3845' } },
+      localization: { locale:'es-MX' }
+    });
+    var filas = velas.filter(function(v){ return Number.isFinite(cierreDe(v)); });
+    if(estado.tipo === 'velas'){
+      var ok = filas.filter(function(v){
+        return Number.isFinite(v.o) && Number.isFinite(v.h) && Number.isFinite(v.l) && Number.isFinite(v.c);
+      });
+      if(!ok.length){
+        // Sin OHLC no hay velas: se dice y se pinta línea, en vez de dejar el
+        // recuadro vacío. Un "slot" vacío de LWC se ve como una gráfica rota.
+        aviso.textContent = 'la fuente no trajo apertura/máximo/mínimo: se muestra la línea de cierres';
+        estado.tipo = 'linea';
+      } else {
+        serieChart = chart.addSeries(LightweightCharts.CandlestickSeries, {
+          upColor:'#00c97d', downColor:'#E24B4A', wickUpColor:'#00c97d', wickDownColor:'#E24B4A',
+          borderVisible:false
+        });
+        // Acá, y sólo acá, se traduce a la forma de la librería.
+        serieChart.setData(ok.map(function(v){
+          return { time:v.t, open:v.o, high:v.h, low:v.l, close:v.c };
+        }));
+      }
+    }
+    if(estado.tipo === 'linea'){
+      serieChart = chart.addSeries(LightweightCharts.LineSeries, { color:'#8ab4f8', lineWidth:2 });
+      serieChart.setData(filas.map(function(v){ return { time:v.t, value:v.c }; }));
+    }
+
+    // ── LOS OVERLAYS: SÓLO ARITMÉTICA ────────────────────────────────
+    var avisos = [];
+    // Qué moneda se está viendo, dicho ARRIBA de las advertencias: un nivel
+    // de 95,000 en el S&P 500 sin decir "en pesos" es un número mal leído.
+    if(vis.convertida && vis.etiqueta) avisos.push(vis.etiqueta);
+    if(vis.motivo) avisos.push(vis.motivo);
+    [[50, '#d4af37'], [200, '#8b98a5']].forEach(function(par){
+      var n = par[0], color = par[1];
+      var m = mediaMovil(filas, n);
+      var puntos = [];
+      for(var i = 0; i < filas.length; i++) if(m[i] != null) puntos.push({ time: filas[i].t, value: m[i] });
+      if(!puntos.length){
+        // NO se dibuja una media que no existe. Se dice.
+        avisos.push('sin media de ' + n + ' días: la serie trae ' + filas.length + ' cierres');
+        return;
+      }
+      if(puntos.length < filas.length){
+        avisos.push('la media de ' + n + ' días arranca en la sesión ' + (filas.length - puntos.length + 1)
+          + ': antes no hay ' + n + ' cierres');
+      }
+      var s = chart.addSeries(LightweightCharts.LineSeries, { color: color, lineWidth: 1, priceLineVisible:false });
+      s.setData(puntos);
+      mediasChart.push(s);
+    });
+
+    // Máximo y mínimo de 52 semanas, como líneas de precio.
+    var r = rango52(filas);
+    if(serieChart && r.max != null){
+      serieChart.createPriceLine({ price:r.max, color:'#2b3845', lineWidth:1, lineStyle:2,
+        axisLabelVisible:true, title:'máx 52s' });
+      serieChart.createPriceLine({ price:r.min, color:'#2b3845', lineWidth:1, lineStyle:2,
+        axisLabelVisible:true, title:'mín 52s' });
+      if(!r.completa) avisos.push(r.motivo);
+    }
+    chart.timeScale().fitContent();
+    aviso.textContent = avisos.join(' · ');
+    document.getElementById('leyenda').innerHTML =
+      '<span><i style="border-color:#8ab4f8"></i>cierre</span>'
+      + '<span><i style="border-color:#d4af37"></i>media 50 días</span>'
+      + '<span><i style="border-color:#8b98a5"></i>media 200 días</span>'
+      + '<span><i style="border-color:#2b3845"></i>máx/mín 52 semanas</span>'
+      + '<span>sin líneas de tendencia ni patrones: sólo aritmética sobre cierres</span>';
+  }
+
+  function pintar(){
+    pintarIndices();
+    pintarToggles();
+    // CADA PANEL, POR SU CUENTA.
+    //
+    // Antes era una lista de llamadas seguidas, y la ficha salió a producción
+    // congelada en "cargando SPX…": la gráfica lanzaba y se llevaba por
+    // delante a la tabla, los datos y el pie, que venían después. El síntoma
+    // —"no cargó"— apunta al endpoint, que estaba contestando perfecto.
+    //
+    // Un panel que truena es un panel que falta: se dice, en su sitio, y los
+    // otros siete se pintan. La consola sigue teniendo el error completo para
+    // quien lo busque.
+    [['chip', pintarChip, 'chip'],
+     ['titular', pintarTitular, 'nivel'],
+     ['gráfica', pintarGrafica, 'grafica'],
+     ['tabla de rendimiento', pintarTablaRendimiento, null],
+     ['datos', pintarDatos, null],
+     ['componentes', pintarComponentes, 'componentes'],
+     ['noticias', pintarNoticias, 'noticias'],
+     ['pie', pintarPie, null]].forEach(function(par){
+      try{ par[1](); }
+      catch(e){
+        if(window.console && console.error) console.error('panel "' + par[0] + '":', e);
+        var el = par[2] && document.getElementById(par[2]);
+        if(el) el.innerHTML = '<div class="aviso">no se pudo pintar ' + esc(par[0])
+          + ': ' + esc(String((e && e.message) || e)) + '</div>';
+      }
+    });
+    // El pie NUNCA se queda en "cargando": si su propio pintado falló, acá se
+    // dice. Que el pie siga diciendo "cargando" con los datos ya en la mano
+    // es la mentira más barata de esta pantalla.
+    var pie = document.getElementById('pie');
+    if(datos && /^cargando/.test(pie.textContent)) pie.textContent = 'la ficha llegó, pero no se pudo armar el pie';
+  }
+
+  function cargar(){
+    if(pidiendo) return;
+    pidiendo = true;
+    document.getElementById('pie').textContent = 'cargando ' + estado.idx + '…';
+    fetch('/api/mercado-indice?idx=' + encodeURIComponent(estado.idx) + '&rango=' + encodeURIComponent(estado.rango))
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        datos = j;
+        // LA PUERTA. Todo lo que sigue ve una sola forma de vela.
+        if(datos && datos.serie) datos.serie.velas = normalizaVelas(datos.serie.velas);
+      })
+      .catch(function(e){ datos = { error: String((e && e.message) || e), indice:{ id: estado.idx } }; })
+      .then(function(){ pidiendo = false; pintar(); });
+  }
+
+  document.getElementById('btn-compartir').addEventListener('click', abrirCompartir);
+  document.getElementById('indices').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-idx]'); if(!b) return;
+    estado.idx = b.dataset.idx; escribirUrl(); cargar();
+  });
+  document.getElementById('t-rango').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-rango]'); if(!b) return;
+    estado.rango = b.dataset.rango; escribirUrl(); cargar();
+  });
+  document.getElementById('t-tipo').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-tipo]'); if(!b) return;
+    estado.tipo = b.dataset.tipo; escribirUrl(); pintar();
+  });
+  document.getElementById('t-moneda').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-moneda]'); if(!b) return;
+    estado.moneda = b.dataset.moneda; escribirUrl(); pintar();
+  });
+  var rt; window.addEventListener('resize', function(){
+    clearTimeout(rt); rt = setTimeout(function(){ if(datos) pintarGrafica(); }, 150);
+  });
+
+  escribirUrl();
+  pintar();
+  cargar();
+})();
+</script>
+</body>
+</html>

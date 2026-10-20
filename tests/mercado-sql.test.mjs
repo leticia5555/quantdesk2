@@ -33,7 +33,7 @@ import { join } from 'node:path';
 import { SQL_MAPA_US } from '../api/mercado-mapa.js';
 import { SCHEMA_PRECIOS_US } from '../api/_lib/mercado-precios.js';
 import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
-import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS } from '../api/noticias.js';
+import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS, SQL_PAGINA } from '../api/noticias.js';
 import { tickersDeFila } from '../api/_lib/noticias.js';
 
 const PUERTO = 55433;
@@ -205,6 +205,63 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     const raro = psql("select tickers::text from mercado_noticias where url='https://a/4';").trim();
     assert.equal(raro, '{BRK.B,"A B"}', raro);
     assert.deepEqual(tickersDeFila(raro), ['BRK.B', 'A B']);
+    psql('delete from mercado_noticias;');
+  });
+
+  // ═════════════════════════════════════════════════════════════════════
+  // R3b: LA CONSULTA DE LA PÁGINA DE NOTICIAS, CONTRA POSTGRES
+  //
+  // Dos cosas que sólo un Postgres de verdad contesta:
+  //   · `($1 || ' hours')::interval` LIGA el parámetro. La forma que parece
+  //     natural —`interval '$1 hours'`— deja el $1 dentro del literal y
+  //     Postgres no lo liga: parsea igual y no filtra nada;
+  //   · la consulta con cursor y la consulta sin cursor son DOS textos
+  //     distintos, y la que casi nunca se ejerce es la del cursor. Se preparan
+  //     las dos.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('la consulta de la página de noticias PREPARA en sus dos formas, y la ventana filtra', () => {
+    // Las dos formas PARSEAN y ligan sus columnas. Esto solo ya atrapa un
+    // `$3` que sobra o una columna que no existe.
+    psql(`prepare pag(text, int) as ${SQL_PAGINA(false)};`);
+    psql(`prepare pagcur(text, int, timestamptz) as ${SQL_PAGINA(true)};`);
+
+    psql(`insert into mercado_noticias (url, titular, titulo_norm, fuente_id, tipo, idioma, seccion, publicado_en, tickers)
+          values
+            ('https://p/1','Fresca','fresca','cnbc','medio','en','mercado', now() - interval '1 hour', '{NVDA}'::text[]),
+            ('https://p/2','De ayer','de ayer','cnbc','medio','en','mercado', now() - interval '30 hours', '{}'::text[]),
+            ('https://p/3','Vieja','vieja','cnbc','medio','en','mercado', now() - interval '10 days', '{}'::text[]);`);
+
+    // CADA `psql` ES UNA SESIÓN NUEVA, así que un `prepare` de una llamada no
+    // existe en la siguiente: el PREPARE y el EXECUTE tienen que viajar en el
+    // MISMO psql. La primera versión de esta prueba los separó y falló con
+    // "prepared statement \"pag\" does not exist" — que es la prueba de que
+    // de verdad llega a Postgres y no a un simulador.
+    const ejecuta = (sqlTexto, params) =>
+      psql(`prepare p(text, int, timestamptz) as ${sqlTexto} execute p(${params});`)
+        .trim().split('\n').filter(Boolean);
+
+    // 72 horas: entran dos, la de 10 días NO.
+    const dentro = ejecuta(SQL_PAGINA(false) + ';', `'72', 400, null`);
+    assert.equal(dentro.length, 2, dentro.join(' · '));
+    assert.ok(dentro.every((l) => !l.startsWith('https://p/3')), 'la de 10 días queda fuera');
+
+    // 2 horas: entra UNA. Si el parámetro no se ligara —y es lo que pasa con
+    // `interval '$1 hours'`, que parsea igual— este caso daría dos.
+    const corta = ejecuta(SQL_PAGINA(false) + ';', `'2', 400, null`);
+    assert.equal(corta.length, 1, `la ventana no filtró: ${corta.join(' · ')}`);
+
+    // El cursor de "cargar más": con `antes_de` = ahora − 2 h, la fresca de
+    // hace 1 h ya no sale y la siguiente página empieza en la de ayer.
+    const paginada = psql(`prepare pc(text, int, timestamptz) as ${SQL_PAGINA(true)};
+                           execute pc('72', 400, now() - interval '2 hours');`)
+      .trim().split('\n').filter(Boolean);
+    assert.equal(paginada.length, 1, paginada.join(' · '));
+    assert.ok(paginada[0].startsWith('https://p/2'), 'la página siguiente es la de ayer');
+
+    // Y los tickers siguen llegando como el LITERAL de Postgres, que es lo que
+    // el endpoint normaliza con `tickersDeFila` antes de prometer un arreglo.
+    const t2 = psql("select tickers::text from mercado_noticias where url='https://p/1';").trim();
+    assert.deepEqual(tickersDeFila(t2), ['NVDA']);
     psql('delete from mercado_noticias;');
   });
 
