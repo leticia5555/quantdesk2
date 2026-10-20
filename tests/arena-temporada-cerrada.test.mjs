@@ -187,8 +187,17 @@ console.log('\n── un null con la causa equivocada manda a buscar el bug dond
   const negadas = negarSiTemporadaCerrada(filas(), CERRADA);
   const t = armaArena({ agents: negadas });
   ok(t.agentes.every((f) => f.pct === null), 'la tarjeta no pinta ningún %', JSON.stringify(t.agentes.map((f) => f.pct)));
-  ok(t.agentes.every((f) => /temporada/.test(f.pct_motivo || '')),
+  // `/i`: la frase que se PINTA empieza en mayúscula —"Temporada nueva sin
+  // arrancar · el reset no ha corrido"— porque es una línea de tarjeta, no un
+  // campo de API. Lo que esta prueba fija es que nombre la temporada y no al
+  // leaderboard, y eso no cambia. El párrafo largo del leaderboard sigue
+  // viajando, en `pct_detalle` (2026-10-20).
+  ok(t.agentes.every((f) => /temporada/i.test(f.pct_motivo || '')),
     'y el motivo nombra la TEMPORADA, no el leaderboard', t.agentes[0].pct_motivo);
+  ok(t.agentes.every((f) => (f.pct_motivo || '').length < 70),
+    'y cabe en UNA línea: el detalle técnico no se pinta', String((t.agentes[0].pct_motivo || '').length));
+  ok(t.agentes.every((f) => f.pct_detalle && /baseline/.test(f.pct_detalle)),
+    'pero el detalle no se pierde: viaja aparte', String(t.agentes[0].pct_detalle || '').slice(0, 40));
   ok(!t.agentes.some((f) => /no trajo el rendimiento/.test(f.pct_motivo || '')),
     'el genérico no aparece: las llaves y el baseline están bien');
 

@@ -33,6 +33,8 @@ import { join } from 'node:path';
 import { SQL_MAPA_US } from '../api/mercado-mapa.js';
 import { SCHEMA_PRECIOS_US } from '../api/_lib/mercado-precios.js';
 import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
+import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS } from '../api/noticias.js';
+import { tickersDeFila } from '../api/_lib/noticias.js';
 
 const PUERTO = 55433;
 
@@ -109,11 +111,101 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
 
   await t.test('la DDL real del repo crea el esquema', () => {
     // Si la DDL no corre, lo que siga no prueba nada: se para acá.
-    psql([...SCHEMA_UNIVERSO_US, ...SCHEMA_PRECIOS_US].map((q) => q + ';').join('\n'));
+    psql([...SCHEMA_UNIVERSO_US, ...SCHEMA_PRECIOS_US, ...SCHEMA_NOTICIAS].map((q) => q + ';').join('\n'));
     const tablas = psql(
       "select table_name from information_schema.tables where table_schema='public' order by 1;",
     ).trim().split('\n');
-    assert.deepEqual(tablas, ['mercado_precios_us', 'mercado_universo_us']);
+    assert.deepEqual(tablas,
+      ['mercado_noticias', 'mercado_noticias_fuentes', 'mercado_precios_us', 'mercado_universo_us']);
+  });
+
+  // ═════════════════════════════════════════════════════════════════════
+  // R3(b): LOS TICKERS SON UN ARREGLO POR FILA
+  //
+  // `unnest($n::text[][])` NO da un arreglo por fila: Postgres aplana el
+  // arreglo de dos dimensiones y cada elemento sale suelto, así que la columna
+  // `tickers text[]` recibía un `text`. El job entero tronaba al guardar
+  // —"column tickers is of type text[] but expression is of type text"— y eso
+  // sólo se vio corriéndolo contra producción (Lety, 2026-10-20).
+  //
+  // Acá se PREPARA y se EJECUTA contra un Postgres de verdad, que es lo único
+  // que distingue un INSERT que parsea de uno que además liga sus tipos.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('el INSERT de noticias liga sus tipos, y los tickers quedan como arreglo', () => {
+    psql(`prepare ins(text[], text[], text[], text[], text[], text[], text[], text[],
+                      timestamptz[], text[], text[], text[], text[]) as ${SQL_INSERTA_NOTICIAS};`);
+
+    // Tres filas: con dos tickers, con uno, y SIN ninguno — que es el caso que
+    // `string_to_array('')` convertiría en un arreglo con un elemento vacío.
+    psql(`
+      insert into mercado_noticias
+        (url, titular, titulo_norm, fuente_id, fuente_nombre, tipo, idioma, seccion,
+         publicado_en, imagen, imagen_via, tickers, fuente_dato)
+      select u.url, u.titular, u.titulo_norm, u.fuente_id, u.fuente_nombre, u.tipo,
+             u.idioma, u.seccion, u.publicado_en, u.imagen, u.imagen_via,
+             coalesce(string_to_array(nullif(u.tickers, ''), ','), '{}')::text[],
+             u.fuente_dato
+        from unnest(
+          array['https://a/1','https://a/2','https://a/3']::text[],
+          array['Dos','Uno','Cero']::text[],
+          array['dos','uno','cero']::text[],
+          array['cnbc','cnbc','banxico_sie']::text[],
+          array['CNBC','CNBC','Banxico']::text[],
+          array['medio','medio','oficial_derivado']::text[],
+          array['en','en','es']::text[],
+          array['mercado','mercado','oficiales']::text[],
+          array['2026-10-20T10:00:00Z','2026-10-20T11:00:00Z','2026-10-20T12:00:00Z']::timestamptz[],
+          array[null,null,null]::text[],
+          array[null,null,null]::text[],
+          array['NVDA,ORCL','AMX','']::text[],
+          array[null,null,'banxico:SF61745']::text[])
+          as u(url, titular, titulo_norm, fuente_id, fuente_nombre, tipo, idioma,
+               seccion, publicado_en, imagen, imagen_via, tickers, fuente_dato);`);
+
+    const filas = psql(
+      "select url, array_length(tickers,1), array_to_string(tickers,'|') from mercado_noticias order by url;")
+      .trim().split('\n');
+    assert.deepEqual(filas, [
+      'https://a/1|2|NVDA|ORCL',
+      'https://a/2|1|AMX',
+      // Sin tickers: arreglo VACÍO, no un arreglo con una cadena en blanco.
+      'https://a/3||',
+    ], filas.join(' · '));
+
+    // Y el tipo de la columna es el que se declaró, no texto.
+    const tipo = psql(`select data_type from information_schema.columns
+                        where table_name='mercado_noticias' and column_name='tickers';`).trim();
+    assert.equal(tipo, 'ARRAY');
+
+    // `on conflict (url) do nothing`: la misma URL no se duplica ni se pisa.
+    psql(`insert into mercado_noticias (url, titular, titulo_norm, fuente_id, publicado_en, tickers)
+          values ('https://a/1','OTRO','otro','x', now(), '{}'::text[])
+          on conflict (url) do nothing;`);
+    const quedo = psql("select titular from mercado_noticias where url='https://a/1';").trim();
+    assert.equal(quedo, 'Dos', 'la primera vez que se vio la nota manda');
+
+    // ── Y DE VUELTA: LO QUE LA LECTURA RECIBE ES UNA CADENA ───────────
+    // El driver HTTP de Neon entrega un `text[]` como el LITERAL de Postgres,
+    // no como arreglo de JavaScript. La pantalla hacía `.slice().map()` sobre
+    // esa cadena y "Lo de hoy" tronaba entero (Lety, 2026-10-20).
+    //
+    // Acá se lee una fila DE VERDAD —la que se acaba de insertar— y se le pasa
+    // el valor tal cual a `tickersDeFila`, que es lo que hace el endpoint.
+    const crudos = psql(
+      "select tickers::text from mercado_noticias order by url;").trim().split('\n');
+    assert.deepEqual(crudos, ['{NVDA,ORCL}', '{AMX}', '{}'], crudos.join(' · '));
+    assert.deepEqual(tickersDeFila(crudos[0]), ['NVDA', 'ORCL']);
+    assert.deepEqual(tickersDeFila(crudos[1]), ['AMX']);
+    assert.deepEqual(tickersDeFila(crudos[2]), [], 'el arreglo vacío no inventa un elemento');
+
+    // Un ticker con punto —BRK.B— y uno que Postgres entrecomilla por el
+    // espacio: partir por comas a secas rompería el segundo.
+    psql(`insert into mercado_noticias (url, titular, titulo_norm, fuente_id, publicado_en, tickers)
+          values ('https://a/4','Raros','raros','x', now(), array['BRK.B','A B']::text[]);`);
+    const raro = psql("select tickers::text from mercado_noticias where url='https://a/4';").trim();
+    assert.equal(raro, '{BRK.B,"A B"}', raro);
+    assert.deepEqual(tickersDeFila(raro), ['BRK.B', 'A B']);
+    psql('delete from mercado_noticias;');
   });
 
   await t.test('cada consulta del mapa US PREPARA: parsea y resuelve sus columnas', () => {

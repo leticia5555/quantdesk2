@@ -235,7 +235,29 @@ test('"¿dónde se perdieron los 9?": se dice cuántos caen más adelante', () =
   const f = fraseDeFuente('reportes', {
     reportes: { ok: true, en_ventana: 0, mas_adelante: 9, horizonte_dias: 30 },
   });
-  assert.equal(f, 'sin reportes esta semana · 9 más adelante');
+  assert.equal(f, 'sin reportes de mega-caps esta semana · 9 más adelante');
+});
+
+test('"sin reportes" no puede tapar al FILTRO: si hay otras emisoras, se dice', () => {
+  // En plena temporada de reportes la sección decía "sin reportes esta semana"
+  // mientras el calendario traía decenas: era verdad sobre las mega-caps y
+  // falso sobre el mercado, y desde la pantalla no se distinguía
+  // (Lety, 2026-10-20, el 19 de octubre).
+  const f = fraseDeFuente('reportes', {
+    reportes: { ok: true, en_ventana: 0, mas_adelante: 7, horizonte_dias: 30,
+      filtro: 'mega-caps', filtrados_en_ventana: 43 },
+  });
+  assert.match(f, /sin reportes de mega-caps esta semana/);
+  assert.match(f, /el calendario trae 43 de otras emisoras/);
+  assert.match(f, /7 de mega-caps más adelante/);
+});
+
+test('y si de verdad no hay nada esa semana, no se inventa un filtro', () => {
+  const f = fraseDeFuente('reportes', {
+    reportes: { ok: true, en_ventana: 0, mas_adelante: 7, horizonte_dias: 30,
+      filtro: 'mega-caps', filtrados_en_ventana: 0 },
+  });
+  assert.equal(f, 'sin reportes de mega-caps esta semana · 7 más adelante');
 });
 
 test('la tabla macro vacía dice "sin cargar", no "sin eventos"', () => {
@@ -269,4 +291,43 @@ test('las dos mitades se explican por separado', () => {
   };
   assert.equal(fraseDeFuente('macro', fuentes), null, 'macro llenó lo suyo');
   assert.match(fraseDeFuente('reportes', fuentes), /429/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA CAUSA DE ARENA: UNA LÍNEA, UNA VEZ
+//
+// Los cinco agentes salían con el mismo párrafo técnico del leaderboard
+// —comillas invertidas incluidas— repetido cinco veces (Lety, 2026-10-20).
+// Repetir la misma línea no informa cinco veces: tapa la tarjeta.
+// ═══════════════════════════════════════════════════════════════════════
+const { causaComunArena } = require(join(ROOT, 'qd-tablas.js'));
+
+test('si TODOS fallan por lo mismo, la causa se dice una vez', () => {
+  const frase = 'Temporada nueva sin arrancar · el reset no ha corrido';
+  const agentes = ['a', 'b', 'c', 'd', 'e'].map((id) => ({
+    id, pct: null, pct_clave: 'sin_temporada', pct_motivo: frase,
+  }));
+  assert.equal(causaComunArena(agentes), frase);
+  assert.ok(frase.length < 70, 'y cabe en una línea');
+});
+
+test('con causas MEZCLADAS no se hoistea: ahí la diferencia es el dato', () => {
+  const agentes = [
+    { id: 'a', pct: null, pct_clave: 'sin_temporada', pct_motivo: 'Temporada nueva sin arrancar' },
+    { id: 'b', pct: null, pct_clave: 'sin_llaves', pct_motivo: 'Sin llaves de Alpaca conectadas' },
+  ];
+  assert.equal(causaComunArena(agentes), null);
+});
+
+test('si alguno SÍ tiene número, no hay causa común que contar', () => {
+  const agentes = [
+    { id: 'a', pct: 12.4 },
+    { id: 'b', pct: null, pct_clave: 'sin_temporada', pct_motivo: 'Temporada nueva sin arrancar' },
+  ];
+  assert.equal(causaComunArena(agentes), null);
+});
+
+test('sin agentes no se inventa una causa', () => {
+  assert.equal(causaComunArena([]), null);
+  assert.equal(causaComunArena(undefined), null);
 });
