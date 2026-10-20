@@ -284,7 +284,10 @@ function seqHtml(inv){
   return inv.pasos.map(s=>{
     const args=argsStr(s.argumentos);
     // 0 filas se marca: un filtro que vacía el embudo es el dato, no un hueco.
-    const filas = s.filas==null ? '' :
+    // NULL ≠ 0 FILAS: una falla se pinta como falla, y filas null sin
+    // falla declarada se dice "sin resultado", nunca se omite ni se lee como 0.
+    const filas = s.falló ? '<span class="zero" style="color:var(--red)">la herramienta FALLÓ'+(s.fallo?' — '+esc(s.fallo):'')+'</span>'
+      : s.filas==null ? (s.rechazada?'':'<span class="zero">sin resultado registrado</span>') :
       '<span class="'+(s.filas===0?'zero':'')+'">'+s.filas+' fila'+(s.filas===1?'':'s')+'</span>';
     const extra=[filas, s.truncado?'truncado':'', s.ms!=null?Math.round(s.ms)+' ms':'']
       .filter(Boolean).join(' · ');

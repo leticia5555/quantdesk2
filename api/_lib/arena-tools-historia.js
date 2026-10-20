@@ -83,7 +83,7 @@ export async function runHistoria(args, ctx) {
   } catch (e) {
     return {
       text: `historia: sin datos hoy — la base de HISTORIA no respondió (${String((e && e.message) || e).slice(0, 160)}). NO significa que no haya historia de ${tk}: no se pudo consultar.`,
-      rows: null, error: true,
+      rows: null, error: true, fallo: 'la base de HISTORIA no respondió',
     };
   }
 

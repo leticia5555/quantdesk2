@@ -134,7 +134,7 @@ export async function runEventos(args, ctx) {
   } catch (e) {
     return {
       text: `eventos: sin datos hoy — EDGAR no respondió (${String((e && e.message) || e).slice(0, 160)}). NO significa que ${tk} no haya presentado 8-K: no se pudo consultar.`,
-      rows: null, error: true,
+      rows: null, error: true, fallo: 'EDGAR no respondió',
     };
   }
 

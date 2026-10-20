@@ -308,6 +308,15 @@ export function truncateRows(rows, { cap = RESULT_CHAR_CAP, header = '' } = {}) 
   return { text: (header ? header + '\n' : '') + out.join('\n'), truncated: false, shown: out.length, total: rows.length };
 }
 
+// Un resultado de herramienta bien formado: objeto con texto no vacío, y un
+// conteo que es un número o un null DECLARADO junto a `error`.
+export function resultadoValido(out) {
+  if (!out || typeof out !== 'object') return false;
+  if (typeof out.text !== 'string' || !out.text.trim()) return false;
+  if (out.rows === undefined) return true;   // runners viejos: el ejecutor pone null
+  return Number.isFinite(out.rows) || (out.rows === null && !!out.error);
+}
+
 // ── LAS CUATRO HERRAMIENTAS ──────────────────────────────────────────
 // Todas reciben el CONTEXTO de la corrida (tablero + universo + creds) y
 // devuelven texto ya truncado. Ninguna lanza: un error es un resultado que el
@@ -333,7 +342,9 @@ function filasDelTablero(ctx) {
 export async function runScreener(args, ctx) {
   const filas = filasDelTablero(ctx);
   if (!filas.length) {
-    return { text: 'El tablero no está disponible en esta corrida, así que el screener no tiene sobre qué filtrar. No es que no haya nombres que cumplan — es que no hay datos.', rows: 0 };
+    // Es una FALLA, no un cero: `rows: null` y `fallo`, para que no se cachee y
+    // la publique `avisos`. (Antes salía `rows: 0` y se leía "0 nombres".)
+    return { text: 'La herramienta falló: el tablero no está disponible en esta corrida, así que el screener no tiene sobre qué filtrar. No es que no haya nombres que cumplan — es que no hay datos.', rows: null, error: true, fallo: 'sin tablero' };
   }
   const sectorDe = ctx.sectorOf || (() => null);
   const conNoticia = ctx.newsSymbols || new Set();
@@ -505,7 +516,7 @@ export async function runNoticias(args, ctx) {
       pages: porTema ? 4 : 1,
     });
   } catch (e) {
-    return { text: `No se pudieron traer noticias: ${String((e && e.message) || e)}. No hay titulares para esta consulta — no significa que no haya noticias.`, rows: 0, error: true };
+    return { text: `La herramienta falló. No se pudieron traer noticias: ${String((e && e.message) || e)}. No hay titulares para esta consulta — no significa que no haya noticias.`, rows: null, error: true, fallo: 'feed de noticias' };
   }
   const buscados = items.length;
   if (args.tema) {
@@ -539,10 +550,29 @@ export async function runFicha(args, ctx) {
   const tk = args.ticker;
   if (!tk) return { text: 'ficha necesita un ticker.', rows: 0, error: true };
   let dive = null;
+  let falloFuente = null;
   try {
     const r = await (ctx.deps.fetchDeepDive || fetchDeepDive)([tk], ctx.finnhubKey, ctx.now);
     dive = (r && r.data && r.data[tk]) || null;
-  } catch (e) { /* best-effort: la parte de mercado igual sirve */ }
+    falloFuente = (r && r.errors && r.errors[tk]) || null;
+  } catch (e) { falloFuente = String((e && e.message) || e); }
+  // ── "SIN COBERTURA" QUE ERA UNA FALLA (2026-10-20) ──────────────────
+  // Visto en Grok: ficha de MU, WDC y STX con TODOS los campos en null. Son
+  // nombres que Finnhub cubre de sobra. `fetchDeepDive` trata cualquier
+  // respuesta no-ok (un 429, un timeout) como null y lo rotula
+  // "sin cobertura Finnhub" — desde acá no se puede distinguir un límite de
+  // tasa de un nombre no cubierto. Lo que SÍ se puede es no presentarlo como
+  // dato: una ficha con todo en null se decía "P/E — · margen —", el modelo
+  // lo leía como ficha completa, y el ejecutor la CACHEABA el día entero para
+  // los siete agentes.
+  //
+  // Ahora: si la fuente de fundamentales no trajo nada, la herramienta dice
+  // que FALLÓ, `rows: null`, y no se cachea. (El arreglo de raíz —que
+  // fetchDeepDive distinga un 429— vive en finnhub-dive.js, que también usa
+  // arena-run: queda anotado, no se toca de noche.)
+  const vacia = (o) => !o || Object.values(o).every((v) => v == null);
+  const fundamentalesVacios = !dive || (vacia(dive.profile) && vacia(dive.fundamentals) && vacia(dive.recommendation) && !((dive.news || []).length));
+  if (fundamentalesVacios && !falloFuente) falloFuente = 'la fuente no devolvió ningún campo';
 
   const enTablero = filasDelTablero(ctx).find((f) => f.symbol === tk) || null;
   const w = (ctx.universe && ctx.universe.fifty_two_week && ctx.universe.fifty_two_week[tk]) || null;
@@ -552,7 +582,7 @@ export async function runFicha(args, ctx) {
   else lineas.push('precio: no está entre los nombres que el tablero cubre hoy (no es que no cotice — es que no está en ningún extremo del tablero).');
   if (w) lineas.push(`52 semanas: máx ${n2(w.high_52w)} (${sg(w.pct_from_high)}%) · mín ${n2(w.low_52w)} (+${n2(w.pct_from_low)}%)`);
   if (dive && dive.profile) lineas.push(`${dive.profile.name || ''} · ${dive.profile.industry || 'sector s/d'} · mcap ${dive.profile.marketCapM != null ? '$' + (dive.profile.marketCapM / 1000).toFixed(1) + 'B' : '—'}`);
-  if (dive && dive.fundamentals) {
+  if (dive && dive.fundamentals && !vacia(dive.fundamentals)) {
     const f = dive.fundamentals;
     lineas.push(`P/E ${n2(f.peTTM)} · P/S ${n2(f.psTTM)} · margen bruto ${sg(f.grossMarginTTM)}% · margen neto ${sg(f.netMarginTTM)}% · ROE ${sg(f.roeTTM)} · deuda/equity ${n2(f.debtToEquity)}`);
   }
@@ -562,7 +592,12 @@ export async function runFicha(args, ctx) {
     lineas.push(`analistas: ${r.strongBuy ?? 0} strong buy / ${r.buy ?? 0} buy / ${r.hold ?? 0} hold / ${r.sell ?? 0} sell`);
   }
   for (const n of ((dive && dive.news) || []).slice(0, 5)) lineas.push(`  ${String(n.date || '').slice(0, 10)} ${n.headline}`);
-  if (!dive) lineas.push('(sin cobertura de fundamentales para este nombre: los campos de negocio no están disponibles, no son cero.)');
+  if (falloFuente && fundamentalesVacios) {
+    lineas[0] = `La herramienta falló en la parte de fundamentales (Finnhub: ${falloFuente}). FICHA ${tk}`;
+    lineas.push('(los campos de negocio NO llegaron: no son cero ni "sin cobertura" — la fuente no contestó con datos. Arriba va solo lo que sale del tablero.)');
+    const t = truncateRows(lineas.slice(1), { header: lineas[0] });
+    return { text: t.text, rows: null, truncated: t.truncated, error: true, fallo: `fundamentales: ${falloFuente}` };
+  }
 
   const t = truncateRows(lineas.slice(1), { header: lineas[0] });
   return { text: t.text, rows: t.shown, truncated: t.truncated };
@@ -693,14 +728,26 @@ export function createToolExecutor({
 
       let out;
       let source = 'cache';
-      if (hit && hit.payload && hit.payload.text) {
+      // Una entrada de caché solo vale si es un resultado BIEN FORMADO: un
+      // payload sin texto o sin conteo se vuelve a correr en vez de servirse.
+      if (hit && resultadoValido(hit.payload) && !hit.payload.error) {
         out = hit.payload;
       } else {
         source = 'run';
         try {
           out = await runner(args, ctx);
         } catch (e) {
-          out = { text: `La herramienta falló: ${String((e && e.message) || e)}. No hay resultado para esta consulta.`, rows: 0, error: true };
+          // `rows: null`, no 0: una herramienta que lanzó no devolvió "cero
+          // filas", no devolvió nada.
+          out = { text: `La herramienta falló: ${String((e && e.message) || e)}. No hay resultado para esta consulta — no es lo mismo que 0 filas.`, rows: null, error: true, fallo: 'lanzó una excepción' };
+        }
+        // ── NULL ≠ 0 FILAS (2026-10-20) ─────────────────────────────
+        // Un runner que devuelve null/undefined, o un objeto sin texto, hacía
+        // reventar la llamada entera (`out.error` sobre null) y con ella la
+        // vuelta. Y un texto vacío viajaba al modelo como un resultado mudo.
+        // Las dos cosas son una FALLA, y el agente tiene que leerla así.
+        if (!resultadoValido(out)) {
+          out = { text: `La herramienta falló: devolvió un resultado vacío (${out === null ? 'null' : typeof out === 'object' ? 'sin texto' : String(out)}). NO es lo mismo que 0 filas: no sabemos qué hay. Decidí sin este dato o pedilo de nuevo.`, rows: null, error: true, fallo: 'resultado nulo' };
         }
         if (cache && !out.error) await writeDayCache(key, out, now).catch(() => {});
       }
@@ -711,6 +758,9 @@ export function createToolExecutor({
       sequence.push({
         n, intento: intentos, tool: name, args, ms: Date.now() - t0, source,
         rows: out.rows ?? null, truncated: !!out.truncated, error: !!out.error,
+        // POR QUÉ falló, corto. Separa una falla de la fuente de un argumento
+        // malo (que también es `error`, pero no tiene `fallo`).
+        ...(out.fallo ? { fallo: String(out.fallo).slice(0, 160) } : {}),
         // El resultado COMPLETO, no el resumen: sin esto el replay no puede
         // reproducir la corrida — el modelo decidió mirando algo que no
         // guardamos. Ver el encabezado.
@@ -734,6 +784,7 @@ export function createToolExecutor({
         ...(s.tokens_est != null ? { tokens: s.tokens_est } : {}),
         ...(s.refused ? { refused: s.refused } : {}),
         ...(s.error ? { error: true } : {}),
+        ...(s.fallo ? { fallo: s.fallo } : {}),
       }));
     },
   };

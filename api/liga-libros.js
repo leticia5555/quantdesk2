@@ -97,6 +97,9 @@ export function secuenciaPublicable(ctx) {
     // Tokens que la llamada agregó a la conversación (corridas nuevas).
     ...(s.tokens != null ? { tokens: s.tokens } : {}),
     ...(s.refused ? { rechazada: s.refused } : {}),
+    // NULL ≠ 0 FILAS. Una herramienta que falló se marca: sin esto, su
+    // `rows: 0` (o null) se pintaba como "0 filas" — un cero que nadie midió.
+    ...((s.error || s.fallo) && !s.refused ? { falló: true, ...(s.fallo ? { fallo: s.fallo } : {}) } : {}),
   }));
   return {
     usó_herramientas: pasos.length > 0,
@@ -277,6 +280,60 @@ export function puertaDeCorrida(t) {
       cortes_nuestros: v.length ? cortes === 0 : null,
     },
   };
+}
+
+// ── LAS HERRAMIENTAS QUE FALLARON, EN `avisos` (2026-10-20) ──────────
+// Visto en Grok: screener y ficha de MU/WDC/STX volvían sin datos y la
+// tarjeta decía "0 filas" o nada. Un cero y una falla llevan a decisiones
+// opuestas —"no hay nombres" vs. "no sabemos"—, así que las fallas se cuentan
+// aparte y salen arriba, donde se leen antes que las tarjetas.
+//
+// Cuenta DOS cosas, y las nombra distinto:
+//   · `falló`          — la herramienta dijo que falló (journaleado).
+//   · `sin_resultado`  — filas null sin rechazo ni falla declarada: corridas
+//                        viejas, de antes de que el ejecutor lo declarara.
+export function fallosDeHerramientas(libros = []) {
+  const fallos = [];
+  for (const l of (Array.isArray(libros) ? libros : [])) {
+    const pasos = (l && l.investigacion && l.investigacion.pasos) || [];
+    for (const p of pasos) {
+      if (p.rechazada) continue;
+      const tipo = p.falló ? 'falló' : (p.filas == null ? 'sin_resultado' : null);
+      if (!tipo) continue;
+      const a = p.argumentos || {};
+      fallos.push({
+        agente: (l.agente && l.agente.id) || null,
+        corrida_id: l.corrida_id || null,
+        fecha: l.fecha || null,
+        fuente: l.fuente || null,
+        paso: p.n ?? null,
+        herramienta: p.herramienta || null,
+        objeto: a.ticker || a.etf || a.sector || a.tema || null,
+        tipo,
+        motivo: p.fallo || null,
+      });
+    }
+  }
+  return fallos;
+}
+
+// Una línea por agente, para `avisos`.
+export function avisosDeFallos(fallos = []) {
+  const por = new Map();
+  for (const f of fallos) {
+    const k = f.agente || 'desconocido';
+    if (!por.has(k)) por.set(k, []);
+    por.get(k).push(f);
+  }
+  return [...por].map(([agente, fs]) => {
+    const que = fs.slice(0, 8).map((f) => [f.herramienta, f.objeto].filter(Boolean).join(' ')).join(', ');
+    const fallaron = fs.filter((f) => f.tipo === 'falló').length;
+    const sinRes = fs.length - fallaron;
+    return `${agente}: ${fs.length} llamada(s) a herramientas sin datos en la ventana (${que}${fs.length > 8 ? ', …' : ''})`
+      + ` — ${fallaron ? `${fallaron} fallaron` : ''}${fallaron && sinRes ? ' y ' : ''}${sinRes ? `${sinRes} sin resultado registrado` : ''}.`
+      + ' NO son "0 filas".'
+      + (fallaron ? ' Las que fallaron le llegaron al agente como falla, no como "no hay nada".' : '');
+  });
 }
 
 export function puertaPorCorrida(libros = []) {
@@ -1077,6 +1134,10 @@ export default async function handler(req, res) {
 
   libros.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
 
+  // Las fallas de herramientas van a `avisos`: se leen antes que las tarjetas.
+  const fallosHerr = fallosDeHerramientas(libros);
+  avisos.push(...avisosDeFallos(fallosHerr));
+
   const conObjetivo = libros.filter((l) => l.portafolio);
   const conHerramientas = libros.filter((l) => l.investigacion && l.investigacion.usó_herramientas);
 
@@ -1132,6 +1193,8 @@ export default async function handler(req, res) {
     // Lo mismo que `libros[].puerta`, aplanado: se lee con un solo `jq`
     // (`.puerta_por_corrida[] | select(.puertas.reloj == false)`).
     puerta_por_corrida: puertaPorCorrida(libros),
+    // El detalle de cada llamada sin datos (las líneas de `avisos` lo resumen).
+    herramientas_fallidas: fallosHerr,
     avisos: avisos.length ? avisos : null,
     libros,
   });
