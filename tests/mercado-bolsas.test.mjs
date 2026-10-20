@@ -353,3 +353,76 @@ test('una región de puros 24h no se pregunta por horarios', () => {
   assert.equal(r.continuo, true);
   assert.match(r.etiqueta, /24\/7/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL CHIP, UNA SOLA VEZ PARA LAS CINCO PANTALLAS
+//
+// Lo que esto arregla, dicho por Lety el 2026-10-20 mirando prod: *"El chip
+// de todas las páginas nuevas dice 'no se sabe de qué día es el último
+// cierre'. Usa la misma función que el mapa."*
+//
+// La causa era que `/mercado` componía su renglón dentro de `pintarChip` y
+// las cuatro pantallas nuevas pintaban `qdEstadoMercado(...).texto` en crudo.
+// Ese `texto` viene de `estadoDeBolsa`, que SÍ nombra la ausencia del último
+// cierre —y hace bien, porque es el dato con el que decide— pero en la página
+// de noticias no hay ningún cierre en pantalla del que disculparse.
+// ═══════════════════════════════════════════════════════════════════════
+const MARTES_ABIERTO = new Date('2026-10-20T17:00:00Z');  // 13:00 en Nueva York
+const MARTES_CERRADO = new Date('2026-10-20T23:00:00Z');  // 19:00 en Nueva York
+
+test('cerrado y sin cierre que declarar: "cerrado" a secas, sin la queja', () => {
+  const c = M.chipDeMercado('nyse', { ahora: MARTES_CERRADO });
+  assert.equal(c.texto, 'cerrado');
+  assert.doesNotMatch(c.texto, /no se sabe/, 'la ausencia no va en el renglón');
+  // Pero no se calla: la causa viaja para el `title`.
+  assert.match(c.motivo, /no muestra cierres/);
+  assert.equal(c.abierto, false);
+  assert.equal(c.punto, '○');
+});
+
+test('cerrado CON cierre: nombra el día, y "hoy" cuando es de hoy', () => {
+  assert.equal(M.chipDeMercado('nyse', { ahora: MARTES_CERRADO, ultimoCierre: '2026-10-19' }).texto,
+    'cerrado · cierre del lunes');
+  // El mismo día no se nombra por su nombre: "cierre del martes" un martes se
+  // lee como de la semana pasada.
+  assert.equal(M.chipDeMercado('nyse', { ahora: MARTES_CERRADO, ultimoCierre: '2026-10-20' }).texto,
+    'cerrado · cierre de hoy');
+});
+
+test('abierto: la fecha del dato se dice SÓLO si la pantalla declara qué muestra', () => {
+  // Es la distinción que costó un chip mintiendo tres días: el estado es del
+  // horario, la fecha del dato es otro hecho.
+  const conMuestra = M.chipDeMercado('nyse', { ahora: MARTES_ABIERTO, ultimoCierre: '2026-10-19', muestra: 'el mapa' });
+  assert.equal(conMuestra.texto, 'abierto · el mapa con cierre del lunes');
+  assert.equal(conMuestra.abierto, true);
+  // Sin `muestra` —noticias, insiders— no se nombra ninguna fecha: no hay
+  // ningún cierre en pantalla al que la fecha pertenezca.
+  const sinMuestra = M.chipDeMercado('nyse', { ahora: MARTES_ABIERTO, ultimoCierre: '2026-10-19' });
+  assert.equal(sinMuestra.texto, 'abierto');
+  assert.doesNotMatch(sinMuestra.texto, /lunes/);
+});
+
+test('una bolsa que la pantalla no sabe NO lanza: lo dice', () => {
+  // `qdEstadoMercado` lanza con una bolsa desconocida, y por eso las cuatro
+  // pantallas nuevas lo envolvían cada una en su propio try/catch con su
+  // propio texto. Acá se contesta, igual para todas.
+  const c = M.chipDeMercado('bolsa-de-la-luna', { ahora: MARTES_ABIERTO });
+  assert.equal(c.ok, false);
+  assert.equal(c.texto, 'sin horario declarado');
+  assert.match(c.motivo, /en qué bolsa opera/);
+});
+
+test('el renglón armado trae el punto, el nombre de la bolsa y el estado', () => {
+  const c = M.chipDeMercado('bmv', { ahora: MARTES_CERRADO, ultimoCierre: '2026-10-19' });
+  assert.equal(c.chip, '○ BMV: cerrado · cierre del lunes');
+  // Y el nombre NO se concatena dos veces: "BMV: BMV" fue un defecto real de
+  // la ficha de índice, por confundir `etiqueta` (el nombre) con el estado.
+  assert.equal(c.chip.split('BMV').length - 1, 1);
+});
+
+test('el receso de mediodía no es "abierto" ni "cerrado": se dice', () => {
+  // Tokio, 12:00 local: dentro del horario, en el receso.
+  const c = M.chipDeMercado('tokio', { ahora: new Date('2026-10-20T03:00:00Z') });
+  assert.equal(c.abierto, false);
+  assert.match(c.texto, /receso de mediodía/);
+});

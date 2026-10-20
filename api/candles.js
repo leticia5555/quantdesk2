@@ -132,6 +132,13 @@ export default async function handler(req, res) {
   try {
     let extracted = null;
     let source = null;
+    // POR QUÉ NO HUBO VELAS, no sólo que no las hubo.
+    // Hasta el 2026-10-20 un 429 de Yahoo salía de acá como "No candle data
+    // for ^GSPC (yahoo)", y la ficha de índice lo pintaba como "el handler
+    // respondió 502": dos capas de traducción y ni una palabra del hecho.
+    // El estado de la fuente es el dato que dice si hay que reintentar, si
+    // hay que esperar o si el símbolo no existe.
+    let motivoFuente = null;
 
     const binSym = toBinanceSymbol(symbol);
     if (binSym) {
@@ -140,6 +147,7 @@ export default async function handler(req, res) {
       let r = await fetch(`https://data-api.binance.vision/api/v3/klines?${qs}`).catch(() => null);
       if (!r || !r.ok) r = await fetch(`https://api.binance.com/api/v3/klines?${qs}`).catch(() => null);
       if (r && r.ok) extracted = extractBinanceCandles(await r.json().catch(() => null));
+      else motivoFuente = r ? `Binance respondió HTTP ${r.status}` : 'Binance no contestó (red)';
     } else {
       source = 'yahoo';
       const ySym = toYahooSymbol(symbol);
@@ -147,11 +155,18 @@ export default async function handler(req, res) {
         + `?interval=${iv.yahoo.interval}&range=${rangoYahoo}`;
       const r = await fetch(url, { headers: UA }).catch(() => null);
       if (r && r.ok) extracted = extractYahooCandles(await r.json().catch(() => null));
+      else if (r) {
+        motivoFuente = `Yahoo respondió HTTP ${r.status}`
+          + (r.status === 429 ? ': está limitando las peticiones, hay que esperar' : '');
+      } else motivoFuente = 'Yahoo no contestó (red)';
     }
 
     if (!extracted) {
       // Honesto: sin velas reales no hay chart — el cliente pinta su fallback.
-      return res.status(502).json({ error: `No candle data for ${symbol} (${source})` });
+      return res.status(502).json({
+        error: motivoFuente || `la fuente contestó sin velas para ${symbol} (${source})`,
+        symbol, source,
+      });
     }
 
     // Rendimientos del Tesoro (^TNX/^TYX/…) vienen ×10 de Yahoo → ÷10 para

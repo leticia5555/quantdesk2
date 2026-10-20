@@ -381,7 +381,7 @@ export default async function handler(req, res) {
         leidas: notas.length,
         tope: TOPE_PAGINA,
         generado_en: new Date().toISOString(),
-        fuente: 'neon:mercado_noticias (RSS/Atom de api/_lib/news-sources.json)',
+        fuente: 'neon:mercado_noticias (titulares de los feeds RSS/Atom de las fuentes registradas)',
         ms: Date.now() - t0,
       });
     }
@@ -409,7 +409,7 @@ export default async function handler(req, res) {
       fuentes_go: fuentesGo().length,
       generado_en: new Date().toISOString(),
       // Regla 5: de dónde salió lo que se está viendo.
-      fuente: 'neon:mercado_noticias (RSS/Atom de api/_lib/news-sources.json)',
+      fuente: 'neon:mercado_noticias (titulares de los feeds RSS/Atom de las fuentes registradas)',
       ms: Date.now() - t0,
     });
   } catch (e) {
