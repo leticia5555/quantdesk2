@@ -21,6 +21,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SECCIONES, seccionesSinFuente, enSeccion, filtra, destacadasDe,
+  imagenDeLaPagina, normalizaUrlImagen, candidatasDeFoto,
   porFuente, chipsDeFuente, armaPagina, paraBuscar,
 } from '../api/_lib/noticias-pagina.js';
 
@@ -95,88 +96,62 @@ test('un chip de fuente filtra a esa fuente y a ninguna otra', () => {
 
 // ── LAS DESTACADAS ───────────────────────────────────────────────────
 //
-// LA REGLA ES "UNA POR FUENTE", Y SE ESCRIBIÓ DESPUÉS DEL DEFECTO.
-// La primera versión elegía las cuatro notas con foto más nuevas, y en
-// producción eso dio las cuatro tarjetas del mismo medio: Valor BR publica
-// todo con imagen, así que se llevaba la franja entera (Lety, 2026-10-20).
-// El medio que más publica no es "lo destacado".
-test('cuatro destacadas, una por fuente: primero las que SÍ traen foto', () => {
+// UNA DESTACADA ES UNA NOTA CON FOTO. Lety, 2026-10-22, mirando el iPhone:
+// una destacada sin foto salía como un bloque de color con el nombre del
+// medio y se veía mal. Tiene razón — un rectángulo plano al lado de tres
+// fotos reales no se lee como "esta nota no trajo imagen", se lee como que la
+// página está rota.
+//
+// Y UNA POR FUENTE: la primera versión era `conFoto.slice(0, cuantas)` y en
+// producción dio las cuatro del MISMO medio (Valor BR publica todo con
+// imagen). El que más publica no es "lo destacado".
+test('cuatro destacadas, con foto y de cuatro fuentes distintas', () => {
   const ns = [
-    nota({ url: 'a', fuente_id: 'f1', fuente_nombre: 'F1', imagen: null }),
-    nota({ url: 'b', fuente_id: 'f2', fuente_nombre: 'F2', imagen: 'https://i/1.jpg' }),
-    nota({ url: 'c', fuente_id: 'f3', fuente_nombre: 'F3', imagen: null }),
-    nota({ url: 'd', fuente_id: 'f4', fuente_nombre: 'F4', imagen: 'https://i/2.jpg' }),
-    nota({ url: 'e', fuente_id: 'f5', fuente_nombre: 'F5', imagen: null }),
+    nota({ url: 'a', fuente_id: 'f1', imagen: 'https://i/1.jpg' }),
+    nota({ url: 'b', fuente_id: 'f2', imagen: 'https://i/2.jpg' }),
+    nota({ url: 'c', fuente_id: 'f3', imagen: 'https://i/3.jpg' }),
+    nota({ url: 'd', fuente_id: 'f4', imagen: 'https://i/4.jpg' }),
+    nota({ url: 'e', fuente_id: 'f5', imagen: 'https://i/5.jpg' }),
   ];
   const r = destacadasDe(ns);
   assert.equal(r.destacadas.length, 4);
-  assert.equal(r.con_foto, 2);
-  assert.equal(r.sin_foto, 2);
-  assert.ok(r.destacadas[0].imagen && r.destacadas[1].imagen, 'las dos con foto van primero');
-  assert.equal(r.fuentes_distintas, 4);
-  assert.equal(r.repetidas, 0);
-  assert.equal(r.motivo_repetidas, null);
+  assert.equal(new Set(r.destacadas.map((n) => n.fuente_id)).size, 4);
+  assert.ok(r.destacadas.every((n) => n.imagen));
+});
+
+test('una nota SIN foto no es destacada, ni para rellenar', () => {
+  const r = destacadasDe([
+    nota({ url: 'a', fuente_id: 'f1', imagen: 'https://i/1.jpg' }),
+    nota({ url: 'b', fuente_id: 'f2', imagen: null }),
+    nota({ url: 'c', fuente_id: 'f3', imagen: null }),
+  ]);
+  assert.equal(r.destacadas.length, 1, 'se muestran las que hay, no se completa');
+  assert.equal(r.destacadas[0].url, 'a');
+});
+
+test('sin ninguna foto no hay destacadas, y se dice por qué', () => {
+  const r = destacadasDe(Array.from({ length: 6 }, (_, i) => nota({ url: 'n' + i, fuente_id: 'f' + i })));
+  assert.equal(r.destacadas.length, 0, 'la sección no aparece');
+  assert.match(r.motivo_vacio, /foto propia/);
 });
 
 test('el medio que publica TODO con foto aporta una, no las cuatro', () => {
-  // El caso de producción, exacto: un medio con cuatro notas con imagen y
-  // tres medios más con una sin imagen cada uno.
   const ns = [
     ...Array.from({ length: 4 }, (_, i) => nota({
       url: 'valor' + i, fuente_id: 'valor_br', fuente_nombre: 'Valor BR',
       imagen: 'https://valor/' + i + '.jpg', publicado_en: `2026-10-20T1${5 - i}:00:00.000Z`,
     })),
-    nota({ url: 'x', fuente_id: 'cnbc', fuente_nombre: 'CNBC', publicado_en: '2026-10-20T11:00:00.000Z' }),
-    nota({ url: 'y', fuente_id: 'mw', fuente_nombre: 'MarketWatch', publicado_en: '2026-10-20T10:00:00.000Z' }),
-    nota({ url: 'z', fuente_id: 'fin', fuente_nombre: 'El Financiero', publicado_en: '2026-10-20T09:00:00.000Z' }),
+    nota({ url: 'x', fuente_id: 'cnbc', imagen: 'https://i/x.jpg', publicado_en: '2026-10-20T11:00:00.000Z' }),
+    nota({ url: 'y', fuente_id: 'mw', imagen: 'https://i/y.jpg', publicado_en: '2026-10-20T10:00:00.000Z' }),
   ];
   const r = destacadasDe(ns);
   const ids = r.destacadas.map((n) => n.fuente_id);
-  assert.equal(new Set(ids).size, 4, 'cuatro fuentes distintas: ' + JSON.stringify(ids));
   assert.equal(ids.filter((f) => f === 'valor_br').length, 1);
-  // Y la que aporta es su MÁS NUEVA: 15:00, no una de las de atrás.
+  // Y la que aporta es su MÁS NUEVA.
   assert.equal(r.destacadas.find((n) => n.fuente_id === 'valor_br').url, 'valor0');
-});
-
-test('de una fuente con y sin foto, la que ENCABEZA es la que trae foto', () => {
-  const r = destacadasDe([
-    nota({ url: 'nueva', fuente_id: 'f1', imagen: null, publicado_en: '2026-10-20T15:00:00.000Z' }),
-    nota({ url: 'vieja', fuente_id: 'f1', imagen: 'https://i/1.jpg', publicado_en: '2026-10-20T09:00:00.000Z' }),
-  ]);
-  // Con una sola fuente se rellena con lo que hay —dos huecos serían peor—
-  // pero la que representa a la fuente es la que tiene imagen, aunque sea
-  // más vieja: la franja de arriba es de tarjetas con foto.
-  assert.equal(r.destacadas[0].url, 'vieja');
-  assert.equal(r.fuentes_distintas, 1);
-  assert.equal(r.repetidas, 1);
-});
-
-test('con menos de cuatro fuentes se repite medio, y se DICE', () => {
-  // Dos fuentes vivas: dejar dos huecos sería peor que repetir, pero repetir
-  // en silencio haría leer "cuatro medios hablan de esto" donde hay dos.
-  const r = destacadasDe([
-    nota({ url: 'a1', fuente_id: 'f1', publicado_en: '2026-10-20T15:00:00.000Z' }),
-    nota({ url: 'a2', fuente_id: 'f1', publicado_en: '2026-10-20T14:00:00.000Z' }),
-    nota({ url: 'b1', fuente_id: 'f2', publicado_en: '2026-10-20T13:00:00.000Z' }),
-    nota({ url: 'b2', fuente_id: 'f2', publicado_en: '2026-10-20T12:00:00.000Z' }),
-  ]);
-  assert.equal(r.destacadas.length, 4);
-  assert.equal(r.fuentes_distintas, 2);
-  assert.equal(r.repetidas, 2);
-  assert.match(r.motivo_repetidas, /2 fuente/);
-});
-
-test('sin ninguna foto salen cuatro destacadas igual, y se dice por qué no hay foto', () => {
-  const r = destacadasDe(Array.from({ length: 6 }, (_, i) => nota({ url: 'n' + i, fuente_id: 'f' + i })));
-  assert.equal(r.destacadas.length, 4);
-  assert.equal(r.con_foto, 0);
-  // Regla 2: el hueco dice su causa real, no "sin imagen".
-  assert.match(r.motivo_sin_foto, /media:content|enclosure/);
-});
-
-test('con menos de cuatro notas no se rellena con nada: salen las que hay', () => {
-  const r = destacadasDe([nota({ url: 'a', fuente_id: 'f1' }), nota({ url: 'b', fuente_id: 'f2' })]);
-  assert.equal(r.destacadas.length, 2);
+  // Cuántas candidatas con foto había en total: dice si la franja se queda
+  // corta por falta de fotos o por falta de variedad.
+  assert.equal(r.con_foto_total, 6);
 });
 
 // ── POR FUENTE ───────────────────────────────────────────────────────
@@ -283,4 +258,170 @@ test('un filtro que no deja nada da listas vacías, no un error', () => {
   assert.equal(r.total, 0);
   assert.deepEqual(r.destacadas, []);
   assert.equal(r.medios_total, 0);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA FOTO LEÍDA DE LA PROPIA NOTA
+//
+// Lety, 2026-10-22: *"La foto sale de la propia nota: para las candidatas a
+// destacada, el cron lee la página del artículo y toma su `og:image`."*
+//
+// Es un cambio sobre el encargo de septiembre, que prohibía ir a buscarla.
+// Lo que NO cambia: no se baja la imagen, no se guarda, no se recorta y no se
+// lee el cuerpo del artículo. Se mira la cabecera, se queda la URL.
+// ═══════════════════════════════════════════════════════════════════════
+const NOTA = 'https://medio.test/seccion/nota-1';
+
+test('lee og:image de la cabecera', () => {
+  const r = imagenDeLaPagina('<html><head><meta property="og:image" content="https://m.test/a.jpg"></head>', NOTA);
+  assert.equal(r.url, 'https://m.test/a.jpg');
+  assert.equal(r.via, 'og:image');
+});
+
+test('y aguanta las formas en que los medios la escriben', () => {
+  const casos = [
+    // El orden de los atributos cambia de un CMS a otro.
+    ['<head><meta content="https://m.test/b.jpg" property="og:image"></head>', 'https://m.test/b.jpg'],
+    // Twitter la publica con `name=`, no con `property=`.
+    ['<head><meta name="twitter:image" content="https://m.test/c.jpg"></head>', 'https://m.test/c.jpg'],
+    // Comillas simples.
+    ["<head><meta property='og:image' content='https://m.test/d.jpg'></head>", 'https://m.test/d.jpg'],
+    // Sin comillas.
+    ['<head><meta property=og:image content=https://m.test/e.jpg></head>', 'https://m.test/e.jpg'],
+    // Protocolo implícito: la mitad de los CDN la mandan así.
+    ['<head><meta property="og:image" content="//cdn.test/f.jpg"></head>', 'https://cdn.test/f.jpg'],
+    // Ruta relativa, que hay que resolver contra la URL de la nota.
+    ['<head><meta property="og:image" content="/fotos/g.jpg"></head>', 'https://medio.test/fotos/g.jpg'],
+    // Entidad HTML dentro de la query: sin desescapar, la URL da 404.
+    ['<head><meta property="og:image" content="https://m.test/h.jpg?w=1&amp;h=2"></head>', 'https://m.test/h.jpg?w=1&h=2'],
+  ];
+  for (const [html, esperada] of casos) {
+    assert.equal(imagenDeLaPagina(html, NOTA).url, esperada, html.slice(0, 60));
+  }
+});
+
+test('prefiere og:image sobre twitter:image cuando están las dos', () => {
+  const r = imagenDeLaPagina(
+    '<head><meta name="twitter:image" content="https://m.test/t.jpg">'
+    + '<meta property="og:image" content="https://m.test/og.jpg"></head>', NOTA);
+  assert.equal(r.url, 'https://m.test/og.jpg');
+});
+
+test('sólo mira la CABECERA: una og:image en el cuerpo no cuenta', () => {
+  // En el cuerpo puede venir dentro de un comentario, de un script o de una
+  // nota relacionada: no es la foto de ESTA nota. Y el cuerpo es justo lo que
+  // no queremos leer.
+  const r = imagenDeLaPagina(
+    '<head><title>t</title></head><body><meta property="og:image" content="https://m.test/x.jpg"></body>', NOTA);
+  assert.equal(r.url, null);
+});
+
+test('un `data:` no entra, y un `http:` se sube a https', () => {
+  // `data:` pesa y no se puede volver a pedir; una imagen `http` en una
+  // página `https` la bloquea el navegador y la tarjeta quedaría con el hueco
+  // que esto vino a quitar.
+  assert.equal(imagenDeLaPagina('<head><meta property="og:image" content="data:image/gif;base64,AA"></head>', NOTA).url, null);
+  assert.equal(normalizaUrlImagen('http://m.test/a.jpg', NOTA), 'https://m.test/a.jpg');
+  assert.equal(normalizaUrlImagen('javascript:alert(1)', NOTA), null);
+  assert.equal(normalizaUrlImagen('', NOTA), null);
+});
+
+test('sin og:image lo dice, y distingue "no la declara" de "no hay metas"', () => {
+  assert.match(imagenDeLaPagina('<head><meta name="description" content="x"></head>', NOTA).motivo,
+    /no declara og:image/);
+  assert.match(imagenDeLaPagina('<head><title>sólo título</title></head>', NOTA).motivo,
+    /no trae etiquetas meta/);
+  assert.match(imagenDeLaPagina('', NOTA).motivo, /vacía/);
+});
+
+// ── A QUIÉN SE LE PIDE LA FOTO ───────────────────────────────────────
+test('se piden las más nuevas, y una por fuente antes que dos de la misma', () => {
+  // Pedir las 300 notas de una cosecha serían 300 peticiones a ocho dominios:
+  // así es como un medio nos bloquea. Y el orden es el mismo con el que la
+  // pantalla elige destacadas, así que lo que se pide es lo que se va a
+  // mostrar.
+  const n = (url, fuente_id, hora) => ({ url, fuente_id, imagen: null, publicado_en: `2026-10-22T${hora}:00:00Z` });
+  const r = candidatasDeFoto([
+    n('a', 'valor', '10'), n('b', 'valor', '09'), n('c', 'cnbc', '08'),
+    n('d', 'mw', '07'), n('e', 'valor', '11'),
+  ], { cuantas: 4 });
+  assert.deepEqual(r.map((x) => x.url), ['e', 'c', 'd', 'a']);
+});
+
+test('no se le pide la foto a una nota que ya la tiene', () => {
+  const r = candidatasDeFoto([
+    { url: 'a', fuente_id: 'f1', imagen: 'https://i/1.jpg', publicado_en: '2026-10-22T10:00:00Z' },
+    { url: 'b', fuente_id: 'f2', imagen: null, publicado_en: '2026-10-22T09:00:00Z' },
+  ]);
+  assert.deepEqual(r.map((x) => x.url), ['b']);
+});
+
+test('el tope se respeta: es el presupuesto de cortesía con los medios', () => {
+  const muchas = Array.from({ length: 100 }, (_, i) => ({
+    url: 'u' + i, fuente_id: 'f' + (i % 3), imagen: null,
+    publicado_en: '2026-10-22T10:00:00Z',
+  }));
+  assert.equal(candidatasDeFoto(muchas).length, 20);
+  assert.equal(candidatasDeFoto(muchas, { cuantas: 5 }).length, 5);
+});
+
+// ── LA PETICIÓN A LA NOTA: ACOTADA Y CON NOMBRE ──────────────────────
+//
+// Leer la página de una nota es ir al sitio de un tercero. Los topes no son
+// decoración: son lo que distingue "leer una cabecera" de "raspar un sitio".
+const { cabeceraDe, FOTO_UA, FOTOS_POR_CORRIDA } = await import('../api/noticias.js');
+
+const respuesta = (body, { status = 200, tipo = 'text/html' } = {}) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  headers: { get: (k) => (k.toLowerCase() === 'content-type' ? tipo : null) },
+  text: async () => body,
+});
+
+test('se presenta con un User-Agent propio, no con uno de navegador fingido', () => {
+  // Fingir un navegador es mentirle al medio sobre quién está pidiendo. Un
+  // agente propio deja que nos bloqueen si no nos quieren, que es su derecho.
+  assert.match(FOTO_UA, /QuantDesk/);
+  assert.match(FOTO_UA, /https:\/\//, 'dice dónde averiguar quiénes somos');
+  assert.ok(!/Mozilla|Chrome|Safari/.test(FOTO_UA), 'no finge ser un navegador');
+  assert.equal(FOTOS_POR_CORRIDA, 20);
+});
+
+test('manda ese agente en la petición', async () => {
+  let visto = null;
+  await cabeceraDe('https://medio.test/n', {
+    fetchImpl: async (url, opts) => { visto = opts; return respuesta('<head></head>'); },
+  });
+  assert.equal(visto.headers['user-agent'], FOTO_UA);
+  assert.match(visto.headers.accept, /html/);
+});
+
+test('una nota que contesta 404 se declara, no se reintenta sola', async () => {
+  const r = await cabeceraDe('https://medio.test/n', {
+    fetchImpl: async () => respuesta('no', { status: 404 }),
+  });
+  assert.equal(r.html, null);
+  assert.match(r.motivo, /HTTP 404/);
+});
+
+test('y lo que no es HTML ni se lee', async () => {
+  // Un PDF o una imagen pueden pesar megabytes y no tienen og:image.
+  const r = await cabeceraDe('https://medio.test/n.pdf', {
+    fetchImpl: async () => respuesta('%PDF', { tipo: 'application/pdf' }),
+  });
+  assert.equal(r.html, null);
+  assert.match(r.motivo, /no devolvió HTML/);
+});
+
+test('un sitio que no contesta se corta por tiempo y lo dice', async () => {
+  const r = await cabeceraDe('https://medio.test/lento', {
+    timeoutMs: 40,
+    fetchImpl: (url, opts) => new Promise((_, rechaza) => {
+      opts.signal.addEventListener('abort', () => {
+        const e = new Error('abortada'); e.name = 'AbortError'; rechaza(e);
+      });
+    }),
+  });
+  assert.equal(r.html, null);
+  assert.match(r.motivo, /no contestó en 40 ms/);
 });
