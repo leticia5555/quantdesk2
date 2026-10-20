@@ -1526,9 +1526,21 @@
       html += '<div class="vacio">' + esc(a.motivo || 'el leaderboard no devolvió agentes') + '</div>';
     } else {
       html += a.agentes.map(function(g){
+        // LA CAUSA SE LEE EN LA PANTALLA, NO EN UN `title`.
+        // `qdPctTag` mete el motivo en el atributo `title`, que en escritorio
+        // aparece al pasar el puntero y en un teléfono NO EXISTE. Los cinco
+        // agentes salían en "—" sin una sola palabra de por qué (Lety,
+        // 2026-10-20): la causa estaba en el payload y no había forma de
+        // verla en el aparato donde se mira esta pantalla.
+        //
+        // Cuando hay número, la línea chica es el modelo; cuando no lo hay, es
+        // la causa — que en ese momento es lo que importa.
+        var abajo = Number.isFinite(g.pct)
+          ? (g.modelo ? esc(g.modelo) : '')
+          : esc(g.pct_motivo || 'sin rendimiento y sin causa declarada');
         return '<div class="evento">'
           + '<span class="que"><b>' + esc(g.nombre) + '</b>'
-          + (g.modelo ? '<small>' + esc(g.modelo) + '</small>' : '') + '</span>'
+          + (abajo ? '<small>' + abajo + '</small>' : '') + '</span>'
           + '<span class="val">'
           // `qdPctTag` exige etiqueta de periodo: la de Arena es el acumulado
           // desde su baseline, y decirlo es lo que impide leerlo como el % del

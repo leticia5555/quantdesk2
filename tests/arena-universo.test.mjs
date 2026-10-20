@@ -74,8 +74,21 @@ const conCatalogo = (deps) => ({ cargarCatalogo: async () => catalogoTodoComun, 
 // diez bloques ya suponía: son sobre FMP, Neon y el JSON del repo, que son los
 // escalones de ABAJO. Los bloques que sí prueban el ETF lo inyectan ellos
 // mismos (y ya lo hacían), así que ninguno cambia de significado.
-const depsBase = ({ fmp, neon, repo, etf } = {}) => ({
+const depsBase = ({ fmp, neon, repo, etf, nasdaq } = {}) => ({
   fetchDesdeEtf: async (index) => (etf === undefined ? null : (typeof etf === 'function' ? etf(index) : etf)),
+  // UNA DEPENDENCIA MÁS QUE SE ESCAPABA A LA RED. Misma historia que el ETF de
+  // arriba, un escalón más abajo: `resolveConstituents` cae a la tabla pública
+  // del Nasdaq-100 (`fetchNasdaq100`, arena-universe.js) y `depsBase` no la
+  // inyectaba. Sin internet devolvía null y el fixture de 100 nombres ganaba;
+  // CON internet leía la lista viva —104 símbolos, porque la tabla lista las
+  // clases de acción por separado— y el bloque 4 contaba 604 donde el fixture
+  // declara 600. Verde en los sandboxes, rojo en CI, y ninguna de las dos
+  // corridas estaba midiendo lo que decía medir.
+  //
+  // El default es `null` por el mismo motivo que el del ETF: los bloques que
+  // usan `depsBase` prueban los escalones de ABAJO (FMP, Neon, el JSON del
+  // repo). El que quiera probar la tabla la inyecta.
+  fetchNasdaq100: async () => (nasdaq === undefined ? null : (typeof nasdaq === 'function' ? nasdaq() : nasdaq)),
   fetchConstituents: async (index) => (fmp === undefined ? null : (typeof fmp === 'function' ? fmp(index) : fmp)),
   readStored: async (index) => (neon === undefined ? null : (typeof neon === 'function' ? neon(index) : neon)),
   writeStored: async () => true,
@@ -183,6 +196,34 @@ console.log('\n── una lista incoherente de FMP NO pisa la buena ──');
 const conIndices = () => depsBase({ fmp: (i) => ({ index: i, source: 'fmp', built_at: HOY.toISOString(), symbols: listaDe(i) }) });
 const TODO_ADMISIBLE = { price: 100, marketCap: 5e11, dollarVolume: 5e9 };
 const admisionTodo = async (syms) => Object.fromEntries(syms.map((s) => [s, TODO_ADMISIBLE]));
+
+// ── 3bis) LA TABLA DEL NASDAQ-100 TAMPOCO SALE A LA RED ──────────────
+// `depsBase` stubea el ETF, FMP, Neon y el JSON del repo, pero `fetchNasdaq100`
+// se le escapaba: con internet, CI leía la lista viva (104 símbolos, porque la
+// tabla publica las clases de acción por separado) donde el fixture declara
+// 100, y el bloque 4 contaba 604 en vez de 600. Sin internet el default caía a
+// null y pasaba. Verde en el sandbox, rojo en CI.
+//
+// Estos dos casos fijan el cableado: si alguien vuelve a quitar el stub, el
+// PRIMERO falla en cualquier máquina —con o sin red— en vez de esperar a CI.
+console.log('\n── la tabla del Nasdaq-100 se inyecta, no se sale a buscar ──');
+{
+  const cuatro = ['AAA', 'BBB', 'CCC', 'DDD'];
+  const r = await resolveConstituents('nasdaq100', {
+    now: HOY,
+    deps: depsBase({ nasdaq: { index: 'nasdaq100', source: 'tabla_publica', built_at: HOY.toISOString(), symbols: cuatro } }),
+  });
+  ok(r && r.symbols && r.symbols.length === 4,
+    'lo que devuelve la tabla INYECTADA es lo que se usa', String(r && r.symbols && r.symbols.length));
+  ok(r && r.source === 'tabla_publica', 'y se sabe de qué escalón vino', String(r && r.source));
+
+  // Sin inyectar, el escalón se cae solo: ninguna corrida de esta suite puede
+  // depender de que la máquina tenga internet.
+  const sin = await resolveConstituents('nasdaq100', { now: HOY, deps: depsBase() });
+  ok(!sin || !sin.symbols || sin.symbols.length === 0,
+    'y sin inyectar NO sale a internet: el escalón se cae solo',
+    JSON.stringify(sin && sin.source));
+}
 
 console.log(`\n── 4) el tope de ${MOVERS_MAX} se gasta SOLO en nombres nuevos ──`);
 {

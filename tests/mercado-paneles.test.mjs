@@ -229,3 +229,37 @@ test('con cuenta pero sin capital inicial, otra más', () => {
   ] });
   assert.match(a.agentes[0].pct_motivo, /no se pudo leer su capital inicial/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL FILTRO DE MEGA-CAPS SE DECLARA, NO SE ESCONDE
+//
+// El 19 de octubre, en plena temporada de reportes, la sección decía "sin
+// reportes esta semana · 7 más adelante" mientras el calendario traía decenas.
+// Era verdad sobre las mega-caps y falso sobre el mercado (Lety, 2026-10-20).
+// ═══════════════════════════════════════════════════════════════════════
+test('se cuenta cuántos reportes de la SEMANA tiró el filtro', () => {
+  const r = armaEstaSemana({
+    macro: { filas: [] },
+    reportes: {
+      filas: [{ ticker: 'AAPL', date: '2026-10-30' }],        // mega, fuera de la semana
+      filtro: 'mega-caps',
+      descartados: [
+        { ticker: 'XYZ', date: '2026-10-06' },                // DENTRO de la semana
+        { ticker: 'ABC', date: '2026-10-07' },                // dentro
+        { ticker: 'QRS', date: '2026-10-29' },                // fuera
+      ],
+      descartados_total: 312,
+    },
+    ahora: HOY,
+  });
+  assert.equal(r.fuentes.reportes.filtro, 'mega-caps');
+  assert.equal(r.fuentes.reportes.filtrados_en_ventana, 2, 'sólo los de la semana');
+  assert.equal(r.fuentes.reportes.filtrados_total, 312, 'y el total del horizonte, sin recortar');
+  assert.equal(r.fuentes.reportes.mas_adelante, 1);
+});
+
+test('sin filtro declarado no se inventa uno', () => {
+  const r = armaEstaSemana({ reportes: { filas: [] }, ahora: HOY });
+  assert.equal(r.fuentes.reportes.filtro, null);
+  assert.equal(r.fuentes.reportes.filtrados_en_ventana, 0);
+});

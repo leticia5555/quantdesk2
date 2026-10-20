@@ -235,7 +235,29 @@ test('"¿dónde se perdieron los 9?": se dice cuántos caen más adelante', () =
   const f = fraseDeFuente('reportes', {
     reportes: { ok: true, en_ventana: 0, mas_adelante: 9, horizonte_dias: 30 },
   });
-  assert.equal(f, 'sin reportes esta semana · 9 más adelante');
+  assert.equal(f, 'sin reportes de mega-caps esta semana · 9 más adelante');
+});
+
+test('"sin reportes" no puede tapar al FILTRO: si hay otras emisoras, se dice', () => {
+  // En plena temporada de reportes la sección decía "sin reportes esta semana"
+  // mientras el calendario traía decenas: era verdad sobre las mega-caps y
+  // falso sobre el mercado, y desde la pantalla no se distinguía
+  // (Lety, 2026-10-20, el 19 de octubre).
+  const f = fraseDeFuente('reportes', {
+    reportes: { ok: true, en_ventana: 0, mas_adelante: 7, horizonte_dias: 30,
+      filtro: 'mega-caps', filtrados_en_ventana: 43 },
+  });
+  assert.match(f, /sin reportes de mega-caps esta semana/);
+  assert.match(f, /el calendario trae 43 de otras emisoras/);
+  assert.match(f, /7 de mega-caps más adelante/);
+});
+
+test('y si de verdad no hay nada esa semana, no se inventa un filtro', () => {
+  const f = fraseDeFuente('reportes', {
+    reportes: { ok: true, en_ventana: 0, mas_adelante: 7, horizonte_dias: 30,
+      filtro: 'mega-caps', filtrados_en_ventana: 0 },
+  });
+  assert.equal(f, 'sin reportes de mega-caps esta semana · 7 más adelante');
 });
 
 test('la tabla macro vacía dice "sin cargar", no "sin eventos"', () => {

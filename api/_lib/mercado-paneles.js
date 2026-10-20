@@ -103,7 +103,16 @@ export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), 
     // POR SEPARADO, nunca fundidas: ver la cabecera del archivo.
     fuentes: {
       macro: estadoFuente(macro, 'neon:macro_events', macroDespues, horizonte),
-      reportes: estadoFuente(reportes, 'finnhub:earnings-calendar', reportesDespues, horizonte),
+      reportes: {
+        ...estadoFuente(reportes, 'finnhub:earnings-calendar', reportesDespues, horizonte),
+        // CUÁNTOS REPORTES HAY ESTA SEMANA QUE EL FILTRO TIRÓ.
+        // "Sin reportes esta semana" era verdad sobre las mega-caps y falso
+        // sobre el mercado, y desde la pantalla no se distinguía. Esto es la
+        // diferencia entre "no hay" y "no pasan el filtro".
+        filtro: reportes.filtro || null,
+        filtrados_en_ventana: (reportes.descartados || []).filter((d) => dentro(d.date)).length,
+        filtrados_total: reportes.descartados_total || 0,
+      },
     },
   };
 }

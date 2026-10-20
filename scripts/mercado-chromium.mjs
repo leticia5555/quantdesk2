@@ -1399,6 +1399,15 @@ try {
     /12\.40%/.test(porTitulo.Arena.eventos.join(' '))
       && /—/.test(porTitulo.Arena.eventos.join(' ')),
     porTitulo.Arena.eventos.join(' | '));
+  // LA CAUSA SE LEE EN LA PANTALLA, NO EN UN `title`. `qdPctTag` mete el
+  // motivo en un atributo que en un teléfono NO EXISTE: los cinco agentes
+  // salían en "—" sin una palabra de por qué (Lety, 2026-10-20).
+  chequeo('y el agente sin número dice SU CAUSA en la propia fila',
+    /no trajo el rendimiento de este agente/.test(porTitulo.Arena.eventos.join(' ')),
+    porTitulo.Arena.eventos.join(' | '));
+  chequeo('mientras que el que sí tiene número conserva su modelo',
+    /Claude/.test(porTitulo.Arena.eventos[0]) && /opus/.test(porTitulo.Arena.eventos[0]),
+    porTitulo.Arena.eventos[0]);
 
   // TAP EN UNA FILA → LA MISMA HOJA QUE EL CUADRO.
   const simTabla = porTitulo['Más suben'].filas[0].sym;

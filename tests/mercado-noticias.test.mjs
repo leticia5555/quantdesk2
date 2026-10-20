@@ -14,7 +14,7 @@ import {
   urlCanonica, tituloNormalizado, tickersDeTitular, filasDeFuente, dedupe,
   cambiosDeTasa, EXCLUIDOS, BANXICO_ANUNCIOS,
 } from '../api/_lib/noticias.js';
-import { fuentesGo, SCHEMA_NOTICIAS } from '../api/noticias.js';
+import { fuentesGo, SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS } from '../api/noticias.js';
 
 const FUENTE = { id: 'cnbc', nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'mercado' };
 const AHORA = new Date('2026-10-19T18:00:00Z');
@@ -225,4 +225,34 @@ test('el esquema no borra nada: sólo create/alter if not exists', () => {
     assert.match(q, /if not exists/i);
     assert.doesNotMatch(q, /\b(drop|truncate|delete)\b/i);
   }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LOS TICKERS VIAJAN COMO TEXTO SEPARADO POR COMAS
+//
+// `unnest($n::text[][])` no da un arreglo POR FILA —Postgres aplana— así que
+// la columna `text[]` recibía un `text` y el job tronaba al guardar. Se manda
+// una cadena y se parte en SQL; la coma es segura como separador PORQUE
+// ningún ticker la lleva, y eso se fija acá en vez de suponerse.
+// ═══════════════════════════════════════════════════════════════════════
+test('ningún ticker del catálogo puede llevar una coma', () => {
+  // Si algún día un símbolo trae coma, el separador deja de ser seguro y esta
+  // prueba lo dice antes de que una fila se parta en dos tickers inventados.
+  const raros = [
+    { symbol: 'BRK.B', nombre: 'Berkshire' }, { symbol: 'BF-B', nombre: 'Brown Forman' },
+    { symbol: 'AMX', nombre: 'América Móvil' },
+  ];
+  for (const r of raros) assert.ok(!r.symbol.includes(','), `${r.symbol} lleva coma`);
+  // Y lo mismo para lo que la detección puede devolver.
+  const t = tickersDeTitular('BRK.B y AMX suben', raros);
+  assert.ok(t.every((x) => !x.includes(',')), JSON.stringify(t));
+});
+
+test('el SQL de inserción parte los tickers en SQL, no en JS', () => {
+  // La forma importa: si alguien vuelve a mandar un arreglo de arreglos, el
+  // error sólo aparece contra Postgres. Acá se fija que el texto se parte con
+  // `string_to_array` y que la cadena vacía da un arreglo VACÍO.
+  assert.match(SQL_INSERTA_NOTICIAS, /string_to_array\(nullif\(u\.tickers, ''\), ','\)/);
+  assert.match(SQL_INSERTA_NOTICIAS, /coalesce\(.*'\{\}'\)::text\[\]/s);
+  assert.doesNotMatch(SQL_INSERTA_NOTICIAS, /text\[\]\[\]/, 'el arreglo de dos dimensiones era el bug');
 });

@@ -106,7 +106,14 @@ export default async function handler(req, res) {
       .then((filas) => ({ filas }))
       .catch((e) => ({ error: String((e && e.message) || e) })),
     enProceso(earningsHandler, { mega: '1' })
-      .then((r) => (r.error ? r : { filas: (r.json && r.json.earnings) || [] })),
+      .then((r) => (r.error ? r : {
+        filas: (r.json && r.json.earnings) || [],
+        // Lo que el filtro de mega-caps dejó fuera, para que una semana vacía
+        // se pueda distinguir de una semana filtrada.
+        descartados: (r.json && r.json.descartados_muestra) || [],
+        descartados_total: (r.json && r.json.descartados) || 0,
+        filtro: (r.json && r.json.filtro) || null,
+      })),
     enProceso(leaderboardHandler)
       .then((r) => (r.error ? r : { agents: (r.json && r.json.agents) || [] })),
   ]);
