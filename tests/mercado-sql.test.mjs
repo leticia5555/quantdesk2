@@ -34,6 +34,7 @@ import { SQL_MAPA_US } from '../api/mercado-mapa.js';
 import { SCHEMA_PRECIOS_US } from '../api/_lib/mercado-precios.js';
 import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
 import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS } from '../api/noticias.js';
+import { tickersDeFila } from '../api/_lib/noticias.js';
 
 const PUERTO = 55433;
 
@@ -182,6 +183,28 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
           on conflict (url) do nothing;`);
     const quedo = psql("select titular from mercado_noticias where url='https://a/1';").trim();
     assert.equal(quedo, 'Dos', 'la primera vez que se vio la nota manda');
+
+    // ── Y DE VUELTA: LO QUE LA LECTURA RECIBE ES UNA CADENA ───────────
+    // El driver HTTP de Neon entrega un `text[]` como el LITERAL de Postgres,
+    // no como arreglo de JavaScript. La pantalla hacía `.slice().map()` sobre
+    // esa cadena y "Lo de hoy" tronaba entero (Lety, 2026-10-20).
+    //
+    // Acá se lee una fila DE VERDAD —la que se acaba de insertar— y se le pasa
+    // el valor tal cual a `tickersDeFila`, que es lo que hace el endpoint.
+    const crudos = psql(
+      "select tickers::text from mercado_noticias order by url;").trim().split('\n');
+    assert.deepEqual(crudos, ['{NVDA,ORCL}', '{AMX}', '{}'], crudos.join(' · '));
+    assert.deepEqual(tickersDeFila(crudos[0]), ['NVDA', 'ORCL']);
+    assert.deepEqual(tickersDeFila(crudos[1]), ['AMX']);
+    assert.deepEqual(tickersDeFila(crudos[2]), [], 'el arreglo vacío no inventa un elemento');
+
+    // Un ticker con punto —BRK.B— y uno que Postgres entrecomilla por el
+    // espacio: partir por comas a secas rompería el segundo.
+    psql(`insert into mercado_noticias (url, titular, titulo_norm, fuente_id, publicado_en, tickers)
+          values ('https://a/4','Raros','raros','x', now(), array['BRK.B','A B']::text[]);`);
+    const raro = psql("select tickers::text from mercado_noticias where url='https://a/4';").trim();
+    assert.equal(raro, '{BRK.B,"A B"}', raro);
+    assert.deepEqual(tickersDeFila(raro), ['BRK.B', 'A B']);
     psql('delete from mercado_noticias;');
   });
 

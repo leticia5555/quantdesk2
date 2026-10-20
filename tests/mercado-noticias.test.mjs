@@ -15,6 +15,8 @@ import {
   cambiosDeTasa, EXCLUIDOS, BANXICO_ANUNCIOS,
 } from '../api/_lib/noticias.js';
 import { fuentesGo, SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS } from '../api/noticias.js';
+import REGISTRO from '../api/_lib/news-sources.json' with { type: 'json' };
+const REGISTRO_FUENTES = REGISTRO.fuentes;
 
 const FUENTE = { id: 'cnbc', nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'mercado' };
 const AHORA = new Date('2026-10-19T18:00:00Z');
@@ -211,13 +213,42 @@ test('el titular derivado NO se presenta como comunicado', () => {
 // ── El registro ──────────────────────────────────────────────────────
 test('se cosechan las 22 que el smoke dejó en GO, y todas con URL', () => {
   const go = fuentesGo();
-  assert.equal(go.length, 22);
+  assert.equal(go.length, 21, 'yahoo_finance salió con 404 en la cosecha del 2026-10-20');
   assert.ok(go.every((f) => typeof f.feed === 'string' && /^https?:/.test(f.feed)));
   // Las que el smoke rechazó NO entran: Reuters, El Economista, Fed, BMV.
   const ids = go.map((f) => f.id);
-  for (const no of ['reuters_business', 'reuters_es', 'el_economista', 'fed_fomc', 'banxico', 'bmv_emisnet']) {
+  for (const no of ['reuters_business', 'reuters_es', 'el_economista', 'fed_fomc', 'banxico', 'bmv_emisnet',
+    // 404 en la cosecha de producción del 2026-10-20. No se reemplaza a
+    // ciegas: una URL nueva sin smoke es una candidata, no una fuente.
+    'yahoo_finance']) {
     assert.ok(!ids.includes(no), `${no} tiene NO-GO y no se pide`);
   }
+
+  // Y una fuente que queda fuera tiene que decir POR QUÉ, o el registro deja
+  // de ser el lugar donde se sabe qué se intentó.
+  for (const f of REGISTRO_FUENTES) {
+    if (f.smoke && f.smoke.veredicto !== 'GO') {
+      assert.ok(f.smoke.motivo && f.smoke.motivo.length > 10, `${f.id} no dice por qué quedó fuera`);
+    }
+    if (f.cosecha && f.cosecha.veredicto !== 'GO') {
+      assert.ok(f.cosecha.motivo && f.cosecha.motivo.length > 10, `${f.id}: cosecha sin motivo`);
+      assert.ok(f.cosecha.en, `${f.id}: cosecha sin fecha`);
+    }
+  }
+});
+
+test('el smoke de septiembre NO se reescribe: es una medición fechada', () => {
+  // `yahoo_finance` dio GO en septiembre y 404 en la cosecha del 20 de
+  // octubre. Pisar el smoke borraría el registro de qué se probó y cuándo, y
+  // con él la diferencia entre "nunca sirvió" y "servía y se cayó" — que se
+  // arreglan distinto: buscar otra fuente contra corregir una URL.
+  const y = REGISTRO_FUENTES.find((f) => f.id === 'yahoo_finance');
+  assert.equal(y.smoke.veredicto, 'GO', 'lo que midió septiembre sigue dicho');
+  assert.equal(y.cosecha.veredicto, 'NO-GO');
+  assert.match(y.cosecha.motivo, /404/);
+  assert.equal(y.cosecha.en, '2026-10-20');
+  // Y no se pide, que es lo que importa hoy.
+  assert.ok(!fuentesGo().some((f) => f.id === 'yahoo_finance'));
 });
 
 test('el esquema no borra nada: sólo create/alter if not exists', () => {
@@ -255,4 +286,71 @@ test('el SQL de inserción parte los tickers en SQL, no en JS', () => {
   assert.match(SQL_INSERTA_NOTICIAS, /string_to_array\(nullif\(u\.tickers, ''\), ','\)/);
   assert.match(SQL_INSERTA_NOTICIAS, /coalesce\(.*'\{\}'\)::text\[\]/s);
   assert.doesNotMatch(SQL_INSERTA_NOTICIAS, /text\[\]\[\]/, 'el arreglo de dos dimensiones era el bug');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LAS FORMAS REALES DE LAS 22 FUENTES
+//
+// El 2026-10-20, tras una cosecha que guardó 306 notas, OCHO fuentes vivas
+// reportaron "ninguna entrada traía título y enlace": las cinco de Substack y
+// tres medios en español. Ninguna estaba caída — el parser las leía mal.
+//
+// La causa era el ORDEN dentro de `stripTags`: `<![CDATA[Un titular]]>` casa
+// entero con `/<[^>]*>/`, así que quitar etiquetas antes de desenvolver el
+// CDATA borraba el titular completo y la entrada se descartaba por "sin
+// título". Un fixture por forma, y cada uno falla si se deshace su arreglo.
+// ═══════════════════════════════════════════════════════════════════════
+import {
+  SUBSTACK, MEDIO_ES_CDATA, ATOM_LINK_ATRIBUTO, RSS_GUID_PERMALINK, RSS_ATOM_LINK,
+} from './fixtures/feeds.mjs';
+
+test('Substack: el titular viene en CDATA y NO se puede borrar', () => {
+  const r = leeFeed(SUBSTACK);
+  assert.equal(r.entradas.length, 1, r.motivo || '');
+  assert.equal(r.entradas[0].titulo, 'The Oldest Trick in the Book');
+  assert.equal(r.entradas[0].enlace, 'https://doomberg.substack.com/p/the-oldest-trick-in-the-book');
+  assert.equal(r.entradas[0].publicado_en, '2026-10-19T11:02:14.000Z');
+  // Y el enclosure CON type sí cuenta como foto.
+  assert.equal(r.entradas[0].imagen.via, 'enclosure');
+});
+
+test('un medio en español: CDATA con HTML adentro y el link también en CDATA', () => {
+  const r = leeFeed(MEDIO_ES_CDATA);
+  assert.equal(r.entradas.length, 1, r.motivo || '');
+  // El HTML de adentro se quita, los acentos se quedan.
+  assert.equal(r.entradas[0].titulo, 'Banxico baja la tasa y el peso reacciona');
+  assert.match(r.entradas[0].enlace, /^https:\/\/www\.elfinanciero\.com\.mx/);
+  // Fecha con huso, no UTC: 14:30 -0600 son las 20:30 Z.
+  assert.equal(r.entradas[0].publicado_en, '2026-10-19T20:30:00.000Z');
+});
+
+test('Atom: el enlace es un ATRIBUTO, y gana el rel="alternate"', () => {
+  const r = leeFeed(ATOM_LINK_ATRIBUTO);
+  assert.equal(r.entradas.length, 1, r.motivo || '');
+  assert.equal(r.entradas[0].enlace, 'https://klement.substack.com/p/valuation',
+    'el rel="edit" no es la nota');
+  // `published` manda sobre `updated`: es cuándo se publicó, no cuándo se tocó.
+  assert.equal(r.entradas[0].publicado_en, '2026-10-19T06:00:00.000Z');
+  assert.deepEqual(r.entradas[0].categorias, ['markets'], 'y `term=` cuenta como categoría');
+});
+
+test('RSS con <link/> vacío: la URL está en el guid permalink', () => {
+  const r = leeFeed(RSS_GUID_PERMALINK);
+  assert.equal(r.entradas.length, 1, r.motivo || '');
+  assert.equal(r.entradas[0].enlace, 'https://www.infobae.com/economia/2026/10/19/inflacion/');
+});
+
+test('RSS híbrido: el enlace vive en un <atom:link> al lado', () => {
+  const r = leeFeed(RSS_ATOM_LINK);
+  assert.equal(r.entradas.length, 1, r.motivo || '');
+  assert.equal(r.entradas[0].enlace, 'https://www.bloomberglinea.com/2026/10/19/peso/');
+});
+
+test('un guid que NO es permalink no se usa como enlace', () => {
+  // Substack manda `isPermaLink="false"`: tomarlo igual sería inventar una URL
+  // cuando el feed dice explícitamente que ese valor no es una.
+  const sinLink = SUBSTACK.replace(/<link>[^<]*<\/link>/, '<link></link>');
+  const r = leeFeed(sinLink);
+  assert.equal(r.entradas.length, 0);
+  assert.match(r.motivo, /título y enlace/);
 });

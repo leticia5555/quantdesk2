@@ -24,7 +24,7 @@
 
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import REGISTRO from './_lib/news-sources.json' with { type: 'json' };
-import { filasDeFuente, dedupe, cambiosDeTasa } from './_lib/noticias.js';
+import { filasDeFuente, dedupe, cambiosDeTasa, tickersDeFila } from './_lib/noticias.js';
 import banxicoHandler from './banxico.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import { beat } from './_lib/heartbeat.js';
@@ -76,10 +76,22 @@ async function ensureSchema() {
   listo = true;
 }
 
-/** Las fuentes que el smoke del punto 0.10 dejó en GO, con su URL ganadora. */
+/**
+ * Las fuentes que se piden: las que el smoke de la Fase 0 dejó en GO Y que la
+ * última cosecha no tumbó.
+ *
+ * SON DOS CAMPOS Y NO UNO A PROPÓSITO. `smoke` es una medición FECHADA —qué se
+ * probó en septiembre y qué contestó— y reescribirla borraría el registro de
+ * lo que se intentó. `cosecha` es lo último que dijo producción. Mantenerlos
+ * separados distingue "nunca sirvió" de "servía y se cayó", que se arreglan
+ * distinto: lo primero es buscar otra fuente, lo segundo es arreglar una URL.
+ *
+ * `yahoo_finance` es el primer caso: GO en septiembre, 404 el 2026-10-20.
+ */
 export function fuentesGo(registro = REGISTRO) {
-  return (registro.fuentes || []).filter(
-    (f) => f.smoke && f.smoke.veredicto === 'GO' && f.feed);
+  return (registro.fuentes || []).filter((f) =>
+    f.smoke && f.smoke.veredicto === 'GO' && f.feed
+    && !(f.cosecha && f.cosecha.veredicto && f.cosecha.veredicto !== 'GO'));
 }
 
 async function pedirFeed(url) {
@@ -289,7 +301,10 @@ export default async function handler(req, res) {
     ]);
     res.setHeader('Cache-Control', filas.length ? 's-maxage=120, stale-while-revalidate=600' : 'no-store');
     return res.status(200).json({
-      noticias: filas,
+      // `tickers` sale del driver como el literal de Postgres (`{NVDA,ORCL}`),
+      // no como arreglo. Se normaliza ACÁ y no en la pantalla: la API promete
+      // un arreglo, y R3b y `/analiza` van a leer de esta misma tabla.
+      noticias: filas.map((n) => ({ ...n, tickers: tickersDeFila(n.tickers) })),
       fuentes_caidas: caidas,
       fuentes_go: fuentesGo().length,
       generado_en: new Date().toISOString(),

@@ -277,3 +277,45 @@ export function cambiosDeTasa(puntos = [], { fuente_id = 'banxico_sie' } = {}) {
   }
   return filas;
 }
+
+/**
+ * UN `text[]` DE POSTGRES → UN ARREGLO DE VERDAD.
+ *
+ * El driver HTTP de Neon devuelve las columnas de arreglo como el LITERAL de
+ * Postgres —`{NVDA,ORCL}`, una cadena— y no como un arreglo de JavaScript. La
+ * pantalla hacía `tickers.slice(...).map(...)` sobre esa cadena y "Lo de hoy"
+ * tronaba entero con `.map is not a function` (Lety, 2026-10-20).
+ *
+ * SE NORMALIZA EN EL ENDPOINT, NO EN LA PANTALLA. Si cada consumidor arregla
+ * la forma por su cuenta, el día que uno se olvide vuelve el mismo error —y
+ * además R3b y `/analiza` van a leer de esta misma tabla. La API promete un
+ * arreglo; que el driver lo entregue como texto es asunto de la API.
+ *
+ * Se aceptan las tres formas que pueden llegar: un arreglo ya hecho (si el
+ * driver cambia), el literal de Postgres, y null. Un literal con comillas
+ * —`{"A B",C}`, que Postgres usa cuando el elemento trae espacios o comas— se
+ * desarma respetándolas, porque partir por comas a secas lo rompería.
+ */
+export function tickersDeFila(valor) {
+  if (Array.isArray(valor)) return valor.map((x) => String(x)).filter(Boolean);
+  const s = String(valor == null ? '' : valor).trim();
+  if (!s || s === '{}') return [];
+  if (s[0] !== '{') return s.split(',').map((x) => x.trim()).filter(Boolean);
+  const out = [];
+  let actual = '';
+  let enComillas = false;
+  for (let i = 1; i < s.length - 1; i++) {
+    const c = s[i];
+    if (enComillas) {
+      if (c === '\\') { actual += s[++i] || ''; continue; }
+      if (c === '"') { enComillas = false; continue; }
+      actual += c;
+      continue;
+    }
+    if (c === '"') { enComillas = true; continue; }
+    if (c === ',') { if (actual.trim()) out.push(actual.trim()); actual = ''; continue; }
+    actual += c;
+  }
+  if (actual.trim()) out.push(actual.trim());
+  return out;
+}

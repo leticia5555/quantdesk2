@@ -29,8 +29,23 @@ export function decodeEntities(s) {
     .trim();
 }
 
+/**
+ * Quita las etiquetas de un fragmento. EL ORDEN IMPORTA Y FUE UN BUG.
+ *
+ * `<![CDATA[Un titular]]>` casa ENTERO con `/<[^>]*>/` —`[^>]*` se come
+ * `![CDATA[Un titular]]` y el `>` final cierra—, así que quitar etiquetas antes
+ * de desenvolver el CDATA borraba el titular completo. Ocho de las fuentes
+ * vivas lo usan (las cinco de Substack y tres medios en español) y las ocho
+ * salían con "ninguna entrada traía título y enlace" tras una cosecha que sí
+ * había traído sus notas (Lety, 2026-10-20).
+ *
+ * Primero se desenvuelve el CDATA —eso lo hace `decodeEntities`— y recién
+ * después se quitan etiquetas; y como el contenido del CDATA puede traer HTML
+ * de verdad, se vuelve a decodificar al final.
+ */
 export function stripTags(s) {
-  return decodeEntities(String(s || '').replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  const sinCdata = decodeEntities(String(s || ''));
+  return decodeEntities(sinCdata.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 
 export function tagContent(block, tag) {
@@ -69,6 +84,27 @@ export function dialectoDe(xml) {
   if (/<item(?:\s[^>]*)?>/i.test(s)) return 'rss';
   if (/<entry(?:\s[^>]*)?>/i.test(s)) return 'atom';
   return null;
+}
+
+/**
+ * El enlace de una entrada de RSS, con sus dos respaldos reales.
+ *
+ * `<link>` es lo normal, pero hay dos formas que aparecen en feeds vivos y que
+ * sin esto se leen como "sin enlace":
+ *   · `<link/>` vacío con la URL en `<guid isPermaLink="true">` (Blogger y
+ *     varios CMS viejos);
+ *   · `<link>` vacío con un `<atom:link rel="alternate" href="…">` al lado,
+ *     que es lo que dejan los feeds híbridos RSS+Atom.
+ * Ninguno se adivina: se usa sólo si trae una URL http(s).
+ */
+function enlaceDeRss(bloque) {
+  const directo = decodeEntities(tagContent(bloque, 'link')).trim();
+  if (/^https?:\/\//i.test(directo)) return directo;
+  const guid = decodeEntities(tagContent(bloque, 'guid')).trim();
+  if (/ispermalink\s*=\s*"true"/i.test(bloque) && /^https?:\/\//i.test(guid)) return guid;
+  const atom = /<atom:link\b[^>]*\bhref\s*=\s*"([^"]+)"/i.exec(bloque);
+  if (atom && /^https?:\/\//i.test(atom[1])) return decodeEntities(atom[1]);
+  return '';
 }
 
 /** El `href` de un `<link>` de Atom: prefiere `rel="alternate"`, que es la nota. */
@@ -122,9 +158,7 @@ export function leeFeed(xml, { limite = 60 } = {}) {
   const entradas = [];
   for (const b of bloques.slice(0, limite)) {
     const titulo = stripTags(tagContent(b, 'title'));
-    const enlace = dialecto === 'rss'
-      ? decodeEntities(tagContent(b, 'link')).trim()
-      : linkDeAtom(b);
+    const enlace = dialecto === 'rss' ? enlaceDeRss(b) : linkDeAtom(b);
     // Sin título o sin enlace no hay nota que mostrar ni a dónde mandar al
     // lector: se descarta en vez de pintar una fila que no lleva a ningún lado.
     if (!titulo || !enlace) continue;

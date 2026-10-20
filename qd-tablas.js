@@ -163,6 +163,24 @@ function fraseDeFuente(cual, fuentes) {
     : `el calendario no trae reportes de mega-caps en los próximos ${d} días`;
 }
 
+/**
+ * LA CAUSA COMÚN DE ARENA, cuando TODOS fallan por lo mismo.
+ *
+ * Devuelve la frase única si ningún agente tiene número y todos comparten
+ * causa; null si hay mezcla o si alguno sí trae su %. En producción los cinco
+ * salían en "—" con el mismo párrafo técnico repetido cinco veces (Lety,
+ * 2026-10-20): repetir la misma línea no informa cinco veces, tapa la tarjeta.
+ *
+ * Con MEZCLA de causas sí va una por fila, porque ahí la diferencia es el dato.
+ */
+function causaComunArena(agentes) {
+  const gs = Array.isArray(agentes) ? agentes : [];
+  if (!gs.length) return null;
+  if (gs.some((g) => Number.isFinite(g.pct))) return null;
+  const claves = [...new Set(gs.map((g) => g.pct_clave))];
+  return claves.length === 1 && claves[0] ? (gs[0].pct_motivo || null) : null;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { FILAS_TABLA, tablasDeMercado, faltanteDeTabla, fraseDeFuente };
+  module.exports = { FILAS_TABLA, tablasDeMercado, faltanteDeTabla, fraseDeFuente, causaComunArena };
 }

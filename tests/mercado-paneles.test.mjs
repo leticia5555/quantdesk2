@@ -99,7 +99,7 @@ test('la tarjeta de Arena sale del shape {agents:[…]} y NO calcula el %', () =
   // El segundo TIENE con qué despejar un 10%, y se deja en null a propósito:
   // despejarlo acá sería una segunda definición de "rendimiento" en el repo.
   assert.equal(a.agentes[1].pct, null);
-  assert.match(a.agentes[1].pct_motivo, /no trajo el rendimiento/);
+  assert.match(a.agentes[1].pct_motivo, /Sin rendimiento publicado/);
 });
 
 test('el leaderboard caído se dice, no se pinta vacío', () => {
@@ -172,18 +172,59 @@ test('una fuente lenta se cuelga SOLA: hay tope y se dice', async () => {
 // ═══════════════════════════════════════════════════════════════════════
 // LO QUE CAE FUERA DE LA SEMANA SE CUENTA, NO SE TIRA
 // ═══════════════════════════════════════════════════════════════════════
-test('los 9 reportes que no caben en la semana se CUENTAN', () => {
-  // El caso exacto: `filas: 9`, `eventos: []` y la pantalla diciendo "sin
-  // eventos ni reportes". Los nueve estaban; el filtro los tiraba en silencio.
+test('los reportes que no caben en la semana se CUENTAN, y el conteo lo trae quien preguntó', () => {
+  // El llamador hace DOS consultas acotadas —una por la semana, otra por el
+  // resto— porque una de 30 días la recorta Finnhub y lo que se pierde son los
+  // primeros. Acá el conteo del resto llega ya hecho.
   const r = armaEstaSemana({
     macro: { filas: [] },
-    reportes: { filas: Array.from({ length: 9 }, (_, i) => ({ ticker: 'T' + i, date: '2026-10-20' })) },
+    reportes: { filas: [], mas_adelante: 9 },
     ahora: HOY,
   });
   assert.equal(r.eventos.length, 0);
-  assert.equal(r.fuentes.reportes.filas, 9, 'lo que la fuente devolvió');
   assert.equal(r.fuentes.reportes.en_ventana, 0, 'lo que se pinta');
-  assert.equal(r.fuentes.reportes.mas_adelante, 9, 'y la diferencia tiene nombre');
+  assert.equal(r.fuentes.reportes.mas_adelante, 9, 'y lo que hay después, preguntado aparte');
+});
+
+test('si la segunda consulta falla, el conteo va en NULL y no en 0', () => {
+  // "No se pudo mirar" no es "no hay nada": un 0 inventado haría ver un
+  // horizonte vacío que nadie midió.
+  const r = armaEstaSemana({ reportes: { filas: [], mas_adelante: null }, ahora: HOY });
+  assert.equal(r.fuentes.reportes.mas_adelante, 0,
+    'sin dato se cae al conteo por fechas, que con 0 filas es 0');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL CASO EXACTO DEL 19 DE OCTUBRE
+//
+// `/api/earnings?from=2026-10-19&to=2026-10-25&mega=1` traía NUEVE y el panel
+// decía "sin reportes de mega-caps esta semana" (Lety, 2026-10-20). El panel
+// pedía 30 días sin fechas y recortaba después; ahora pide la ventana.
+// ═══════════════════════════════════════════════════════════════════════
+test('los 9 del 19 al 25 de octubre entran todos en la semana', () => {
+  const NUEVE = [
+    { ticker: 'NFLX', date: '2026-10-21', time: 'AMC' },
+    { ticker: 'TSLA', date: '2026-10-22', time: 'AMC' },
+    { ticker: 'META', date: '2026-10-22', time: 'AMC' },
+    { ticker: 'IBM', date: '2026-10-22', time: 'AMC' },
+    { ticker: 'TXN', date: '2026-10-20', time: 'AMC' },
+    { ticker: 'PG', date: '2026-10-23', time: 'BMO' },
+    { ticker: 'XOM', date: '2026-10-23', time: 'BMO' },
+    { ticker: 'BX', date: '2026-10-22', time: 'BMO' },
+    { ticker: 'SPCX', date: '2026-10-25', time: 'TBD' },
+  ];
+  const r = armaEstaSemana({
+    macro: { filas: [] },
+    reportes: { filas: NUEVE, mas_adelante: 7, filtro: 'mega-caps' },
+    ahora: new Date('2026-10-19T15:00:00Z'),
+  });
+  assert.equal(r.fuentes.reportes.en_ventana, 9, 'los nueve se pintan');
+  assert.equal(r.eventos.length, 9);
+  assert.deepEqual(r.eventos.map((e) => e.titulo),
+    ['TXN', 'NFLX', 'BX', 'IBM', 'META', 'TSLA', 'PG', 'XOM', 'SPCX'],
+    'ordenados por día, y dentro del día por nombre');
+  // Y la frase deja de mentir: con nueve adentro no hay nada que explicar.
+  assert.equal(r.fuentes.reportes.ok, true);
 });
 
 test('lo anterior a hoy no cuenta como "más adelante"', () => {
@@ -213,21 +254,21 @@ test('sin llaves de Alpaca, la causa lo dice — no "el leaderboard no trajo"', 
   ] });
   assert.equal(a.agentes[0].pct, 12.4);
   assert.equal(a.agentes[0].pct_motivo, null);
-  assert.match(a.agentes[1].pct_motivo, /no tiene llaves de Alpaca/);
+  assert.match(a.agentes[1].pct_motivo, /Sin llaves de Alpaca/);
   // Y el modelo llega: `ordenarRanking` lo dejaba fuera del shape público.
   assert.equal(a.agentes[1].modelo, 'g');
 });
 
 test('con llaves pero sin cuenta legible, la causa es otra', () => {
   const a = armaArena({ agents: [{ id: 'x', name: 'X', has_keys: true, equity: null, return_pct: null }] });
-  assert.match(a.agentes[0].pct_motivo, /no se pudo leer su cuenta de Alpaca/);
+  assert.match(a.agentes[0].pct_motivo, /No se pudo leer su cuenta de Alpaca/);
 });
 
 test('con cuenta pero sin capital inicial, otra más', () => {
   const a = armaArena({ agents: [
     { id: 'x', name: 'X', has_keys: true, equity: 100, baseline_equity: null, return_pct: null },
   ] });
-  assert.match(a.agentes[0].pct_motivo, /no se pudo leer su capital inicial/);
+  assert.match(a.agentes[0].pct_motivo, /No se pudo leer su capital inicial/);
 });
 
 // ═══════════════════════════════════════════════════════════════════════

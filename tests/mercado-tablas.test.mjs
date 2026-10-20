@@ -292,3 +292,42 @@ test('las dos mitades se explican por separado', () => {
   assert.equal(fraseDeFuente('macro', fuentes), null, 'macro llenó lo suyo');
   assert.match(fraseDeFuente('reportes', fuentes), /429/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA CAUSA DE ARENA: UNA LÍNEA, UNA VEZ
+//
+// Los cinco agentes salían con el mismo párrafo técnico del leaderboard
+// —comillas invertidas incluidas— repetido cinco veces (Lety, 2026-10-20).
+// Repetir la misma línea no informa cinco veces: tapa la tarjeta.
+// ═══════════════════════════════════════════════════════════════════════
+const { causaComunArena } = require(join(ROOT, 'qd-tablas.js'));
+
+test('si TODOS fallan por lo mismo, la causa se dice una vez', () => {
+  const frase = 'Temporada nueva sin arrancar · el reset no ha corrido';
+  const agentes = ['a', 'b', 'c', 'd', 'e'].map((id) => ({
+    id, pct: null, pct_clave: 'sin_temporada', pct_motivo: frase,
+  }));
+  assert.equal(causaComunArena(agentes), frase);
+  assert.ok(frase.length < 70, 'y cabe en una línea');
+});
+
+test('con causas MEZCLADAS no se hoistea: ahí la diferencia es el dato', () => {
+  const agentes = [
+    { id: 'a', pct: null, pct_clave: 'sin_temporada', pct_motivo: 'Temporada nueva sin arrancar' },
+    { id: 'b', pct: null, pct_clave: 'sin_llaves', pct_motivo: 'Sin llaves de Alpaca conectadas' },
+  ];
+  assert.equal(causaComunArena(agentes), null);
+});
+
+test('si alguno SÍ tiene número, no hay causa común que contar', () => {
+  const agentes = [
+    { id: 'a', pct: 12.4 },
+    { id: 'b', pct: null, pct_clave: 'sin_temporada', pct_motivo: 'Temporada nueva sin arrancar' },
+  ];
+  assert.equal(causaComunArena(agentes), null);
+});
+
+test('sin agentes no se inventa una causa', () => {
+  assert.equal(causaComunArena([]), null);
+  assert.equal(causaComunArena(undefined), null);
+});

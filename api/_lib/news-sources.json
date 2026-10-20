@@ -10,7 +10,8 @@
     "smoke": "Lo llena la corrida de /api/mercado-censo?job=todo. Hasta entonces es null: un campo vacío es 'no medido', que no es lo mismo que 'no sirve'.",
     "feed": "La URL GANADORA, escrita por scripts/mercado-congelar-fuentes.mjs a partir del JSON de /api/mercado-censo. null = NO-GO. `feeds` conserva TODAS las candidatas con la ganadora primera: si manana muere, la siguiente ya esta escrita y probada.",
     "plan_b": "'no_rss' = la fuente NO tiene feed y se cosecha de otra manera, con el mecanismo que el repo YA tiene probado. NO es un NO-GO de la seccion: es un cosechador distinto dentro del mismo registro. Hoy aplica a Banxico (API del SIE) y BMV emisnet (HTML a 1 req/s).",
-    "verificado_en": "Fecha de la corrida que dejo la fuente en GO con su url ganadora. Sin este campo, la fuente no esta verificada — y el [NO VERIFICADO] de su nota sigue valiendo."
+    "verificado_en": "Fecha de la corrida que dejo la fuente en GO con su url ganadora. Sin este campo, la fuente no esta verificada — y el [NO VERIFICADO] de su nota sigue valiendo.",
+    "cosecha": "`smoke` es la medición FECHADA de la Fase 0 y no se reescribe: es el registro de qué se probó y cuándo. `cosecha` es lo último que dijo producción. Una fuente se pide sólo si el smoke la dejó en GO Y la última cosecha no la tumbó — así se distingue \"nunca sirvió\" de \"servía y se cayó\", que se arreglan distinto."
   },
   "fuentes": [
     {
@@ -190,19 +191,23 @@
       "nota": "La segunda candidata es POR SÍMBOLO — si vive, R6 la puede usar para 'noticias del ticker' sin gastar cuota de Finnhub. Vale la pena medirla aunque la primera pase.",
       "smoke": {
         "veredicto": "GO",
-        "items": 50,
-        "usables": 50,
+        "items": 20,
+        "usables": 20,
         "dialecto": "rss",
         "pct_con_fecha": 100,
-        "pct_con_imagen": 100,
-        "vias_imagen": {
-          "media:content": 50
-        },
+        "pct_con_imagen": 0,
+        "vias_imagen": {},
         "pct_con_categoria": 0,
         "categorias_ejemplo": []
       },
       "feed": "https://finance.yahoo.com/news/rssindex",
-      "verificado_en": "2026-09-20"
+      "verificado_en": "2026-09-20",
+      "cosecha": {
+        "en": "2026-10-20",
+        "veredicto": "NO-GO",
+        "motivo": "HTTP 404: la ruta que ganó el smoke de septiembre dejó de existir",
+        "nota": "No se reemplaza a ciegas. Una URL nueva sin una corrida que la confirme es una candidata, no una fuente: vuelve a pedirse cuando `cosecha` diga GO."
+      }
     },
     {
       "id": "el_financiero",

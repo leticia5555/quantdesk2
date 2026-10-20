@@ -320,8 +320,9 @@ const server = createServer(async (req, res) => {
       },
       arena: {
         agentes: [
-          { id: 'claude', nombre: 'Claude', modelo: 'opus', pct: 12.4, pct_motivo: null },
-          { id: 'mudo', nombre: 'Sin número', modelo: 'x', pct: null, pct_motivo: 'el leaderboard no trajo el rendimiento de este agente' },
+          { id: 'claude', nombre: 'Claude', modelo: 'opus', pct: 12.4, pct_motivo: null, pct_clave: null },
+          { id: 'mudo', nombre: 'Sin número', modelo: 'x', pct: null,
+            pct_motivo: 'No se pudo leer su cuenta de Alpaca', pct_clave: 'sin_cuenta' },
         ],
         motivo: null, fuente: 'api:leaderboard',
       },
@@ -1403,7 +1404,12 @@ try {
   // motivo en un atributo que en un teléfono NO EXISTE: los cinco agentes
   // salían en "—" sin una palabra de por qué (Lety, 2026-10-20).
   chequeo('y el agente sin número dice SU CAUSA en la propia fila',
-    /no trajo el rendimiento de este agente/.test(porTitulo.Arena.eventos.join(' ')),
+    /No se pudo leer su cuenta de Alpaca/.test(porTitulo.Arena.eventos.join(' ')),
+    porTitulo.Arena.eventos.join(' | '));
+  // Y en UNA línea: lo que salía era el párrafo del leaderboard, con comillas
+  // invertidas, repetido una vez por agente (Lety, 2026-10-20).
+  chequeo('la causa cabe en una línea y no trae jerga con comillas invertidas',
+    !/`/.test(porTitulo.Arena.eventos.join(' ')),
     porTitulo.Arena.eventos.join(' | '));
   chequeo('mientras que el que sí tiene número conserva su modelo',
     /Claude/.test(porTitulo.Arena.eventos[0]) && /opus/.test(porTitulo.Arena.eventos[0]),
