@@ -198,9 +198,7 @@ function qdCap(valor, moneda) {
   return `${signo}${Math.round(a).toLocaleString('es-MX')}${cola}`;
 }
 
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { QD_PERIODS, qdPeriodChange, qdPctTag, qdAnclaYtd, fmtPrice, qdEscHTML };
-}
+
 
 /* ═══════════════════════════════════════════════════════════════════
    EL CHIP DE ESTADO SE FUE A `qd-mercados.js`
@@ -224,4 +222,12 @@ if (typeof module !== 'undefined' && module.exports) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports.qdCap = qdCap;
+}
+
+// El puente a Node para las pruebas. Va AL FINAL del archivo, después de que
+// todas las funciones existen: `qdCap` se definía más abajo que el bloque y
+// por eso no se podía exportar (en el navegador daba igual, porque una
+// declaración de función se iza; en `module.exports` no).
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { QD_PERIODS, qdPeriodChange, qdPctTag, qdAnclaYtd, fmtPrice, qdEscHTML, qdCap };
 }
