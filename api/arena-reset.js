@@ -88,7 +88,7 @@ import { checkAdminAuth } from './_lib/arena-admin.js';
 import {
   getAccount, getPositions, getOrders, cancelAllOrders, closeAllPositions, getClock,
 } from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_SEASON } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_SEASON, TEMPORADA_DIAS_CONTAMINADOS } from './_lib/arena-registry.js';
 import { rejillaDeEnfoques } from './_lib/arena-herding.js';
 import {
   RESET_BASELINE_USD, setBaseline, pauseWatch, resumeWatch, startingDrawdown, marcarInicioTemporada,
@@ -314,7 +314,27 @@ export async function abrirBenchmarkDelReset({ dry, now, creds = null }) {
 }
 
 // El texto del anuncio. Fuera del handler para que el test lo lea sin red.
-export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real', rows, now, benchmark = null }) {
+// ── ÁMBAR DECLARADO (2026-10-20) ─────────────────────────────────────
+// Un agente que abre la temporada con un problema CONOCIDO y no resuelto
+// (hoy: qwen, cuyo proveedor ignora el presupuesto de razonamiento) no se
+// esconde ni se saca: corre, y el anuncio dice por qué está en ámbar y qué lo
+// arregla. `?ambar=qwen&ambar_motivo=<texto>`; varios: `ambar=qwen,deepseek`
+// con el mismo motivo, o se corre el reset una vez por motivo NO — un reset
+// es uno. Sin motivo no hay ámbar: un ámbar sin causa es un rumor.
+export function ambarDeQuery(q = {}, agentes = []) {
+  const ids = String(q.ambar || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const motivo = String(q.ambar_motivo || '').trim();
+  if (!ids.length) return { ambar: [], aviso: null };
+  if (!motivo) return { ambar: [], aviso: '`ambar` sin `ambar_motivo`: no se declaró ningún ámbar. Un ámbar sin causa no se publica.' };
+  const validos = ids.filter((id) => agentes.includes(id));
+  const desconocidos = ids.filter((id) => !agentes.includes(id));
+  return {
+    ambar: validos.map((agent) => ({ agent, motivo })),
+    aviso: desconocidos.length ? `ámbar para agentes que no están en este reset (${desconocidos.join(', ')}): se ignoraron.` : null,
+  };
+}
+
+export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real', rows, now, benchmark = null, ambar = [] }) {
   const planas = rows.filter((r) => r.flat).length;
   const vendidas = rows.reduce((s, r) => s + ((r.before && r.before.position_count) || 0), 0);
   const canceladas = rows.reduce((s, r) => s + ((r.before && r.before.open_order_count) || 0), 0);
@@ -381,6 +401,37 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
     }
   })();
 
+  // ── LA VENTANA REAL, NO LA PLANEADA (2026-10-20) ────────────────────
+  // ARENA_SEASON dice 2026-10-01 → 2026-10-30, "22 sesiones". Si el reset corre
+  // después del inicio planeado, la temporada tiene MENOS sesiones, y el
+  // anuncio es justo el lugar donde eso no puede quedar callado.
+  const lineaVentana = (() => {
+    const hoy = (now instanceof Date ? now : new Date()).toISOString().slice(0, 10);
+    try {
+      const g = rejillaDeEnfoques(hoy, ARENA_SEASON.end, rows.map((r) => r.agent).slice(0, 1));
+      const corrida = hoy > ARENA_SEASON.start
+        ? ` La ventana PLANEADA era ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas); este corte la acorta: las sesiones que cuentan son las de arriba, no las planeadas.`
+        : '';
+      return `VENTANA DE LA TEMPORADA: ${hoy} → ${ARENA_SEASON.end}, ${g.sesiones} sesiones hábiles. El último día se declara al ganador por retorno contra el baseline propio.${corrida}`;
+    } catch (e) {
+      return `VENTANA DE LA TEMPORADA: ${hoy} → ${ARENA_SEASON.end} (no se pudieron contar las sesiones: ${String((e && e.message) || e)}).`;
+    }
+  })();
+
+  // ── LOS DÍAS FUERA DE LA SERIE, CON SU MOTIVO ───────────────────────
+  // Salen de TEMPORADA_DIAS_CONTAMINADOS, la misma lista que saca esos días
+  // del ranking y del piso de ruido: el anuncio no los re-escribe a mano.
+  const contaminados = TEMPORADA_DIAS_CONTAMINADOS.filter((d) => d.temporada === ARENA_SEASON.id);
+  const lineaContaminados = contaminados.length
+    ? `DÍAS FUERA DE LA SERIE de la ${ARENA_SEASON.id}, con su motivo (las filas siguen en el journal como evidencia; no entran al ranking ni al piso de ruido): `
+      + contaminados.map((d) => `${d.fecha} [${d.clase}] — ${d.motivo}`).join(' · ')
+    : null;
+
+  // ── ÁMBAR: CORRE, Y SE DICE POR QUÉ ─────────────────────────────────
+  const lineaAmbar = ambar.length
+    ? `EN ÁMBAR AL ABRIR: ${ambar.map((a) => `${a.agent} — ${a.motivo}`).join(' · ')}. Corre la temporada igual que los demás; el ámbar es una advertencia publicada sobre la lectura de sus números, no un trato distinto.`
+    : null;
+
   // La línea del benchmark entra en el MISMO anuncio, no en uno aparte: el
   // `season_started` del 16 tiene que decir contra qué se va a medir la
   // temporada, si no la comparación aparece inventada después.
@@ -389,9 +440,12 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
     : 'BENCHMARK PASIVO: NO se abrió en este reset (' + ((benchmark && benchmark.motivo) || 'sin precio de SPY') + '). Sin él, los returns de la temporada no tienen contra qué leerse.';
   return [
     `RESET DE LIBROS — ${resetId}. Las ${rows.length} cuentas de la liga se aplanaron: ${canceladas} órdenes abiertas canceladas y ${vendidas} posiciones vendidas a mercado. ${planas} de ${rows.length} quedaron confirmadas en cero.`,
+    lineaVentana,
     lineaBaseline,
     lineaCapital,
     lineaEnfoques,
+    lineaContaminados,
+    lineaAmbar,
     'CORTE DE MEMORIA: el plan anterior, los fills, los compromisos abiertos y el pico de equity se cortan en este instante. Nada de antes del reset se le reinyecta al PM: un libro que ya no existe no puede ser recordado como propio.',
     lineaBench,
     'Las métricas de ANTES y DESPUÉS de este corte NO son comparables. El post-mortem tiene que partir acá.',
@@ -425,6 +479,7 @@ export default async function handler(req, res) {
   const baselineModo = Number.isFinite(baselineFijo) && baselineFijo > 0 ? 'fijo' : 'real';
   const baselineUsd = baselineModo === 'fijo' ? baselineFijo : RESET_BASELINE_USD;
   const now = new Date();
+  const { ambar, aviso: avisoAmbar } = ambarDeQuery(q, agents.map((a) => a.id));
   const resetId = String(q.id || '').trim() || `arena-${ARENA_SEASON.id.toLowerCase()}-${now.toISOString().slice(0, 10)}`;
 
   const out = {
@@ -440,7 +495,11 @@ export default async function handler(req, res) {
     agents: agents.map((a) => a.id),
     accounts: [],
     warnings: [],
+    // El ámbar que se va a publicar, visible ya en el dry run: lo que diga
+    // acá es lo que dirá el anuncio.
+    ambar,
   };
+  if (avisoAmbar) out.warnings.push(avisoAmbar);
   if (dry) {
     out.note = 'DRY RUN: no se canceló ni se vendió NADA, y no se escribió en la DB. Agregá `&confirm=1` para ejecutarlo.';
   }
@@ -507,6 +566,14 @@ export default async function handler(req, res) {
     if (out.benchmark.warning) out.warnings.push(out.benchmark.warning);
   }
 
+  // EL ANUNCIO, VISIBLE ANTES DE APRETAR. En el dry run se arma con la foto de
+  // HOY (el equity antes de aplanar): los números del capital van a moverse
+  // por el residuo del aplanado, pero la ventana, la rejilla, los días fuera
+  // de la serie y el ámbar son exactamente los que se van a publicar.
+  if (dry) {
+    out.anuncio_que_se_publicaria = resetAnnouncement({ resetId, baselineUsd, baselineModo, rows: out.accounts, now, benchmark: out.benchmark, ambar }).split('\n');
+  }
+
   if (!dry) {
     // Baseline por agente. Se escribe para TODAS las cuentas que se pudieron
     // leer, plana o no (ver el comentario del paso 6).
@@ -528,11 +595,12 @@ export default async function handler(req, res) {
         `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
          values ($1,$2,'decide','rules_changed',$3,$4,$5,'league') on conflict (id) do nothing`,
         [resetId, now.toISOString().slice(0, 10), PROMPT_VERSION,
-         resetAnnouncement({ resetId, baselineUsd, baselineModo, rows: out.accounts, now, benchmark: out.benchmark }),
+         resetAnnouncement({ resetId, baselineUsd, baselineModo, rows: out.accounts, now, benchmark: out.benchmark, ambar }),
          JSON.stringify({
            reset_id: resetId, baseline_modo: baselineModo,
            baseline_usd: baselineModo === 'fijo' ? baselineUsd : null, market_open: marketOpen,
            season: ARENA_SEASON.id, baseline_at: now.toISOString(),
+           ambar,
            benchmark: out.benchmark && out.benchmark.abierto
              ? { symbol: out.benchmark.symbol, entry: out.benchmark.entry, shares: out.benchmark.shares, capital: out.benchmark.capital }
              : null,
