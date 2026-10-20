@@ -5,6 +5,8 @@
 //   GET /api/options?ticker=TSLA → cadena de la expiración más cercana:
 //        put/call ratio (por interés abierto), IV at-the-money, max pain
 //        y strikes clave por OI. Todo calculado del chain real.
+//   GET /api/options?ticker=NFLX&reporte=2026-10-20&hora=amc → implied move
+//        del reporte: straddle ATM de la primera expiración que lo contiene.
 //   GET /api/options?smoke=1&ticker=TSLA → smoke de la fuente, en vivo.
 //
 // Fuente: Yahoo v7 options (misma familia que /api/candles y /api/price).
@@ -36,9 +38,11 @@ async function fetchJson(url, timeoutMs = 8000) {
 // Yahoo cae/rota entre hosts; probamos ambos antes de rendirnos.
 // EXPORTADA: el snapshot de apertura del Arena necesita la cadena CRUDA para
 // derivar la probabilidad implícita, que no es parte del resumen público.
-export async function fetchOptionChain(ticker) {
+// `date` (epoch en segundos, de `expirationDates`) pide UNA expiración concreta
+// en vez del front expiry.
+export async function fetchOptionChain(ticker, { date = null } = {}) {
   for (const host of HOSTS) {
-    const r = await fetchJson(`${host}/v7/finance/options/${encodeURIComponent(ticker)}`);
+    const r = await fetchJson(`${host}/v7/finance/options/${encodeURIComponent(ticker)}${date ? `?date=${date}` : ''}`);
     const res = r.json && r.json.optionChain && Array.isArray(r.json.optionChain.result) ? r.json.optionChain.result[0] : null;
     if (res && Array.isArray(res.options) && res.options.length) return { host, res, status: r.status };
     if (r.status === 404) return { host, res: null, status: 404 }; // sin opciones: no reintentar otro host
@@ -115,6 +119,87 @@ export function summarizeChain(calls, puts, spot) {
   };
 }
 
+// ── IMPLIED MOVE DEL REPORTE: straddle ATM ──────────────────────────
+// Lo que el mercado de opciones cobra por el evento: (call + put) ATM de la
+// PRIMERA expiración que contiene el reporte, dividido por el spot. Reemplaza
+// el "IMPLIED MOVE · AI" de la tab EARNINGS, que era un número que el LLM
+// escribía con la instrucción "3-10% based on sector vol" (NFLX salió ±4.2%
+// con el straddle real en ~±9.6%). Si no se puede calcular de la cadena, el
+// campo es null y lleva el motivo: nunca un número de relleno.
+
+// Primera expiración que CONTIENE el reporte. Un reporte AMC (o sin hora) se
+// conoce después del cierre de su día: la expiración de ese mismo día vence
+// antes y no lo incluye. Uno BMO sí entra en la expiración del mismo día.
+export const MAX_DIAS_TRAS_REPORTE = 7;
+export function eligeExpiracion(expirationDates, fechaReporte, hora) {
+  const f = String(fechaReporte || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return { epoch: null, motivo: 'sin fecha de reporte' };
+  const candidatas = (expirationDates || [])
+    .map((e) => ({ epoch: Number(e), iso: new Date(Number(e) * 1000).toISOString().slice(0, 10) }))
+    .filter((x) => Number.isFinite(x.epoch) && (hora === 'bmo' ? x.iso >= f : x.iso > f))
+    .sort((a, b) => a.epoch - b.epoch);
+  if (!candidatas.length) return { epoch: null, motivo: 'ninguna expiración listada contiene el reporte' };
+  const c = candidatas[0];
+  const d = Math.round((Date.parse(c.iso) - Date.parse(f)) / 864e5);
+  // Una expiración lejana mete semanas de volatilidad normal en el straddle:
+  // ya no mide el evento, y decir que sí sería inventar.
+  if (d > MAX_DIAS_TRAS_REPORTE) {
+    return { epoch: null, iso: c.iso, motivo: `la primera expiración que contiene el reporte (${c.iso}) está ${d} días después: el straddle mezclaría el evento con volatilidad ordinaria` };
+  }
+  return { epoch: c.epoch, iso: c.iso, dias_tras_reporte: d };
+}
+
+// Precio de una pata: mid de bid/ask; si no hay cotización viva (fin de
+// semana, pre-apertura), el último operado — y se dice cuál fue.
+function precioPata(o) {
+  const bid = num(o && o.bid), ask = num(o && o.ask), last = num(o && o.lastPrice);
+  if (bid > 0 && ask > 0 && ask >= bid) return { precio: (bid + ask) / 2, base: 'mid' };
+  if (last > 0) return { precio: last, base: 'last' };
+  return null;
+}
+
+// Exportada para test sin red. calls/puts de UNA expiración.
+export function straddleAtm(calls, puts, spot) {
+  spot = num(spot);
+  if (!(spot > 0)) return { implied_move_pct: null, motivo: 'sin precio del subyacente' };
+  const putsPorStrike = new Map((puts || []).map((p) => [num(p.strike), p]));
+  const strikes = (calls || []).map((c) => num(c.strike)).filter((k) => k > 0 && putsPorStrike.has(k))
+    .sort((a, b) => Math.abs(a - spot) - Math.abs(b - spot));
+  if (!strikes.length) return { implied_move_pct: null, motivo: 'la cadena no tiene un strike con call y put' };
+  const k = strikes[0];
+  const call = precioPata((calls || []).find((c) => num(c.strike) === k));
+  const put = precioPata(putsPorStrike.get(k));
+  if (!call || !put) return { implied_move_pct: null, strike: k, motivo: 'el strike ATM no tiene precio en alguna de las dos patas' };
+  const straddle = call.precio + put.precio;
+  return {
+    implied_move_pct: +((straddle / spot) * 100).toFixed(1),
+    straddle: +straddle.toFixed(2),
+    strike: k,
+    spot,
+    call: +call.precio.toFixed(2),
+    put: +put.precio.toFixed(2),
+    base_precio: call.base === 'mid' && put.base === 'mid' ? 'mid' : 'last',
+    formula: '(call + put) ATM / spot',
+  };
+}
+
+async function impliedMove(ticker, fechaReporte, hora) {
+  const base = { ticker, reporte: fechaReporte, hora: hora || null, source: 'Yahoo Finance options', generated_at: new Date().toISOString() };
+  const front = await fetchOptionChain(ticker);
+  if (!front.res) return { ...base, available: false, implied_move_pct: null,
+    motivo: front.status === 404 ? 'sin cadena de opciones para este ticker' : 'fuente de opciones no disponible' };
+  const exp = eligeExpiracion(front.res.expirationDates, fechaReporte, hora);
+  if (!exp.epoch) return { ...base, available: false, implied_move_pct: null, expiration: exp.iso || null, motivo: exp.motivo };
+  const frontEpoch = front.res.options[0] && front.res.options[0].expirationDate;
+  const cadena = Number(frontEpoch) === exp.epoch ? front : await fetchOptionChain(ticker, { date: exp.epoch });
+  const chain = cadena.res && cadena.res.options && cadena.res.options[0];
+  if (!chain) return { ...base, available: false, implied_move_pct: null, expiration: exp.iso, motivo: 'no se pudo bajar la expiración elegida' };
+  const q = cadena.res.quote || front.res.quote || {};
+  const spot = num(q.regularMarketPrice || q.postMarketPrice);
+  const s = straddleAtm(chain.calls, chain.puts, spot);
+  return { ...base, available: s.implied_move_pct !== null, expiration: exp.iso, dias_tras_reporte: exp.dias_tras_reporte, ...s };
+}
+
 async function build(ticker) {
   const { res, status } = await fetchOptionChain(ticker);
   if (!res || !Array.isArray(res.options) || !res.options.length) {
@@ -177,6 +262,18 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 's-maxage=86400');
     return res.status(200).json({ ticker, available: false, source: 'Yahoo Finance options',
       note: 'Cobertura de opciones limitada a US-listadas.', generated_at: new Date().toISOString() });
+  }
+
+  // ?reporte=YYYY-MM-DD[&hora=bmo|amc] → implied move del reporte (straddle ATM).
+  if (q.reporte) {
+    try {
+      const payload = await impliedMove(ticker, String(q.reporte), q.hora ? String(q.hora).toLowerCase() : null);
+      res.setHeader('Cache-Control', payload.available ? 's-maxage=300, stale-while-revalidate=600' : 'no-store');
+      return res.status(200).json(payload);
+    } catch (err) {
+      return res.status(200).json({ ticker, available: false, implied_move_pct: null,
+        motivo: 'Server exception: ' + String((err && err.message) || err), generated_at: new Date().toISOString() });
+    }
   }
 
   try {
