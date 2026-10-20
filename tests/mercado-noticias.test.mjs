@@ -9,7 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { leeFeed, fechaDeEntrada, dialectoDe, imagenDeEntrada } from '../api/_lib/feeds.js';
+import { leeFeed, fechaDeEntrada, dialectoDe, imagenDeEntrada, stripTags } from '../api/_lib/feeds.js';
 import {
   urlCanonica, tituloNormalizado, tickersDeTitular, filasDeFuente, dedupe,
   cambiosDeTasa, EXCLUIDOS, BANXICO_ANUNCIOS,
@@ -302,6 +302,7 @@ test('el SQL de inserción parte los tickers en SQL, no en JS', () => {
 // ═══════════════════════════════════════════════════════════════════════
 import {
   SUBSTACK, MEDIO_ES_CDATA, ATOM_LINK_ATRIBUTO, RSS_GUID_PERMALINK, RSS_ATOM_LINK,
+  TITULARES_PEGADOS,
 } from './fixtures/feeds.mjs';
 
 test('Substack: el titular viene en CDATA y NO se puede borrar', () => {
@@ -353,4 +354,47 @@ test('un guid que NO es permalink no se usa como enlace', () => {
   const r = leeFeed(sinLink);
   assert.equal(r.entradas.length, 0);
   assert.match(r.motivo, /título y enlace/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL ESPACIO PERDIDO EN LOS TITULARES — "$1.4Tvaluation" (Lety, 2026-10-20)
+//
+// Dos mecanismos, probados por separado porque se arreglan distinto. El
+// segundo es el peor de los dos: no pega palabras, BORRA el dato.
+// ═══════════════════════════════════════════════════════════════════════
+test('un separador invisible entre dos palabras se vuelve espacio, no se queda pegado', () => {
+  const { entradas } = leeFeed(TITULARES_PEGADOS);
+  const t = entradas.map((e) => e.titulo);
+  assert.equal(t[0], 'Nvidia hits $1.4T valuation on AI demand',
+    'el U+200B entre la cifra y la palabra sale como espacio');
+  assert.ok(!/\u200B/.test(t[0]), 'y no queda un invisible dentro del titular guardado');
+  assert.equal(t[1], 'Apple s margin squeeze', 'el guion blando (&#173;) también separa');
+});
+
+test('un "menor que" en prosa NO es una etiqueta: el precio no se borra', () => {
+  const { entradas } = leeFeed(TITULARES_PEGADOS);
+  const t = entradas.map((e) => e.titulo);
+  // Con el patrón viejo (`/<[^>]*>/`) esto salía como "AMD 2027, dice la casa":
+  // se comía el precio, que es el dato de la nota.
+  assert.equal(t[2], 'AMD <$100 es compra > 2027, dice la casa');
+  assert.match(t[2], /\$100/, 'el precio sigue ahí');
+});
+
+test('y una etiqueta DE VERDAD sigue quitándose, con su espacio', () => {
+  const { entradas } = leeFeed(TITULARES_PEGADOS);
+  assert.equal(entradas[3].titulo, 'Tesla sube 4% tras el reporte');
+});
+
+test('los invisibles que SÍ significan algo no se tocan: ZWNJ y ZWJ', () => {
+  // U+200D une los emoji compuestos y U+200C separa letras en persa e hindi.
+  // Convertirlos en espacio partiría palabras escritas bien, así que entre
+  // borrar un separador de adorno y partir una palabra real, se elige lo
+  // primero. Esta prueba es lo que impide que alguien "mejore" el patrón.
+  assert.equal(stripTags('familia \u{1F468}\u200D\u{1F469}\u200D\u{1F466} y el peso'),
+    'familia \u{1F468}\u200D\u{1F469}\u200D\u{1F466} y el peso');
+  assert.equal(stripTags('zero\u200Cwidth non joiner'), 'zero\u200Cwidth non joiner');
+});
+
+test('un comentario HTML se va entero, no a pedazos', () => {
+  assert.equal(stripTags('Apple <!-- nota interna --> sube 3%'), 'Apple sube 3%');
 });

@@ -66,3 +66,45 @@ export const RSS_ATOM_LINK = `<rss version="2.0" xmlns:atom="http://www.w3.org/2
     <pubDate>Mon, 19 Oct 2026 22:05:00 GMT</pubDate>
   </item>
 </channel></rss>`;
+
+// ── EL ESPACIO PERDIDO EN LOS TITULARES ──────────────────────────────
+// EL REPORTE: "$1.4Tvaluation" (Lety, 2026-10-20). Dos mecanismos distintos
+// producen titulares mal, y los dos aparecen en feeds vivos:
+//
+//   1. UN SEPARADOR INVISIBLE en vez de un espacio. Varios CMS meten
+//      `U+200B` (espacio de ancho cero) o `&shy;` dentro de cifras largas
+//      para que el navegador pueda cortar la línea ahí. En la página del
+//      medio se leen dos palabras; en una lista como la nuestra, donde no
+//      hay corte, se leen pegadas. `\s` de JavaScript no los incluye, así
+//      que el colapso de espacios los dejaba pasar.
+//
+//   2. UN "MENOR QUE" EN PROSA leído como etiqueta. `/<[^>]*>/` no distingue
+//      `<b>` de `<$100`, así que el patrón viejo se comía desde el `<` hasta
+//      el siguiente `>` — cinco palabras y el precio, que es EL dato.
+//
+// Los dos están acá como feed completo y no como string suelto: lo que hay
+// que fijar es lo que sale de `leeFeed`, que es lo que se guarda.
+export const TITULARES_PEGADOS = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>Un medio</title>
+  <item>
+    <title>Nvidia hits $1.4T&#8203;valuation on AI demand</title>
+    <link>https://medio.test/nvidia-1-4t</link>
+    <pubDate>Mon, 20 Oct 2026 11:00:00 GMT</pubDate>
+  </item>
+  <item>
+    <title>Apple&#173;s margin squeeze</title>
+    <link>https://medio.test/apple-margen</link>
+    <pubDate>Mon, 20 Oct 2026 10:30:00 GMT</pubDate>
+  </item>
+  <item>
+    <title>AMD &lt;$100 es compra &gt; 2027, dice la casa</title>
+    <link>https://medio.test/amd-100</link>
+    <pubDate>Mon, 20 Oct 2026 10:00:00 GMT</pubDate>
+  </item>
+  <item>
+    <title><![CDATA[Tesla sube 4% <em>tras</em> el reporte]]></title>
+    <link>https://medio.test/tesla</link>
+    <pubDate>Mon, 20 Oct 2026 09:30:00 GMT</pubDate>
+  </item>
+</channel></rss>`;

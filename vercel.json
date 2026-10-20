@@ -105,6 +105,10 @@
       "destination": "/mercado.html"
     },
     {
+      "source": "/mercado/noticias",
+      "destination": "/noticias.html"
+    },
+    {
       "source": "/hoy",
       "destination": "/hoy.html"
     },

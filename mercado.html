@@ -115,6 +115,9 @@
   /* ── R3(b): "lo de hoy" ─────────────────────────────────────────────
      Titular + hora + fuente + link, y nada más. El cuerpo de la nota no se
      guarda ni se muestra: esto manda a la fuente, no la reemplaza. */
+  .ver-todas{display:flex;align-items:center;justify-content:center;min-height:var(--tap);
+    margin-top:8px;border:1px solid var(--linea);border-radius:8px;color:var(--tenue);
+    font-family:var(--mono);font-size:12px;text-decoration:none}
   .nota-fila{display:block;padding:9px 10px;border-top:1px solid var(--linea);
     color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent}
   .nota-fila:first-child{border-top:0}
@@ -1514,7 +1517,11 @@
           + '</a>';
       }).join('');
     }
-    return html + '</div>';
+    // R3b: la página entera de noticias. "Lo de hoy" es el recorte de 12
+    // titulares; la página tiene las secciones, los chips de fuente y las
+    // destacadas, y lee de la MISMA tabla (una sola fuente de verdad).
+    html += '</div><a class="ver-todas" href="/mercado/noticias">ver todas las noticias →</a>';
+    return html;
   }
 
   function bloqueArena(){

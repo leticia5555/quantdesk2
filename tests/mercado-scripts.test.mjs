@@ -97,3 +97,79 @@ test('dos scripts clásicos no pueden declarar el MISMO nombre a nivel superior'
   assert.deepEqual(choques, [],
     'nombres declarados dos veces: ' + choques.map(([n, fs]) => `${n} (${fs.join(', ')})`).join(' · '));
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// R3b: LA PÁGINA DE NOTICIAS JUEGA CON LAS MISMAS REGLAS
+//
+// `noticias.html` carga `qd-mercados.js` para el chip de la regla 4 y tiene su
+// propio bloque de script en línea. Las dos cosas pueden romperse igual que en
+// `mercado.html`: un `export` en el archivo compartido, o un error de sintaxis
+// en el bloque en línea que deja la página en blanco con la consola cerrada.
+// ═══════════════════════════════════════════════════════════════════════
+test('/mercado/noticias carga sólo scripts clásicos, y su bloque en línea compila', () => {
+  const archivos = scriptsDe('noticias.html');
+  assert.ok(archivos.length >= 1, 'la página declara al menos un script');
+  for (const f of archivos) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    assert.doesNotThrow(() => new Function(src), `${f} no parsea como script clásico`);
+    assert.match(src, /typeof module !== 'undefined'/, `${f}: falta el guardia`);
+  }
+  // El bloque EN LÍNEA: `new Function` lo compila en modo script. Un error de
+  // sintaxis acá deja la página en blanco sin un solo mensaje visible.
+  const html = readFileSync(join(ROOT, 'noticias.html'), 'utf8');
+  const enLinea = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  assert.equal(enLinea.length, 1, 'un solo bloque en línea');
+  assert.doesNotThrow(() => new Function(enLinea[0]), 'el bloque en línea no compila');
+});
+
+test('la página de noticias usa de qd-mercados sólo lo que ese archivo exporta', () => {
+  const html = readFileSync(join(ROOT, 'noticias.html'), 'utf8');
+  const require2 = createRequire(import.meta.url);
+  const mercados = require2(join(ROOT, 'qd-mercados.js'));
+  for (const nombre of ['qdEstadoMercado']) {
+    assert.ok(html.includes(nombre), `la página debería usar ${nombre} para el chip`);
+    assert.equal(typeof mercados[nombre], 'function', `${nombre} no está exportado`);
+  }
+});
+
+/**
+ * El HTML sin comentarios: lo que el navegador EJECUTA Y PINTA.
+ *
+ * La primera versión de la prueba de abajo miraba el archivo entero y se
+ * ponía roja por el comentario que explica que acá NO se guarda el cuerpo de
+ * la nota — castigaba la documentación en vez del código. Una prueba que se
+ * puede apagar borrando un comentario mide el comentario.
+ */
+function codigoDe(pagina) {
+  return readFileSync(join(ROOT, pagina), 'utf8')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/^\s*\/\/.*$/gm, ' ');
+}
+
+test('la página de noticias NO llama a ninguna IA ni trae cuerpo de nota (reglas 1 y 6)', () => {
+  const html = codigoDe('noticias.html');
+  // Regla 6: cero IA en /mercado. Si alguien agrega un resumen, esto se pone rojo.
+  for (const prohibido of ['anthropic', 'openai', '/api/agents', 'claude-', 'gpt-', 'resumen']) {
+    assert.ok(!html.toLowerCase().includes(prohibido),
+      `la página menciona "${prohibido}": acá no va IA`);
+  }
+  // El encargo: titular + foto + fuente + hora + link. Nada de cuerpo.
+  assert.ok(!/\bsnippet\b|\bdescripcion\b|\bcuerpo_nota\b/.test(html),
+    'la página no debe pintar el cuerpo de la nota');
+  // Regla 5: el pie dice fuente, hora y la leyenda.
+  assert.match(html, /Información, no asesoría/);
+  assert.match(html, /actualizado/);
+});
+
+test('la página de noticias declara el estado en la URL (regla 9)', () => {
+  const html = readFileSync(join(ROOT, 'noticias.html'), 'utf8');
+  for (const p of ['seccion', 'orden', 'idioma', 'fuente']) {
+    assert.ok(html.includes("'" + p + "'") || html.includes('"' + p + '"'),
+      `falta el parámetro ${p} en el estado de la URL`);
+  }
+  assert.match(html, /history\.replaceState/, 'el estado se escribe en la URL');
+  // Y los valores se validan contra una lista: un `?seccion=<script>` no puede
+  // llegar a pintarse ni a viajar al endpoint.
+  assert.match(html, /VALIDO/, 'los valores de la URL se validan contra una lista');
+});

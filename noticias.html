@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Noticias — /mercado — QuantDesk</title>
+<meta name="description" content="Titulares de mercado de medios, newsletters y fuentes oficiales, con hora y fuente. Sin resúmenes y sin IA.">
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  /mercado/noticias — R3b, artboard 9.
+
+  LO QUE ESTA PÁGINA PROMETE, Y DÓNDE SE VE:
+
+  1. TITULAR + FOTO + FUENTE + HORA + LINK. Nada más. No se descarga ni se
+     muestra el cuerpo de la nota, no se reescribe y no se resume: el click
+     va al sitio de la fuente. Por eso no hay un solo `snippet` acá.
+  2. CERO IA (regla 6). Las secciones salen del registro de fuentes y los
+     chips de ticker de cruzar el titular contra el catálogo del mapa. No
+     hay una llamada a un modelo en todo el archivo.
+  3. FOTO SÓLO SI EL FEED LA TRAJO. El encargo prohíbe scrapear `og:image`;
+     cuando no hay `media:content` ni `enclosure`, va el bloque de color con
+     el nombre de la fuente Y la razón. Si el hotlink falla al cargar, cae al
+     mismo bloque: `onerror` lo reemplaza en vivo.
+  4. UNA SOLA PETICIÓN para abrir (regla 7). El filtrado por sección, idioma,
+     fuente y búsqueda lo hace el servidor, así que la URL es el estado
+     (regla 9) y lo que se pega en WhatsApp abre igual del otro lado.
+  5. UNA FUENTE CAÍDA SE DICE. El chip de cada fuente tiene tres estados —ok,
+     `source_down` con su motivo, y "sin cosechar"—, porque "no contestó" y
+     "no publicó" se arreglan distinto.
+
+  POR QUÉ LAS DESTACADAS SE REPITEN EN LA COLUMNA. Son la misma nota mostrada
+  dos veces, como en el artboard. Sacarlas de la lista haría que "cargar más"
+  devolviera huecos y que el conteo de la sección no cuadrara con lo que se ve.
+  ═══════════════════════════════════════════════════════════════════
+-->
+<style>
+  :root{
+    --bg:#0a0a0a; --panel:#111; --linea:#222; --texto:#e8e8e8; --tenue:#888;
+    --es:#00c97d;              /* las fuentes en español, en verde (artboard 9) */
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tap:44px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-text-size-adjust:100%}
+  a{color:inherit;text-decoration:none}
+
+  /* EN EL CELULAR LA CABECERA SON DOS FILAS. Con el buscador en la misma
+     fila que la marca y el chip, a 390 px el campo se salía 129 px y la
+     página entera se podía recorrer de lado — el encargo pide que no (regla
+     8). Se parte con `flex-wrap` y en escritorio vuelve a una sola fila. */
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 16px 8px;
+    padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
+  .marca{font-family:var(--mono);font-size:15px;letter-spacing:.5px;white-space:nowrap}
+  .marca b{color:var(--es);font-weight:600}
+  .chip{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
+  .chip.abierto{color:var(--es)}
+  #buscador{flex:1 1 100%;min-width:0;display:flex;gap:6px;align-items:center}
+  #q{flex:1;min-width:0;background:#0e0e0e;border:1px solid var(--linea);border-radius:6px;
+    color:var(--texto);font-family:var(--mono);font-size:13px;padding:0 10px;min-height:var(--tap)}
+  #q::placeholder{color:#666}
+
+  nav,.toggles{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea);
+    overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  nav::-webkit-scrollbar,.toggles::-webkit-scrollbar{display:none}
+  nav[hidden],.toggles[hidden]{display:none}
+  /* `flex:0 0 auto` NO es cosmético: sin él, en un contenedor flex con
+     overflow los botones se encogen por debajo del ancho de su texto y las
+     pestañas se ENCIMAN —"MercadoMéxico · LATAM", "AcciAMEs24"—. La captura
+     a 390 px lo enseñó y ninguna comprobación lo veía, porque cada botón
+     seguía midiendo ≥44 px de alto y la URL cambiaba bien. */
+  nav button,.toggles button{flex:0 0 auto;min-height:var(--tap);min-width:var(--tap);padding:0 12px;
+    background:transparent;border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
+    font-family:var(--mono);font-size:13px;cursor:pointer;white-space:nowrap;
+    -webkit-tap-highlight-color:transparent}
+  nav button[aria-selected="true"],.toggles button[aria-pressed="true"]{
+    background:#1a1a1a;border-color:#3a3a3a;color:var(--texto)}
+  nav button[disabled]{opacity:.45;cursor:default;border-style:dashed}
+  .toggles{gap:14px;align-items:center}
+  .grupo{display:flex;gap:6px}
+  .grupo-nom{font-family:var(--mono);font-size:10px;color:#666;align-self:center}
+
+  /* ── CHIPS DE FUENTE ────────────────────────────────────────────── */
+  #fuentes{display:flex;flex-wrap:nowrap;gap:6px;padding:8px 16px;overflow-x:auto;
+    border-bottom:1px solid var(--linea);scrollbar-width:none}
+  #fuentes::-webkit-scrollbar{display:none}
+  .fchip{flex:0 0 auto;min-height:28px;display:inline-flex;align-items:center;gap:5px;padding:0 9px;
+    background:transparent;border:1px solid var(--linea);border-radius:14px;color:var(--tenue);
+    font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap}
+  .fchip.es{color:var(--es);border-color:#1d4a38}
+  .fchip[aria-pressed="true"]{background:#16211c;border-color:#2c6b51;color:var(--texto)}
+  .fchip .pt{width:6px;height:6px;border-radius:50%;background:#2a2a2a;flex:none}
+  .fchip.ok .pt{background:var(--es)}
+  .fchip.caida .pt{background:#ff5d5d}
+  .fchip.caida{border-style:dashed}
+  .fchip .n{font-variant-numeric:tabular-nums;color:#666}
+
+  main{padding:10px 16px 0}
+  h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
+    letter-spacing:.6px;text-transform:uppercase;margin:14px 0 8px}
+  h2 span{color:#555;font-weight:400;text-transform:none;letter-spacing:0}
+  .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
+    border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
+
+  /* ── DESTACADAS ─────────────────────────────────────────────────── */
+  #destacadas{display:grid;grid-auto-flow:column;grid-auto-columns:76%;gap:10px;
+    overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px;scrollbar-width:none}
+  #destacadas::-webkit-scrollbar{display:none}
+  .dest{scroll-snap-align:start;background:var(--panel);border:1px solid var(--linea);
+    border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:var(--tap)}
+  .dest .foto{aspect-ratio:16/9;width:100%;object-fit:cover;display:block;background:#161616}
+  /* El bloque de color: el nombre de la fuente sobre su propio tono. No es
+     decoración — es la declaración de que el feed no trajo foto. */
+  .dest .bloque{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-size:13px;letter-spacing:.5px;text-align:center;padding:8px;
+    color:#0a0a0a;font-weight:600}
+  .dest .cuerpo{padding:9px 10px 10px;display:flex;flex-direction:column;gap:6px;flex:1}
+  .dest .tit{font-size:14px;line-height:1.3;font-weight:600}
+  .dest .meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:auto}
+
+  /* ── LISTAS ─────────────────────────────────────────────────────── */
+  .lista{border:1px solid var(--linea);border-radius:8px;overflow:hidden;background:var(--panel)}
+  .fila{display:block;padding:9px 11px;border-bottom:1px solid #1a1a1a;min-height:var(--tap)}
+  .fila:last-child{border-bottom:0}
+  .fila .tit{font-size:13px;line-height:1.35}
+  .fila .meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:3px;
+    display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+  .fila .meta b{color:#aaa;font-weight:600}
+  .fila .meta .es{color:var(--es)}
+  .chip-tk{min-height:28px;display:inline-flex;align-items:center;padding:0 7px;
+    border:1px solid var(--linea);border-radius:4px;font-family:var(--mono);font-size:10px;
+    color:#bbb;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chip-tk[aria-pressed="true"]{background:#16211c;border-color:#2c6b51;color:var(--texto)}
+  .grupo-fuente{padding:7px 11px;background:#141414;border-bottom:1px solid #1a1a1a;
+    font-family:var(--mono);font-size:11px;color:#aaa;display:flex;gap:8px;align-items:center}
+  .grupo-fuente .n{color:#666;margin-left:auto}
+  #mas-medios{width:100%;min-height:var(--tap);margin-top:8px;background:transparent;
+    border:1px solid var(--linea);border-radius:8px;color:var(--tenue);
+    font-family:var(--mono);font-size:12px;cursor:pointer}
+  #mas-medios[hidden]{display:none}
+
+  .aviso{font-family:var(--mono);font-size:11px;color:#c9a227;line-height:1.5;
+    border:1px dashed #3a3222;border-radius:8px;padding:9px 11px;margin:10px 0}
+  footer{font-family:var(--mono);font-size:10px;color:#666;line-height:1.6;
+    padding:14px 16px calc(18px + env(safe-area-inset-bottom));border-top:1px solid var(--linea);margin-top:16px}
+  footer a{color:#888;text-decoration:underline}
+
+  /* ── ESCRITORIO 1440×1000 SIN SCROLL ────────────────────────────── */
+  @media (min-width:1000px){
+    #buscador{flex:0 0 auto;margin-left:12px}
+    #q{flex:0 0 auto;width:220px}
+    main{display:grid;grid-template-columns:1fr 336px;gap:16px;align-items:start;
+      padding:12px 24px 0;max-width:1440px;margin:0 auto}
+    #destacadas{grid-column:1 / -1;grid-auto-flow:row;grid-template-columns:repeat(4,1fr);
+      grid-auto-columns:auto;overflow:visible}
+    .dest{scroll-snap-align:none}
+    .dest .tit{font-size:13px}
+    .col-medios{min-width:0}
+    .col-lado{min-width:0;display:flex;flex-direction:column;gap:12px}
+    h2{margin:8px 0 6px}
+    /* ── 1440×1000 SIN SCROLL (regla 8) ────────────────────────────────
+       NO con `max-height: calc(100vh - 500px)`: ese 500 es un número
+       adivinado, y la primera versión lo adivinó mal —la página se recorría
+       68 px y el pie quedaba abajo del borde—. El alto de la cabecera, las
+       pestañas, los toggles, los chips y el aviso de fuentes caídas cambia
+       con el contenido: el aviso aparece sólo cuando hay una fuente caída, y
+       eso es justo lo que movía la cuenta.
+
+       Así que el alto NO se calcula: la página es una columna que mide
+       exactamente una pantalla, `main` se queda con lo que sobra (`flex:1`)
+       y cada lista se recorre por dentro. Es el mismo patrón que `.pantalla`
+       en `mercado.html`, y por la misma razón: un alto medido nunca queda
+       viejo. */
+    html,body{height:100%}
+    body{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+    main{flex:1;min-height:0;grid-template-rows:auto minmax(0,1fr) auto;
+      overflow:hidden;padding-bottom:0}
+    .col-medios,.col-lado{min-height:0;display:flex;flex-direction:column}
+    /* `flex:1` + `min-height:0` es lo que deja que el hijo se recorra en vez
+       de empujar: sin el `min-height:0` el contenido fija el alto mínimo del
+       flex item y el scroll se va a la página. */
+    .scrollable{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .col-lado > div{display:flex;flex-direction:column;min-height:0}
+    .col-lado > div:first-child{flex:1 1 55%}
+    .col-lado > div:last-child{flex:1 1 45%}
+    #oficiales{flex:1;min-height:0;overflow-y:auto}
+    #mas-medios{flex:none}
+    footer{grid-column:1 / -1;margin-top:8px;padding:10px 0 12px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="marca">quant<b>desk</b> · noticias</div>
+  <div class="chip" id="chip">—</div>
+  <div id="buscador">
+    <input id="q" type="search" inputmode="search" autocomplete="off"
+           placeholder="buscar titular o ticker" aria-label="Buscar en los titulares">
+  </div>
+</header>
+
+<nav id="secciones" role="tablist" aria-label="Secciones"></nav>
+
+<div class="toggles">
+  <span class="grupo-nom">ORDEN</span>
+  <div class="grupo" id="t-orden">
+    <button type="button" data-orden="hora" aria-pressed="true">Por hora</button>
+    <button type="button" data-orden="fuente" aria-pressed="false">Por fuente</button>
+  </div>
+  <span class="grupo-nom">IDIOMA</span>
+  <div class="grupo" id="t-idioma">
+    <button type="button" data-idioma="todo" aria-pressed="true">Todo</button>
+    <button type="button" data-idioma="es" aria-pressed="false">Solo español</button>
+  </div>
+</div>
+
+<div id="fuentes" aria-label="Fuentes"></div>
+
+<main>
+  <div id="zona-destacadas" style="grid-column:1 / -1">
+    <h2>Destacadas <span id="dest-nota"></span></h2>
+    <div id="destacadas"></div>
+  </div>
+  <div class="col-medios">
+    <h2>Medios <span id="medios-nota"></span></h2>
+    <div id="medios" class="lista scrollable"></div>
+    <button type="button" id="mas-medios" hidden>cargar más</button>
+  </div>
+  <div class="col-lado">
+    <div>
+      <h2>Newsletters <span id="news-nota"></span></h2>
+      <div id="newsletters" class="lista scrollable"></div>
+    </div>
+    <div>
+      <h2>Oficiales <span id="ofi-nota"></span></h2>
+      <div id="oficiales" class="lista"></div>
+    </div>
+  </div>
+  <footer id="pie">cargando…</footer>
+</main>
+
+<script src="/qd-mercados.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // ── EL ESTADO VIVE EN LA URL (regla 9) ─────────────────────────────
+  var VALIDO = {
+    seccion: ['todo','mercado','mexico_latam','acciones','etfs','cripto','oficiales'],
+    orden: ['hora','fuente'],
+    idioma: ['todo','es']
+  };
+  function leerEstado(){
+    var p = new URLSearchParams(location.search);
+    function uno(k, def){
+      var v = p.get(k);
+      return VALIDO[k].indexOf(v) >= 0 ? v : def;
+    }
+    return {
+      seccion: uno('seccion','todo'),
+      orden: uno('orden','hora'),
+      idioma: uno('idioma','todo'),
+      q: (p.get('q') || '').slice(0,80),
+      fuente: (p.get('fuente') || '').slice(0,40) || null
+    };
+  }
+  var estado = leerEstado();
+  var datos = null, pidiendo = false, extra = [];
+
+  function escribirEstado(){
+    var p = new URLSearchParams();
+    if(estado.seccion !== 'todo') p.set('seccion', estado.seccion);
+    if(estado.orden !== 'hora') p.set('orden', estado.orden);
+    if(estado.idioma !== 'todo') p.set('idioma', estado.idioma);
+    if(estado.q) p.set('q', estado.q);
+    if(estado.fuente) p.set('fuente', estado.fuente);
+    var qs = p.toString();
+    history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+  }
+
+  // ── HORA ───────────────────────────────────────────────────────────
+  // "hace X" para lo de las últimas horas y la hora exacta para lo demás: un
+  // "hace 2 días" no dice si fue el viernes a la apertura o el sábado.
+  function horaDeNota(iso){
+    if(!iso) return '';
+    var t = Date.parse(iso);
+    if(!isFinite(t)) return '';
+    var min = Math.round((Date.now() - t) / 60000);
+    if(min < 1) return 'ahora';
+    if(min < 60) return 'hace ' + min + ' min';
+    if(min < 60 * 20){
+      var h = Math.floor(min / 60);
+      return 'hace ' + h + ' h';
+    }
+    try{
+      return new Date(t).toLocaleString('es-MX', {
+        day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false
+      });
+    }catch(e){ return iso.slice(0,16).replace('T',' '); }
+  }
+
+  // ── EL BLOQUE DE COLOR, DERIVADO DEL NOMBRE DE LA FUENTE ───────────
+  // Sin foto el artboard pide "bloque de color con el nombre de la fuente".
+  // El tono sale del nombre para que una fuente se vea siempre igual, y la
+  // luminosidad se fija alta con texto oscuro encima: así el contraste del
+  // nombre contra su bloque no depende del tono que salga del hash.
+  function tonoDeFuente(nombre){
+    var h = 0, s = String(nombre || '?');
+    for(var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+    return 'hsl(' + h + ' 42% 68%)';
+  }
+
+  function htmlDeBloque(nom){
+    return '<div class="bloque" style="background:' + tonoDeFuente(nom) + '">'
+      + esc(nom) + '</div>';
+  }
+
+  function piezaFoto(n){
+    var nom = n.fuente_nombre || n.fuente_id || 'fuente';
+    if(!n.imagen) return htmlDeBloque(nom);
+    // `referrerpolicy=no-referrer`: la foto se sirve desde el feed y no hace
+    // falta contarle al medio desde dónde se pidió.
+    // La caída del hotlink se ata en JS (`atarCaidaDeFotos`) y no en un
+    // `onerror=` dentro del atributo: ahí el HTML del bloque tendría que ir
+    // escapado dos veces —una para el atributo y otra para el string de JS— y
+    // una comilla mal contada deja de ser un bloque de color para convertirse
+    // en código roto dentro de una página que ya cargó.
+    return '<img class="foto" src="' + esc(n.imagen) + '" alt="" loading="lazy" decoding="async"'
+      + ' referrerpolicy="no-referrer" data-bloque="' + esc(nom) + '">';
+  }
+
+  /**
+   * Si la foto no carga, el bloque de color la reemplaza EN VIVO.
+   *
+   * Es la caída que el encargo pide ("si el hotlink falla, cae al bloque"): un
+   * ícono de imagen rota sobre una tarjeta de noticias se lee como que la
+   * página está rota, no como que el medio no deja traer su foto.
+   *
+   * Se ata después de cada pintado y sobre las imágenes que todavía no
+   * fallaron. `complete && naturalWidth === 0` cubre la que falló ANTES de que
+   * este código corriera, que es lo normal con una imagen en caché.
+   */
+  function atarCaidaDeFotos(raiz){
+    [].forEach.call((raiz || document).querySelectorAll('img.foto'), function(img){
+      if(img.dataset.atado) return;
+      img.dataset.atado = '1';
+      function caer(){
+        if(!img.parentNode) return;
+        img.outerHTML = htmlDeBloque(img.dataset.bloque || 'fuente');
+      }
+      img.addEventListener('error', caer);
+      if(img.complete && img.naturalWidth === 0) caer();
+    });
+  }
+
+  function chipsDeTicker(n){
+    var ts = n.tickers || [];
+    if(!ts.length) return '';
+    return ts.slice(0,4).map(function(t){
+      // Tocar un ticker FILTRA esta página. No lleva a `/analiza/:ticker`
+      // porque esa pantalla es R6 y un chip que abre un 404 es peor que un
+      // chip que filtra.
+      return '<span class="chip-tk" data-tk="' + esc(t) + '" role="button" tabindex="0"'
+        + ' aria-pressed="' + (estado.q.toUpperCase() === t.toUpperCase() ? 'true' : 'false') + '">'
+        + esc(t) + '</span>';
+    }).join('');
+  }
+
+  function metaDeNota(n){
+    var hora = horaDeNota(n.publicado_en);
+    var out = '';
+    if(hora) out += esc(hora) + ' · ';
+    out += '<b class="' + (n.idioma === 'es' ? 'es' : '') + '">'
+      + esc(n.fuente_nombre || n.fuente_id) + '</b>';
+    // Un titular que armamos nosotros desde una serie oficial NO se presenta
+    // como si el medio lo hubiera publicado: dice de qué dato salió.
+    if(n.fuente_dato) out += ' · <span>' + esc(n.fuente_dato) + '</span>';
+    return out;
+  }
+
+  function pintarDestacadas(){
+    var el = document.getElementById('destacadas');
+    var nota = document.getElementById('dest-nota');
+    var ds = (datos && datos.destacadas) || [];
+    if(!ds.length){
+      el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>';
+      nota.textContent = '';
+      return;
+    }
+    var sinFoto = ds.filter(function(n){ return !n.imagen; }).length;
+    nota.textContent = sinFoto
+      ? '· ' + sinFoto + ' sin foto: ' + (datos.motivo_sin_foto || 'el feed no la trajo')
+      : '';
+    el.innerHTML = ds.map(function(n){
+      return '<a class="dest" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
+        + piezaFoto(n)
+        + '<div class="cuerpo"><div class="tit">' + esc(n.titular) + '</div>'
+        + '<div class="meta">' + metaDeNota(n) + '</div></div></a>';
+    }).join('');
+    atarCaidaDeFotos(el);
+  }
+
+  function filaDeNota(n){
+    return '<a class="fila" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
+      + '<div class="tit">' + esc(n.titular) + '</div>'
+      + '<div class="meta">' + metaDeNota(n) + chipsDeTicker(n) + '</div></a>';
+  }
+
+  function motivoVacio(){
+    if(!datos) return 'cargando…';
+    // ERROR PRIMERO. Cero filas por una lectura caída NO es "no pasó nada":
+    // es la cicatriz del mapa, y decir lo segundo afirma algo falso.
+    if(datos.error) return 'no se pudo leer la tabla de noticias: ' + datos.error;
+    var caidas = (datos.fuentes || []).filter(function(f){ return f.estado === 'source_down'; });
+    var sinCosechar = (datos.fuentes || []).filter(function(f){ return f.estado === 'sin_cosechar'; });
+    if(sinCosechar.length === (datos.fuentes || []).length && sinCosechar.length){
+      return 'ninguna fuente se ha cosechado todavía: corré /api/noticias?job=feeds';
+    }
+    if(estado.q || estado.fuente || estado.idioma === 'es' || estado.seccion !== 'todo'){
+      return 'ninguna nota de las últimas ' + ((datos.filtros && datos.filtros.horas) || 72)
+        + ' horas pasa este filtro';
+    }
+    if(caidas.length) return caidas.length + ' fuentes no contestaron en la última cosecha y el resto no dejó notas';
+    return 'sin notas en las últimas ' + ((datos.filtros && datos.filtros.horas) || 72) + ' horas';
+  }
+
+  function pintarColumna(id, notas, total, notaEl, extras){
+    var el = document.getElementById(id);
+    var ns = (notas || []).concat(extras || []);
+    if(!ns.length){
+      el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>';
+      if(notaEl) document.getElementById(notaEl).textContent = '';
+      return;
+    }
+    if(notaEl){
+      document.getElementById(notaEl).textContent = '· ' + ns.length
+        + (total > ns.length ? ' de ' + total : '');
+    }
+    el.innerHTML = ns.map(filaDeNota).join('');
+  }
+
+  function pintarPorFuente(){
+    var el = document.getElementById('medios');
+    var grupos = (datos && datos.medios_por_fuente) || [];
+    if(!grupos.length){
+      el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>';
+      document.getElementById('medios-nota').textContent = '';
+      return;
+    }
+    document.getElementById('medios-nota').textContent = '· ' + grupos.length + ' fuentes';
+    el.innerHTML = grupos.map(function(g){
+      return '<div class="grupo-fuente"><b class="' + (g.idioma === 'es' ? 'es' : '') + '">'
+        + esc(g.fuente_nombre) + '</b><span class="n">' + g.notas.length + '</span></div>'
+        + g.notas.map(filaDeNota).join('');
+    }).join('');
+  }
+
+  function pintarSecciones(){
+    var nav = document.getElementById('secciones');
+    var ss = (datos && datos.secciones) || [];
+    var sinFuente = (datos && datos.secciones_sin_fuente) || [];
+    var conteos = (datos && datos.conteos) || {};
+    var html = '<button type="button" role="tab" data-seccion="todo" aria-selected="'
+      + (estado.seccion === 'todo') + '">Todo</button>';
+    html += ss.map(function(s){
+      var vacia = sinFuente.indexOf(s.id) >= 0;
+      // Una sección SIN FUENTE DECLARADA va deshabilitada y punteada con
+      // "pronto", como pide el encargo para Cripto y ETFs. No se finge una
+      // pestaña que no tiene de dónde sacar nada.
+      return '<button type="button" role="tab" data-seccion="' + esc(s.id) + '"'
+        + (vacia ? ' disabled title="pronto: ninguna fuente del registro publica en esta sección"' : '')
+        + ' aria-selected="' + (estado.seccion === s.id) + '">'
+        + esc(s.nombre) + (vacia ? ' · pronto' : (conteos[s.id] != null ? ' ' + conteos[s.id] : ''))
+        + '</button>';
+    }).join('');
+    nav.innerHTML = html;
+  }
+
+  function pintarFuentes(){
+    var el = document.getElementById('fuentes');
+    var fs = (datos && datos.fuentes) || [];
+    if(!fs.length){ el.innerHTML = ''; return; }
+    el.innerHTML = fs.map(function(f){
+      var clase = 'fchip' + (f.idioma === 'es' ? ' es' : '')
+        + (f.estado === 'ok' ? ' ok' : (f.estado === 'source_down' ? ' caida' : ''));
+      var titulo = f.estado === 'source_down'
+        ? 'source_down: ' + (f.motivo || 'sin motivo declarado')
+        : (f.estado === 'sin_cosechar' ? (f.motivo || 'sin cosechar') : 'última cosecha ok');
+      return '<button type="button" class="' + clase + '" data-fuente="' + esc(f.id) + '"'
+        + ' aria-pressed="' + (estado.fuente === f.id ? 'true' : 'false') + '"'
+        + ' title="' + esc(titulo) + '">'
+        + '<span class="pt"></span>' + esc(f.nombre)
+        + (f.guardadas != null ? '<span class="n">' + f.guardadas + '</span>' : '')
+        + '</button>';
+    }).join('');
+  }
+
+  function pintarToggles(){
+    [].forEach.call(document.querySelectorAll('#t-orden button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.orden === estado.orden));
+    });
+    [].forEach.call(document.querySelectorAll('#t-idioma button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.idioma === estado.idioma));
+    });
+  }
+
+  function pintarChip(){
+    // Regla 4: el estado del mercado por instrumento. Esta pantalla mezcla
+    // EE.UU. y México, así que se dicen las dos: una sola etiqueta "cerrado"
+    // mentiría la mitad del día (la BMV cierra una hora antes que el NYSE).
+    var el = document.getElementById('chip');
+    try{
+      var a = qdEstadoMercado('nyse', new Date());
+      var b = qdEstadoMercado('bmv', new Date());
+      var txt = 'NYSE ' + (a.abierto ? 'abierto' : 'cerrado') + ' · BMV ' + (b.abierto ? 'abierto' : 'cerrado');
+      el.textContent = txt;
+      el.className = 'chip' + (a.abierto || b.abierto ? ' abierto' : '');
+    }catch(e){
+      el.textContent = 'sin estado de mercado';
+      el.className = 'chip';
+    }
+  }
+
+  function pintarPie(){
+    var el = document.getElementById('pie');
+    if(!datos){ el.textContent = 'cargando…'; return; }
+    var caidas = (datos.fuentes || []).filter(function(f){ return f.estado === 'source_down'; });
+    var hora = '';
+    try{
+      hora = new Date(datos.generado_en).toLocaleString('es-MX', {
+        day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false
+      });
+    }catch(e){ hora = String(datos.generado_en || ''); }
+    // CONCORDANCIA DE NÚMERO. "1 caídas" y "1 notas" se leen como un error de
+    // la página, y una página que escribe mal se lee como una página que
+    // cuenta mal. Es la misma corrección que pidió Lety para "ninguna
+    // subieron" en las tablas de R3.
+    function plural(n, sing, pl){ return n + ' ' + (n === 1 ? sing : pl); }
+    var txt = 'Fuente: ' + (datos.fuente || 'neon:mercado_noticias')
+      + ' · ' + (datos.leidas != null ? plural(datos.leidas, 'nota leída', 'notas leídas') : '')
+      + ' de ' + plural((datos.fuentes || []).length, 'fuente GO', 'fuentes GO')
+      + (caidas.length ? ' (' + plural(caidas.length, 'caída', 'caídas') + ': '
+          + caidas.slice(0,3).map(function(f){ return f.id; }).join(', ')
+          + (caidas.length > 3 ? '…' : '') + ')' : '')
+      + ' · actualizado ' + hora
+      + ' · Solo titular, fuente y hora: el texto es de cada medio y el link va a su sitio.'
+      + ' · Información, no asesoría.';
+    el.textContent = txt;
+  }
+
+  function pintarAviso(){
+    var vieja = document.getElementById('aviso-caidas');
+    if(vieja) vieja.remove();
+    if(!datos) return;
+    var caidas = (datos.fuentes || []).filter(function(f){ return f.estado === 'source_down'; });
+    if(!caidas.length) return;
+    var div = document.createElement('div');
+    div.className = 'aviso';
+    div.id = 'aviso-caidas';
+    div.textContent = caidas.length + ' de ' + (datos.fuentes || []).length
+      + (caidas.length === 1 ? ' fuentes no contestó' : ' fuentes no contestaron')
+      + ' en la última cosecha: '
+      + caidas.slice(0,4).map(function(f){ return f.id + ' (' + (f.motivo || 'sin motivo') + ')'; }).join(' · ')
+      + (caidas.length > 4 ? ' y ' + (caidas.length - 4) + ' más' : '')
+      + '. Lo que falta de esas fuentes no está medido, no es que no haya pasado nada.';
+    var zona = document.getElementById('zona-destacadas');
+    zona.parentNode.insertBefore(div, zona);
+  }
+
+  function pintar(){
+    pintarChip();
+    pintarSecciones();
+    pintarToggles();
+    pintarFuentes();
+    pintarAviso();
+    pintarDestacadas();
+    if(estado.orden === 'fuente'){
+      pintarPorFuente();
+      document.getElementById('mas-medios').hidden = true;
+    } else {
+      pintarColumna('medios', datos && datos.medios, datos && datos.medios_total, 'medios-nota', extra);
+      var el = document.getElementById('mas-medios');
+      var vistos = ((datos && datos.medios) || []).length + extra.length;
+      el.hidden = !(datos && datos.medios_total > vistos);
+      el.textContent = 'cargar más (' + Math.max(0, ((datos && datos.medios_total) || 0) - vistos) + ')';
+    }
+    pintarColumna('newsletters', datos && datos.newsletters, datos && datos.newsletters_total, 'news-nota', null);
+    pintarColumna('oficiales', datos && datos.oficiales, datos && datos.oficiales_total, 'ofi-nota', null);
+    pintarPie();
+  }
+
+  function url(extraParams){
+    var p = new URLSearchParams({ vista: 'pagina' });
+    if(estado.seccion !== 'todo') p.set('seccion', estado.seccion);
+    if(estado.idioma !== 'todo') p.set('idioma', estado.idioma);
+    if(estado.orden !== 'hora') p.set('orden', estado.orden);
+    if(estado.q) p.set('q', estado.q);
+    if(estado.fuente) p.set('fuente', estado.fuente);
+    if(extraParams) for(var k in extraParams) p.set(k, extraParams[k]);
+    return '/api/noticias?' + p.toString();
+  }
+
+  function cargar(){
+    if(pidiendo) return;
+    pidiendo = true;
+    extra = [];
+    fetch(url())
+      .then(function(r){ return r.json(); })
+      .then(function(j){ datos = j; })
+      .catch(function(e){ datos = { error: String((e && e.message) || e), fuentes: [], secciones: [] }; })
+      .then(function(){ pidiendo = false; pintar(); });
+  }
+
+  function cargarMas(){
+    if(pidiendo || !datos) return;
+    var ultimas = ((datos.medios || []).concat(extra));
+    var ultima = ultimas[ultimas.length - 1];
+    if(!ultima || !ultima.publicado_en) return;
+    pidiendo = true;
+    var btn = document.getElementById('mas-medios');
+    btn.textContent = 'cargando…';
+    fetch(url({ antes_de: ultima.publicado_en }))
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        // Sólo se agregan las de MEDIOS: la columna que pidió más.
+        var nuevas = (j && j.medios) || [];
+        var vistas = {};
+        ultimas.forEach(function(n){ vistas[n.url] = 1; });
+        extra = extra.concat(nuevas.filter(function(n){ return !vistas[n.url]; }));
+        // El total se recalcula contra lo que el servidor ya dijo: si la página
+        // siguiente vino vacía, el botón desaparece en vez de quedar colgado.
+        if(!nuevas.length) datos.medios_total = ultimas.length;
+      })
+      .catch(function(){ datos.medios_total = ultimas.length; })
+      .then(function(){ pidiendo = false; pintar(); });
+  }
+
+  // ── EVENTOS ────────────────────────────────────────────────────────
+  document.getElementById('secciones').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-seccion]');
+    if(!b || b.disabled) return;
+    estado.seccion = b.dataset.seccion;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('t-orden').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-orden]');
+    if(!b) return;
+    estado.orden = b.dataset.orden;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('t-idioma').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-idioma]');
+    if(!b) return;
+    estado.idioma = b.dataset.idioma;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('fuentes').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-fuente]');
+    if(!b) return;
+    estado.fuente = estado.fuente === b.dataset.fuente ? null : b.dataset.fuente;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('mas-medios').addEventListener('click', cargarMas);
+
+  function tocarTicker(ev){
+    var c = ev.target.closest('.chip-tk');
+    if(!c) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    var t = c.dataset.tk || '';
+    estado.q = estado.q.toUpperCase() === t.toUpperCase() ? '' : t;
+    document.getElementById('q').value = estado.q;
+    escribirEstado(); cargar();
+  }
+  document.addEventListener('click', tocarTicker);
+  document.addEventListener('keydown', function(ev){
+    if(ev.key !== 'Enter' && ev.key !== ' ') return;
+    if(ev.target && ev.target.classList && ev.target.classList.contains('chip-tk')) tocarTicker(ev);
+  });
+
+  var tq = null;
+  var campo = document.getElementById('q');
+  campo.value = estado.q;
+  campo.addEventListener('input', function(){
+    clearTimeout(tq);
+    tq = setTimeout(function(){
+      estado.q = campo.value.slice(0,80);
+      escribirEstado(); cargar();
+    }, 300);
+  });
+
+  pintar();
+  cargar();
+})();
+</script>
+</body>
+</html>

@@ -5,6 +5,9 @@
 //   GET /api/noticias?job=feeds       → ESCRIBE. Cosecha las fuentes GO.
 //   GET /api/noticias?job=banxico     → ESCRIBE. Cambios de tasa desde el SIE.
 //   GET /api/noticias?job=estado      → SOLO LEE. Qué fuente trajo qué y cuándo.
+//   GET /api/noticias?vista=pagina     → SOLO LEE. Todo lo del artboard 9, de un
+//                                        tirón: destacadas, las tres columnas,
+//                                        los chips de fuente y los contadores.
 //
 // TRES REGLAS QUE ESTE ARCHIVO NO PUEDE ROMPER:
 //
@@ -25,6 +28,7 @@
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import REGISTRO from './_lib/news-sources.json' with { type: 'json' };
 import { filasDeFuente, dedupe, cambiosDeTasa, tickersDeFila } from './_lib/noticias.js';
+import { armaPagina, chipsDeFuente, seccionesSinFuente, SECCIONES } from './_lib/noticias-pagina.js';
 import banxicoHandler from './banxico.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import { beat } from './_lib/heartbeat.js';
@@ -33,6 +37,33 @@ const TIMEOUT_FUENTE_MS = 5000;      // el encargo: 5 s por fuente
 const PRESUPUESTO_MS = 45000;        // el job no se pasa de la función
 const VENTANA_HORAS = 72;            // nada más viejo entra: "lo de hoy" es hoy
 const UA = 'Mozilla/5.0 (compatible; QuantDesk/1.0; research@quantdesk.app)';
+
+// Cuántas filas puede traer la página de un tirón. 400 son ~72 h de 21
+// fuentes con margen: lo que no quepa se pide con `antes_de` ("cargar más").
+export const TOPE_PAGINA = 400;
+
+/**
+ * LA CONSULTA DE LA PÁGINA DE NOTICIAS, exportada para probarla.
+ *
+ * Se exporta por lo mismo que `SQL_INSERTA_NOTICIAS`: el INSERT de este
+ * archivo llegó a producción con un tipo mal ligado y la suite estaba verde,
+ * porque ninguna prueba se la había dado a un Postgres de verdad. Una consulta
+ * que vive dentro de un `await` no se puede PREPARAR desde una prueba.
+ *
+ * `($1 || ' hours')::interval` y no `interval '$1 hours'`: en la segunda forma
+ * el parámetro está DENTRO del literal del intervalo y Postgres no lo liga.
+ *
+ * El cursor cambia la forma de la consulta —un `and` más y un $3—, así que es
+ * un parámetro de la función y las dos formas se preparan en la prueba.
+ */
+export const SQL_PAGINA = (conCursor) => `
+  select url, titular, fuente_id, fuente_nombre, tipo, idioma, seccion,
+         publicado_en, imagen, imagen_via, tickers, fuente_dato
+    from mercado_noticias
+   where publicado_en >= now() - ($1 || ' hours')::interval
+     ${conCursor ? 'and publicado_en < $3' : ''}
+   order by publicado_en desc
+   limit $2`;
 
 export const SCHEMA_NOTICIAS = [
   `create table if not exists mercado_noticias (
@@ -284,6 +315,75 @@ export default async function handler(req, res) {
            from mercado_noticias_fuentes f order by f.ok nulls first, f.fuente_id`).catch(() => []);
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({ job: 'estado', solo_lectura: true, fuentes: filas, registradas: fuentesGo().length });
+    }
+
+    // ── LECTURA: LA PÁGINA DE NOTICIAS (R3b, artboard 9) ──────────────
+    // UNA sola llamada para toda la pantalla (regla 7). El filtrado por
+    // sección, idioma, fuente y búsqueda ocurre en el servidor y no en la
+    // página: así la URL es el estado (regla 9) y una vista pegada en WhatsApp
+    // abre con el mismo contenido para quien la recibe.
+    if (q.vista === 'pagina') {
+      await ensureSchema();
+      // La ventana por default es la misma de "lo de hoy" —72 h— porque las
+      // dos vistas leen la MISMA tabla y el encargo pide una sola fuente de
+      // verdad. Se puede ensanchar a 7 días por query, no más: lo que no
+      // cosechó el cron no existe, y pedir 30 días sólo haría que la pantalla
+      // dijera "no hay nada" sobre un hueco de recolección.
+      const horas = Math.min(Math.max(Number(q.horas) || VENTANA_HORAS, 1), 168);
+      const porColumna = Math.min(Math.max(Number(q.por_columna) || 30, 5), 100);
+      // `antes_de` es el cursor de "cargar más": la hora de la última nota que
+      // el lector ya tiene. Con ISO inválido se ignora en vez de romper.
+      const antesDe = (() => {
+        const d2 = q.antes_de ? new Date(String(q.antes_de)) : null;
+        return d2 && Number.isFinite(d2.getTime()) ? d2.toISOString() : null;
+      })();
+      const [filas, corridas] = await Promise.all([
+        sql(SQL_PAGINA(!!antesDe),
+          antesDe ? [String(horas), TOPE_PAGINA, antesDe] : [String(horas), TOPE_PAGINA])
+          .catch((e) => ({ error: e })),
+        sql(`select fuente_id, ultima_corrida, ok, motivo, leidas, guardadas
+               from mercado_noticias_fuentes`).catch(() => []),
+      ]);
+      // UNA LECTURA QUE FALLA NO SE PINTA COMO "NO HAY NOTICIAS". Es la cicatriz
+      // del mapa: cero filas por un error se leía igual que un día sin notas, y
+      // la pantalla afirmaba algo falso. Acá el error viaja y la pantalla lo dice.
+      const error = filas && filas.error ? String((filas.error && filas.error.message) || filas.error) : null;
+      const notas = error ? [] : (filas || []).map((n) => ({ ...n, tickers: tickersDeFila(n.tickers) }));
+      const go = fuentesGo();
+      const armado = armaPagina(notas, {
+        seccion: q.seccion || 'todo',
+        idioma: q.idioma === 'es' ? 'es' : 'todo',
+        q: q.q || '',
+        fuente: q.fuente || null,
+        orden: q.orden === 'fuente' ? 'fuente' : 'hora',
+        porColumna,
+      });
+      res.setHeader('Cache-Control', notas.length ? 's-maxage=120, stale-while-revalidate=600' : 'no-store');
+      return res.status(200).json({
+        vista: 'pagina',
+        ...armado,
+        error,
+        // Qué se pidió, devuelto tal cual: la pantalla pinta el estado de los
+        // toggles desde la respuesta y no desde su propia memoria, así que un
+        // parámetro ignorado se ve en la pantalla en vez de esconderse.
+        filtros: {
+          seccion: q.seccion || 'todo',
+          idioma: q.idioma === 'es' ? 'es' : 'todo',
+          orden: q.orden === 'fuente' ? 'fuente' : 'hora',
+          q: q.q || '',
+          fuente: q.fuente || null,
+          horas,
+          antes_de: antesDe,
+        },
+        secciones: SECCIONES,
+        secciones_sin_fuente: seccionesSinFuente(go),
+        fuentes: chipsDeFuente(go, corridas),
+        leidas: notas.length,
+        tope: TOPE_PAGINA,
+        generado_en: new Date().toISOString(),
+        fuente: 'neon:mercado_noticias (RSS/Atom de api/_lib/news-sources.json)',
+        ms: Date.now() - t0,
+      });
     }
 
     // ── LECTURA: "lo de hoy" ──────────────────────────────────────────
