@@ -107,7 +107,11 @@ function qdPctTag(pct, periodLabel, opts) {
   opts = opts || {};
   const fin = Number.isFinite(pct);
   const up = fin && pct >= 0;
-  const col = !fin ? '#666' : (opts.invert ? (up ? '#E24B4A' : '#00c97d') : (up ? '#00c97d' : '#E24B4A'));
+  // El gris del "—" era #666: 3.22 de contraste sobre el panel de la paleta
+  // del §4 (#0e141b), debajo del piso AA de 4.5 que R3(c) fija. #7d8793 da
+  // 5.08 ahí y 5.4 sobre el fondo viejo de app.html, así que sube en las dos.
+  // Un dato que falta tiene que LEERSE: es la mitad de la regla 2.
+  const col = !fin ? '#7d8793' : (opts.invert ? (up ? '#E24B4A' : '#00c97d') : (up ? '#00c97d' : '#E24B4A'));
   const txt = fin ? ((up ? '+' : '') + pct.toFixed(2) + '%') : '—';
   const tit = !fin && opts.motivo ? ' title="' + qdEscHTML(opts.motivo) + '"' : '';
   return '<span class="qd-pct" style="color:' + col + '"' + tit + '>' + txt

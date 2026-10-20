@@ -220,10 +220,15 @@ try {
     if (m.type() !== 'error') return;
     const donde = (m.location && m.location().url) || '';
     if (/foto-rota/.test(donde) || /foto-rota/.test(m.text())) return;
+    // Google Fonts no se alcanza desde este sandbox. No es un error de la
+    // página: es justo el caso que el respaldo del sistema cubre, y abajo hay
+    // una comprobación que lo exige en vez de taparlo.
+    if (/fonts\.(googleapis|gstatic)\.com/.test(donde) || /fonts\.(googleapis|gstatic)/.test(m.text())) return;
     errores.push(m.text() + (donde ? ' @ ' + donde : ''));
   });
   p.on('requestfailed', (r) => {
-    if (!/foto-rota/.test(r.url())) errores.push('petición fallida: ' + r.url());
+    if (/foto-rota/.test(r.url()) || /fonts\.(googleapis|gstatic)\.com/.test(r.url())) return;
+    errores.push('petición fallida: ' + r.url());
   });
 
   await p.goto(`${BASE}/mercado/noticias`, { waitUntil: 'networkidle' });
@@ -231,6 +236,22 @@ try {
 
   chequeo('la página carga sin errores de consola', errores.length === 0, errores.slice(0, 2).join(' | '));
   chequeo('UNA sola petición al endpoint para abrir (regla 7)', pedidosApi === 1, `fueron ${pedidosApi}`);
+
+  // ── LA PÁGINA NO DEPENDE DE QUE LLEGUE LA TIPOGRAFÍA ────────────────
+  // En este sandbox Google Fonts NO responde, y eso convierte la corrida en
+  // la prueba del respaldo: si la página sólo se viera bien con IBM Plex
+  // cargada, acá se vería mal. Se exige que la pila declarada tenga a Plex
+  // PRIMERO y una fuente del sistema detrás, y que el texto tenga tamaño real.
+  const tipografia = await p.evaluate(() => {
+    const cs = getComputedStyle(document.body);
+    const h = document.querySelector('.dest .tit').getBoundingClientRect();
+    return { familia: cs.fontFamily, alto: Math.round(h.height), ancho: Math.round(h.width) };
+  });
+  chequeo('la pila declara IBM Plex primero y una del sistema de respaldo',
+    /IBM Plex Sans Condensed/.test(tipografia.familia)
+    && /(-apple-system|BlinkMacSystemFont|sans-serif)/.test(tipografia.familia), tipografia.familia);
+  chequeo('y con la tipografía caída el titular sigue midiendo y ocupando lugar',
+    tipografia.alto > 10 && tipografia.ancho > 50, JSON.stringify(tipografia));
 
   const scroll = await p.evaluate(() => ({
     h: document.documentElement.scrollWidth > document.documentElement.clientWidth,
