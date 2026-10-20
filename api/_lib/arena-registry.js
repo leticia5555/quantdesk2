@@ -111,6 +111,35 @@ export function techoDeSalida(crudo) {
 }
 export const ARENA_MAX_TOKENS = techoDeSalida(process.env.ARENA_MAX_TOKENS);
 
+// ── PRESUPUESTO DE RAZONAMIENTO, SEPARADO DEL TECHO (2026-10-20) ──────
+// La puerta del 20-oct: qwen cortó 3 de 3 cierres y el RAZONAMIENTO se comió
+// todo el techo (6000/6000/5616 de 6000). En la primera no quedó una sola
+// ficha para la respuesta. En un modelo de razonamiento `max_tokens` cubre
+// pensar + contestar, y subir el techo no lo arregla: tienden a llenar el
+// presupuesto que se les dé.
+//
+// El arreglo de raíz es separar los dos: `reasoning.max_tokens` en OpenRouter
+// le pone techo al PENSAMIENTO y deja el resto para la respuesta. Por agente y
+// por env var, SIN DEPLOY:
+//   ARENA_REASONING_MAX_TOKENS_QWEN=4000
+// Sin la variable, el agente sigue con `reasoning.effort` como hasta hoy.
+//
+// Se acota para que SIEMPRE quede respuesta: nunca más que el techo menos
+// RESPUESTA_MINIMA. Un presupuesto que se come el techo entero es el bug que
+// esto existe para cerrar.
+export const RESPUESTA_MINIMA_TOKENS = 1500;
+export function presupuestoRazonamiento(agentId, { env = process.env, techo = ARENA_MAX_TOKENS } = {}) {
+  const crudo = env['ARENA_REASONING_MAX_TOKENS_' + String(agentId || '').toUpperCase()];
+  if (crudo === undefined) return { crudo: null, efectivo: null };
+  const n = Math.floor(Number(crudo));
+  if (!Number.isFinite(n) || n < 256) return { crudo: String(crudo), efectivo: null, aviso: `"${crudo}" no es un número ≥ 256: se IGNORA y el agente sigue con reasoning.effort.` };
+  const tope = techo - RESPUESTA_MINIMA_TOKENS;
+  if (tope < 256) return { crudo: String(crudo), efectivo: null, aviso: `el techo (${techo}) no deja lugar para un presupuesto de razonamiento y ${RESPUESTA_MINIMA_TOKENS} de respuesta: se IGNORA.` };
+  return n > tope
+    ? { crudo: String(crudo), efectivo: tope, aviso: `${n} dejaría menos de ${RESPUESTA_MINIMA_TOKENS} tokens de respuesta con un techo de ${techo}: se ACOTA a ${tope}.` }
+    : { crudo: String(crudo), efectivo: n };
+}
+
 // ── MÍNIMO CACHEABLE DE PROMPT ───────────────────────────────────────
 // Piso del PROVEEDOR, no una preferencia nuestra: por debajo de este número de
 // tokens, Anthropic IGNORA `cache_control` en silencio — no escribe caché, no
@@ -361,6 +390,11 @@ export function estadoDeCompuertas(env = process.env) {
       ...(techoDeSalida(env.ARENA_MAX_TOKENS) !== ARENA_MAX_TOKENS
         ? { aviso_proceso: `La variable dice ${techoDeSalida(env.ARENA_MAX_TOKENS)} pero este proceso cargó ${ARENA_MAX_TOKENS}: la lambda arrancó antes del cambio. Redesplegá (sin caché) antes de correr la puerta.` } : {}),
     },
+    // El presupuesto de RAZONAMIENTO por agente de OpenRouter, crudo y
+    // efectivo (acotado contra el techo efectivo). null = sin presupuesto:
+    // ese agente corre con reasoning.effort.
+    presupuesto_razonamiento: Object.fromEntries(ARENA_AGENTS.filter((a) => a.provider === 'openrouter')
+      .map((a) => [a.id, presupuestoRazonamiento(a.id, { env, techo: techoDeSalida(env.ARENA_MAX_TOKENS) })])),
     lectura: liga
       ? 'LA LIGA CORRE: arena-run decide y arena-watch dispara.'
       : 'LA LIGA ESTÁ APAGADA: ni arena-run ni arena-watch hacen nada. arena-reset, arena-shadow y arena-smoke SÍ funcionan — no consultan esta compuerta, a propósito.',

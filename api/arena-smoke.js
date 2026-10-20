@@ -86,7 +86,7 @@ import {
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
   ANTHROPIC_CACHE_MIN_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ARENA_AGENT_DEADLINE_MS,
-  techoLlmSospechoso, VUELTAS_MINIMAS,
+  techoLlmSospechoso, VUELTAS_MINIMAS, presupuestoRazonamiento,
 } from './_lib/arena-registry.js';
 import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS, relojDisponible } from './_lib/arena-tool-loop.js';
 
@@ -418,6 +418,25 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
   // un techo que el modelo no alcanza a escribir dentro de la reserva del
   // cierre cambia un corte por un timeout (ver ?view=cierres de arena-audit).
   row.tokens_por_s = row.tokens.output > 0 && row.ms > 0 ? +(row.tokens.output / (row.ms / 1000)).toFixed(1) : null;
+  // ¿EL PROVEEDOR RESPETA EL PRESUPUESTO DE RAZONAMIENTO? Que OpenRouter
+  // ACEPTE `reasoning.max_tokens` no dice que el proveedor de abajo lo
+  // APLIQUE: OpenRouter lo traduce a lo que cada uno soporte. La única prueba
+  // es medirla — mandar el presupuesto y ver cuánto razonó. 10% de holgura
+  // porque algunos proveedores cuentan unos tokens de más.
+  if (agent.provider === 'openrouter') {
+    const presu = presupuestoRazonamiento(agent.id).efectivo;
+    const usado = row.tokens.reasoning || 0;
+    row.razonamiento = {
+      presupuesto: presu,
+      usado,
+      respetado: presu == null ? null : usado <= presu * 1.1,
+      lectura: presu == null
+        ? 'sin presupuesto: corre con reasoning.effort (ARENA_REASONING_MAX_TOKENS_' + agent.id.toUpperCase() + ' no está puesta).'
+        : usado <= presu * 1.1
+          ? `RESPETADO: razonó ${usado} con un presupuesto de ${presu}.`
+          : `NO RESPETADO: razonó ${usado} con un presupuesto de ${presu}. Este proveedor ignora reasoning.max_tokens: para este agente, el camino es subir ARENA_MAX_TOKENS.`,
+    };
+  }
   // COSTO, en orden de preferencia:
   //   1. lo que el proveedor COBRÓ (anthropic: precio de la casa; openrouter:
   //      usage.cost, el cobro real);

@@ -148,6 +148,13 @@ export function relojDeReintento({ budgetMs, elapsedMs }) {
 // `necesitó_reintento`, y las dos cifras se leen juntas. Un riel que en la
 // práctica alcanza a cinco de siete y no lo dice es el patrón de B45 otra vez,
 // un límite que no llega al camino que corre.
+// Presupuesto de razonamiento del reintento solo-JSON (OpenRouter). Chico a
+// propósito: el reintento reimprime una decisión, no la vuelve a tomar.
+export const REINTENTO_RAZONAMIENTO_TOKENS = (() => {
+  const n = Number(process.env.ARENA_REINTENTO_RAZONAMIENTO);
+  return Number.isFinite(n) && n >= 256 ? Math.floor(n) : 1024;
+})();
+
 async function rescatarConSoloJson({ agent, system, loop, textoMalo, corte, parseError, now, trace }) {
   // La CAUSA, del diagnóstico del cierre y no de una suposición. Se publica
   // separada porque manda a lugares opuestos: `corte` es NUESTRO techo de
@@ -189,6 +196,17 @@ async function rescatarConSoloJson({ agent, system, loop, textoMalo, corte, pars
   try {
     r = await callArenaLLM({
       agent, system, messages: msgs, maxTokens: ARENA_MAX_TOKENS, now,
+      // ── EL RESCATE NO PUEDE TENER EL MISMO TECHO QUE LA FALLA (2026-10-20) ──
+      // Puerta del 20-oct, qwen 05:28: el razonamiento se comió las 6000 del
+      // cierre, el reintento salió con el MISMO max_tokens y el MISMO effort,
+      // volvió a razonar 6000 y tampoco entregó — la corrida más cara ($0.28)
+      // y la que menos sirvió. Peor: sin portafolio escrito, "reenviá el MISMO"
+      // obliga a decidir de nuevo, o sea a volver a pensar.
+      // El reintento compra FORMATO: razonamiento mínimo. `effort: low` para
+      // los siete (riel igual para todos) y, en OpenRouter, un presupuesto de
+      // razonamiento chico y explícito.
+      effort: 'low',
+      reasoningMaxTokens: REINTENTO_RAZONAMIENTO_TOKENS,
       // Mismo criterio que el cierre: es la ÚLTIMA llamada de la corrida, así
       // que no hay "siguientes" cuyo presupuesto proteger con un techo.
       timeoutMs: Math.max(PISO_VUELTA_MS, restante),
@@ -206,6 +224,9 @@ async function rescatarConSoloJson({ agent, system, loop, textoMalo, corte, pars
   const parsed = parsePortfolioResponse(texto);
   return {
     ...base, concedido: true, resuelto: !!parsed.ok, ms,
+    // Con qué se reintentó, para que el journal diga si el rescate tuvo un
+    // techo distinto del de la falla.
+    razonamiento: { effort: 'low', ...(agent.provider === 'openrouter' ? { max_tokens: REINTENTO_RAZONAMIENTO_TOKENS } : {}) },
     lectura: corte2,
     ...(parsed.ok ? {} : { parse_error_2: parsed.error }),
     // El PRIMER intento no se pierde. Si el rescate funciona, el hallazgo
