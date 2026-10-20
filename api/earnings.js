@@ -421,8 +421,20 @@ export default async function handler(req, res) {
     // CONFIRMADOS de corto plazo vienen sin estimate y el filtro los
     // borraba — el panel "this week" quedaba mostrando solo fechas
     // lejanas que sí traían estimate (Aug 7/10 bajo "this week" en jul).
-    const earnings = data.earningsCalendar
-      .filter(e => e.symbol && e.date)
+    const conFecha = data.earningsCalendar.filter(e => e.symbol && e.date);
+    // LO QUE EL FILTRO DESCARTA, CONTADO Y CON NOMBRE.
+    //
+    // `?mega=1` se queda con ~55 nombres curados, y en plena temporada de
+    // reportes eso puede dejar una semana VACÍA mientras el calendario trae
+    // decenas: "sin reportes esta semana" era verdad sobre las mega-caps y
+    // falso sobre el mercado, y desde afuera no había forma de distinguirlo
+    // (Lety, 2026-10-20). Sin esto, la única manera de saber por qué la
+    // sección está vacía es pedirle el calendario crudo a mano.
+    //
+    // La lista va acotada: una semana de octubre trae cientos y el consumidor
+    // es una tarjeta, no un reporte. El CONTEO no se acota.
+    const descartadosTodos = megaOnly ? conFecha.filter(e => !MEGA_CAPS.has(e.symbol)) : [];
+    const earnings = conFecha
       // ?mega=1: intersecta con el set curado de mega-caps (calendario /hoy).
       .filter(e => !megaOnly || MEGA_CAPS.has(e.symbol))
       .map(e => ({
@@ -440,7 +452,21 @@ export default async function handler(req, res) {
         year: e.year
       }))
       .sort((a, b) => new Date(a.date) - new Date(b.date));
-    return res.status(200).json({ earnings, count: earnings.length });
+    return res.status(200).json({
+      earnings, count: earnings.length,
+      // Qué había ANTES del filtro, para que "está vacío" se pueda distinguir
+      // de "está filtrado". Sólo cuando se filtró: sin `?mega=1` no hay nada
+      // que explicar y el payload no crece.
+      ...(megaOnly ? {
+        filtro: 'mega-caps',
+        total_calendario: conFecha.length,
+        descartados: descartadosTodos.length,
+        descartados_muestra: descartadosTodos
+          .map(e => ({ ticker: e.symbol, date: e.date }))
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+          .slice(0, 120),
+      } : {}),
+    });
   } catch (err) {
     return res.status(200).json({ earnings: [] });
   }

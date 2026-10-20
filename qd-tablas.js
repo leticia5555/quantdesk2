@@ -141,10 +141,18 @@ function fraseDeFuente(cual, fuentes) {
   const quien = cual === 'macro' ? 'macro' : 'de reportes';
   if (!f.ok) return `el calendario ${quien} no respondió: ${f.motivo}`;
   if (f.en_ventana > 0) return null;
+  // EL FILTRO SE NOMBRA ANTES QUE EL VACÍO. En plena temporada de reportes,
+  // "sin reportes esta semana" era verdad sobre las mega-caps y falso sobre el
+  // mercado: el calendario traía decenas y el filtro curado las tiraba. Decir
+  // sólo "sin reportes" manda a dudar de la fuente en vez de del filtro.
+  if (cual === 'reportes' && f.filtro === 'mega-caps' && f.filtrados_en_ventana > 0) {
+    const mas = f.mas_adelante > 0 ? ` · ${f.mas_adelante} de mega-caps más adelante` : '';
+    return `sin reportes de mega-caps esta semana · el calendario trae ${f.filtrados_en_ventana} de otras emisoras${mas}`;
+  }
   if (f.mas_adelante > 0) {
     return cual === 'macro'
       ? `sin eventos macro esta semana · ${f.mas_adelante} más adelante`
-      : `sin reportes esta semana · ${f.mas_adelante} más adelante`;
+      : `sin reportes de mega-caps esta semana · ${f.mas_adelante} más adelante`;
   }
   // `horizonte_dias` lo manda el servidor: sin él, "no hay nada" no dice
   // "nada ¿hasta cuándo?". El 30 es sólo el piso por si llegara una respuesta
@@ -155,6 +163,24 @@ function fraseDeFuente(cual, fuentes) {
     : `el calendario no trae reportes de mega-caps en los próximos ${d} días`;
 }
 
+/**
+ * LA CAUSA COMÚN DE ARENA, cuando TODOS fallan por lo mismo.
+ *
+ * Devuelve la frase única si ningún agente tiene número y todos comparten
+ * causa; null si hay mezcla o si alguno sí trae su %. En producción los cinco
+ * salían en "—" con el mismo párrafo técnico repetido cinco veces (Lety,
+ * 2026-10-20): repetir la misma línea no informa cinco veces, tapa la tarjeta.
+ *
+ * Con MEZCLA de causas sí va una por fila, porque ahí la diferencia es el dato.
+ */
+function causaComunArena(agentes) {
+  const gs = Array.isArray(agentes) ? agentes : [];
+  if (!gs.length) return null;
+  if (gs.some((g) => Number.isFinite(g.pct))) return null;
+  const claves = [...new Set(gs.map((g) => g.pct_clave))];
+  return claves.length === 1 && claves[0] ? (gs[0].pct_motivo || null) : null;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { FILAS_TABLA, tablasDeMercado, faltanteDeTabla, fraseDeFuente };
+  module.exports = { FILAS_TABLA, tablasDeMercado, faltanteDeTabla, fraseDeFuente, causaComunArena };
 }

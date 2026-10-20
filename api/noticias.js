@@ -24,7 +24,7 @@
 
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import REGISTRO from './_lib/news-sources.json' with { type: 'json' };
-import { filasDeFuente, dedupe, cambiosDeTasa } from './_lib/noticias.js';
+import { filasDeFuente, dedupe, cambiosDeTasa, tickersDeFila } from './_lib/noticias.js';
 import banxicoHandler from './banxico.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import { beat } from './_lib/heartbeat.js';
@@ -76,10 +76,22 @@ async function ensureSchema() {
   listo = true;
 }
 
-/** Las fuentes que el smoke del punto 0.10 dejó en GO, con su URL ganadora. */
+/**
+ * Las fuentes que se piden: las que el smoke de la Fase 0 dejó en GO Y que la
+ * última cosecha no tumbó.
+ *
+ * SON DOS CAMPOS Y NO UNO A PROPÓSITO. `smoke` es una medición FECHADA —qué se
+ * probó en septiembre y qué contestó— y reescribirla borraría el registro de
+ * lo que se intentó. `cosecha` es lo último que dijo producción. Mantenerlos
+ * separados distingue "nunca sirvió" de "servía y se cayó", que se arreglan
+ * distinto: lo primero es buscar otra fuente, lo segundo es arreglar una URL.
+ *
+ * `yahoo_finance` es el primer caso: GO en septiembre, 404 el 2026-10-20.
+ */
 export function fuentesGo(registro = REGISTRO) {
-  return (registro.fuentes || []).filter(
-    (f) => f.smoke && f.smoke.veredicto === 'GO' && f.feed);
+  return (registro.fuentes || []).filter((f) =>
+    f.smoke && f.smoke.veredicto === 'GO' && f.feed
+    && !(f.cosecha && f.cosecha.veredicto && f.cosecha.veredicto !== 'GO'));
 }
 
 async function pedirFeed(url) {
@@ -112,6 +124,27 @@ async function catalogoDeTickers() {
   return [...us.map((r) => ({ symbol: r.symbol, nombre: r.nombre })), ...mx];
 }
 
+/**
+ * El INSERT, exportado para que `tests/mercado-sql.test.mjs` lo PREPARE contra
+ * un Postgres real. Con el texto en línea, "column tickers is of type text[]
+ * but expression is of type text" sólo se veía corriendo el job contra
+ * producción — que es exactamente como se vio (Lety, 2026-10-20).
+ */
+export const SQL_INSERTA_NOTICIAS =
+      `insert into mercado_noticias
+         (url, titular, titulo_norm, fuente_id, fuente_nombre, tipo, idioma, seccion,
+          publicado_en, imagen, imagen_via, tickers, fuente_dato)
+       select u.url, u.titular, u.titulo_norm, u.fuente_id, u.fuente_nombre, u.tipo,
+              u.idioma, u.seccion, u.publicado_en, u.imagen, u.imagen_via,
+              coalesce(string_to_array(nullif(u.tickers, ''), ','), '{}')::text[],
+              u.fuente_dato
+         from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
+                     $6::text[], $7::text[], $8::text[], $9::timestamptz[],
+                     $10::text[], $11::text[], $12::text[], $13::text[])
+              as u(url, titular, titulo_norm, fuente_id, fuente_nombre, tipo, idioma,
+                   seccion, publicado_en, imagen, imagen_via, tickers, fuente_dato)
+       on conflict (url) do nothing`;
+
 async function guarda(filas) {
   if (!filas.length) return 0;
   // `on conflict do nothing`: una nota que ya estaba NO se reescribe. Su
@@ -121,19 +154,13 @@ async function guarda(filas) {
   for (let i = 0; i < filas.length; i += 50) {
     const t = filas.slice(i, i + 50);
     lotes.push([
-      `insert into mercado_noticias
-         (url, titular, titulo_norm, fuente_id, fuente_nombre, tipo, idioma, seccion,
-          publicado_en, imagen, imagen_via, tickers, fuente_dato)
-       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
-                            $6::text[], $7::text[], $8::text[], $9::timestamptz[],
-                            $10::text[], $11::text[], $12::text[][], $13::text[])
-       on conflict (url) do nothing`,
+      SQL_INSERTA_NOTICIAS,
       [
         t.map((f) => f.url), t.map((f) => f.titular), t.map((f) => f.titulo_norm),
         t.map((f) => f.fuente_id), t.map((f) => f.fuente_nombre || null),
         t.map((f) => f.tipo || null), t.map((f) => f.idioma || null), t.map((f) => f.seccion || null),
         t.map((f) => f.publicado_en), t.map((f) => f.imagen || null), t.map((f) => f.imagen_via || null),
-        t.map((f) => f.tickers || []), t.map((f) => f.fuente_dato || null),
+        t.map((f) => (f.tickers || []).join(',')), t.map((f) => f.fuente_dato || null),
       ],
     ]);
   }
@@ -230,11 +257,24 @@ export default async function handler(req, res) {
   try {
     if (job === 'feeds') {
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json(await jobFeeds({ t0, max: Number(q.max) || 0 }));
+      const out = await jobFeeds({ t0, max: Number(q.max) || 0 });
+      // Que una fuente esté caída es NORMAL y no es una falla del job. Que
+      // estén caídas TODAS, o que no se haya podido guardar nada teniendo
+      // notas, sí: eso es el job roto y tiene que verse como roto.
+      const todasCaidas = out.fuentes > 0 && out.caidas.length === out.fuentes;
+      const noGuardo = out.unicas > 0 && out.guardadas === 0;
+      if (todasCaidas || noGuardo) {
+        out.error = todasCaidas
+          ? `las ${out.fuentes} fuentes fallaron`
+          : `se leyeron ${out.unicas} notas y no se guardó ninguna`;
+        return res.status(500).json(out);
+      }
+      return res.status(200).json(out);
     }
     if (job === 'banxico') {
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json(await jobBanxico({ t0 }));
+      const out = await jobBanxico({ t0 });
+      return res.status(out.error ? 500 : 200).json(out);
     }
     if (job === 'estado') {
       await ensureSchema();
@@ -261,7 +301,10 @@ export default async function handler(req, res) {
     ]);
     res.setHeader('Cache-Control', filas.length ? 's-maxage=120, stale-while-revalidate=600' : 'no-store');
     return res.status(200).json({
-      noticias: filas,
+      // `tickers` sale del driver como el literal de Postgres (`{NVDA,ORCL}`),
+      // no como arreglo. Se normaliza ACÁ y no en la pantalla: la API promete
+      // un arreglo, y R3b y `/analiza` van a leer de esta misma tabla.
+      noticias: filas.map((n) => ({ ...n, tickers: tickersDeFila(n.tickers) })),
       fuentes_caidas: caidas,
       fuentes_go: fuentesGo().length,
       generado_en: new Date().toISOString(),
@@ -271,6 +314,17 @@ export default async function handler(req, res) {
     });
   } catch (e) {
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json({ job: job || 'leer', error: String((e && e.stack) || e), ms: Date.now() - t0 });
+    // UN JOB QUE FALLA RESPONDE 5xx. Con 200 y un `error` dentro, el cron de
+    // Vercel y `cron-status` lo cuentan como una corrida buena: el job llevaba
+    // días tronando al guardar y la vigilancia decía que todo iba bien (Lety,
+    // 2026-10-20). Un 200 es una promesa, y una promesa falsa sobre el estado
+    // del sistema es peor que el error que la causó.
+    //
+    // La LECTURA sí se queda en 200 con la lista vacía: ahí el llamador es la
+    // pantalla, y un 500 le quitaría la sección entera en vez de dejarle decir
+    // qué pasó. Son dos consumidores con necesidades opuestas.
+    const esJob = job === 'feeds' || job === 'banxico' || job === 'estado';
+    return res.status(esJob ? 500 : 200)
+      .json({ job: job || 'leer', error: String((e && e.stack) || e), ms: Date.now() - t0 });
   }
 }

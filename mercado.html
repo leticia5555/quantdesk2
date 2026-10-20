@@ -1521,22 +1521,35 @@
     var html = '<h2>Arena</h2>';
     if(!paneles){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
     var a = paneles.arena || {};
-    html += '<div class="tabla">';
     if(!a.agentes || !a.agentes.length){
-      html += '<div class="vacio">' + esc(a.motivo || 'el leaderboard no devolvió agentes') + '</div>';
-    } else {
-      html += a.agentes.map(function(g){
-        return '<div class="evento">'
-          + '<span class="que"><b>' + esc(g.nombre) + '</b>'
-          + (g.modelo ? '<small>' + esc(g.modelo) + '</small>' : '') + '</span>'
-          + '<span class="val">'
-          // `qdPctTag` exige etiqueta de periodo: la de Arena es el acumulado
-          // desde su baseline, y decirlo es lo que impide leerlo como el % del
-          // día. El número NO se calcula acá: lo trae el leaderboard.
-          + qdPctTag(g.pct, 'acum.', { motivo: g.pct_motivo }) + '</span>'
-          + '</div>';
-      }).join('');
+      return html + '<div class="tabla"><div class="vacio">'
+        + esc(a.motivo || 'el leaderboard no devolvió agentes') + '</div></div>';
     }
+    // UNA LÍNEA, UNA VEZ, ARRIBA. Cuando los cinco fallan por lo mismo —el
+    // caso real: la temporada no se ha reiniciado— la causa se decía en cada
+    // fila, cinco veces, con jerga. Repetirla no informa cinco veces: tapa la
+    // tarjeta. Si hay MEZCLA de causas, cada fila dice la suya, porque ahí la
+    // diferencia es el dato.
+    var comun = causaComunArena(a.agentes);
+    if(comun) html += '<p class="nota">' + esc(comun) + '</p>';
+    html += '<div class="tabla">';
+    html += a.agentes.map(function(g){
+      // Con número, la línea chica es el modelo. Sin número y SIN causa común,
+      // es la causa: `qdPctTag` la mete en un `title` que en un teléfono no
+      // existe, así que ahí no se podía leer.
+      var abajo = Number.isFinite(g.pct)
+        ? (g.modelo ? esc(g.modelo) : '')
+        : (comun ? (g.modelo ? esc(g.modelo) : '') : esc(g.pct_motivo || 'sin causa declarada'));
+      return '<div class="evento">'
+        + '<span class="que"><b>' + esc(g.nombre) + '</b>'
+        + (abajo ? '<small>' + abajo + '</small>' : '') + '</span>'
+        + '<span class="val">'
+        // `qdPctTag` exige etiqueta de periodo: la de Arena es el acumulado
+        // desde su baseline, y decirlo es lo que impide leerlo como el % del
+        // día. El número NO se calcula acá: lo trae el leaderboard.
+        + qdPctTag(g.pct, 'acum.', { motivo: g.pct_motivo }) + '</span>'
+        + '</div>';
+    }).join('');
     return html + '</div>';
   }
 
