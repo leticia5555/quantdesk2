@@ -128,9 +128,11 @@ const FUNDS = [
 // la MISMA pasada del escaneo para no pedirle a la SEC dos veces lo mismo.
 import { form4Completo, filasDeForm4 } from './_lib/form4.js';
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
+import { beat } from './_lib/heartbeat.js';
 import { crearCliente } from './_lib/edgar.js';
 import {
   urlIndiceDiario, diasHabiles, parseIndiceEdgar, form4DelIndice, coberturaDeDia,
+  ownershipDeEnvio, urlDeArchivo,
 } from './_lib/edgar-indice.js';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -209,7 +211,7 @@ async function ensureSchemaForm4() {
 // presentaciones hasta las 22:00 ET, así que el índice del día de HOY está
 // vivo: medir cobertura contra él daría un porcentaje que baja solo.
 const DIAS_RELLENO = 30;
-const XML_POR_CORRIDA = 300;
+const XML_POR_CORRIDA = 400;
 const XML_PRESUPUESTO_MS = 40_000;
 
 const SOURCES = {
@@ -519,6 +521,15 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
     resumen.push({ fecha, lineas: f4.total, enmiendas: f4.enmiendas, motivo: null });
   }
 
+  // EL LATIDO DICE "EL CRON CORRIÓ", no "trajo filings". Un día sin índice
+  // —feriado— es una corrida correcta, y marcarla en rojo haría sonar la
+  // alarma cada 25 de diciembre. Lo que sí es error es que NINGÚN día se haya
+  // podido leer: ahí la fuente está caída.
+  const leidos = resumen.filter((r) => r.lineas != null).length;
+  await beat('mercado:form4-indice', leidos || !resumen.length ? 'ok' : 'error', {
+    dias: fechas.length, con_indice: leidos,
+    form4: resumen.reduce((a, r) => a + (r.lineas || 0), 0),
+  }).catch(() => {});
   return { job: 'indice', dias: fechas.length, fechas: resumen, ua: cli.ua, req_por_segundo: cli.reqPorSegundo };
 }
 
@@ -538,7 +549,13 @@ async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
      where leido_en is null
      order by fecha_filing desc, accession desc
      limit $1`, [tope]);
-  if (!pendientes.length) return { job: 'form4', pendientes: 0, leidos: 0, ok: 0, fallidos: 0, ms: Date.now() - t0 };
+  if (!pendientes.length) {
+    // Cero pendientes es el estado BUENO: quiere decir que la cobertura está
+    // al día. Late igual, porque un cron que sólo late cuando hay trabajo no
+    // se distingue de un cron muerto.
+    await beat('mercado:form4-xml', 'ok', { pendientes: 0, leidos: 0 }).catch(() => {});
+    return { job: 'form4', pendientes: 0, leidos: 0, ok: 0, fallidos: 0, ms: Date.now() - t0 };
+  }
 
   const cli = crearCliente({ kind: 'form4-xml' });
   const resultados = [];
@@ -549,13 +566,24 @@ async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
     // megabytes; el XML del Form 4 vive al lado y pesa unos kilobytes.
     const dir = `https://www.sec.gov/Archives/edgar/data/${p.cik}/${String(p.accession).replace(/-/g, '')}`;
     try {
-      const { json } = await cli.json(dir + '/index.json', { kind: 'form4-index' });
-      const files = (json && json.directory && json.directory.item) || [];
-      const xmlFile = files.find((f) => /\.xml$/i.test(f.name) && !/^primary_doc\.xml$/i.test(f.name))
-        || files.find((f) => /\.xml$/i.test(f.name));
-      if (!xmlFile) { resultados.push({ ...p, ok: false, motivo: 'el filing no trae un XML de Form 4' }); continue; }
-      const { texto } = await cli.texto(dir + '/' + xmlFile.name, { kind: 'form4-xml' });
-      const filas = filasDeForm4(form4Completo(texto), { accession: p.accession, cik: p.cik, fecha: p.fecha });
+      // UNA PETICIÓN, no dos. El `.txt` del índice es el envío completo y
+      // trae el XML dentro; pedir antes `index.json` para averiguar cómo se
+      // llama el XML costaba el doble, y en el relleno de 30 días el doble
+      // son 45.000 peticiones de más a la SEC.
+      let xml = null;
+      const { texto: envio } = await cli.texto(urlDeArchivo(p.archivo), { kind: 'form4-envio' });
+      xml = ownershipDeEnvio(envio);
+      if (!xml) {
+        // Un `4` del índice sin `ownershipDocument` en el envío es raro y es
+        // real. Antes de darlo por perdido, el camino largo.
+        const { json } = await cli.json(dir + '/index.json', { kind: 'form4-index' });
+        const files = (json && json.directory && json.directory.item) || [];
+        const xmlFile = files.find((f) => /\.xml$/i.test(f.name) && !/^primary_doc\.xml$/i.test(f.name))
+          || files.find((f) => /\.xml$/i.test(f.name));
+        if (!xmlFile) { resultados.push({ ...p, ok: false, motivo: 'el envío no trae un Form 4 legible' }); continue; }
+        ({ texto: xml } = await cli.texto(dir + '/' + xmlFile.name, { kind: 'form4-xml' }));
+      }
+      const filas = filasDeForm4(form4Completo(xml), { accession: p.accession, cik: p.cik, fecha: p.fecha });
       resultados.push({ ...p, ok: true, filas, motivo: null });
     } catch (e) {
       resultados.push({ ...p, ok: false, motivo: String((e && e.message) || e) });
@@ -579,6 +607,12 @@ async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
   }
   if (lotes.length) await sqlBatch(lotes);
 
+  const buenos = resultados.filter((r) => r.ok).length;
+  // Que algunos filings fallen es normal (un envío sin Form 4 legible). Que
+  // fallen TODOS es la SEC caída o un formato que cambió.
+  await beat('mercado:form4-xml', buenos ? 'ok' : 'error', {
+    pendientes: pendientes.length, leidos: resultados.length, ok: buenos,
+  }).catch(() => {});
   return {
     job: 'form4',
     pendientes: pendientes.length,

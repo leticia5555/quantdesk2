@@ -112,6 +112,20 @@ export const EXPECTED = [
   // filas cuando la serie CAMBIA, así que el latido dice "se miró", no "hubo
   // anuncio" — y por eso vale aunque pasen meses sin un solo cambio.
   { job: 'mercado:banxico', path: '/api/noticias?job=banxico',        schedule: '25 23 * * 1-5',         cadence: '1×/día hábil', stale_after_h: 80 },
+  // ── LOS FORM 4 COMPLETOS (2026-10-22) ────────────────────────────
+  // Dos crons porque son dos trabajos de tamaños distintos: el índice es una
+  // petición por día hábil y deja la lista de lo que DEBERÍA estar; los XML
+  // son miles y se recogen a cuentagotas, con presupuesto.
+  //
+  // Una vez al día: el índice de un día cerrado ya no cambia. `dias=3` es el
+  // de ayer más margen por si una corrida falló.
+  { job: 'mercado:form4-indice', path: '/api/stock-tracker?job=indice&dias=3',
+    schedule: '20 23 * * *', cadence: 'diario ~23:20', stale_after_h: 30 },
+  // Cada diez minutos. Late SIEMPRE, incluso con cero pendientes —que es el
+  // estado bueno—: un cron que sólo late cuando hay trabajo no se distingue
+  // de un cron muerto.
+  { job: 'mercado:form4-xml', path: '/api/stock-tracker?job=form4',
+    schedule: '*/10 * * * *', cadence: 'cada 10 min', stale_after_h: 3 },
 ];
 
 // Crons de vercel.json que a propósito NO se vigilan acá, con el porqué. La

@@ -166,3 +166,37 @@ export function coberturaDeDia({ fecha, enIndice, guardados, motivo = null } = {
       : `Cobertura: ${pct.toFixed(1)}% de los Form 4 del día (${nuestros} de ${total}) — faltan ${total - nuestros}`,
   };
 }
+
+/**
+ * EL XML DEL FORM 4, SACADO DEL ENVÍO COMPLETO.
+ *
+ * El índice da la ruta del `.txt`: el envío entero, con su cabecera SGML y
+ * sus adjuntos. Dentro viene el XML del Form 4. Leerlo de ahí cuesta UNA
+ * petición; el camino de antes —pedir `index.json` para saber cómo se llama
+ * el XML y después el XML— cuesta DOS. Con 45.000 filings en el relleno, eso
+ * son 45.000 peticiones menos a la SEC y la mitad de tiempo para llenarse.
+ *
+ * Se recorta al documento: `form4Completo` busca con expresiones regulares
+ * sobre todo el texto, y la cabecera SGML trae líneas como `ISSUER:` que no
+ * son etiquetas pero que no hay por qué pasearle por delante.
+ *
+ * Devuelve null si el envío no trae un Form 4 — un `4` del índice que resulta
+ * no tener `ownershipDocument` es un caso raro y real, y el llamador cae al
+ * camino de dos peticiones en vez de darlo por perdido.
+ */
+export function ownershipDeEnvio(texto) {
+  const s = String(texto || '');
+  const ini = s.search(/<(?:\w+:)?ownershipDocument\b/i);
+  if (ini < 0) return null;
+  const cierre = s.search(/<\/(?:\w+:)?ownershipDocument\s*>/i);
+  if (cierre < 0) return null;
+  const fin = s.indexOf('>', cierre) + 1;
+  return s.slice(ini, fin);
+}
+
+/** La URL absoluta de un documento del índice (`edgar/data/…/x.txt`). */
+export function urlDeArchivo(archivo) {
+  const a = String(archivo || '').replace(/^\/+/, '');
+  if (!a) return null;
+  return `https://www.sec.gov/Archives/${a}`;
+}
