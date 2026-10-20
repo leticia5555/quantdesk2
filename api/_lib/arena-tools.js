@@ -545,6 +545,12 @@ export async function runSector(args, ctx) {
 export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector };
 
 // ── EL EJECUTOR, con presupuesto y caché ─────────────────────────────
+// Un resultado de herramienta usable: texto para el modelo y un conteo. Lo que
+// no cumple esto es una falla, venga del runner o de la caché del día.
+function resultadoValido(out) {
+  return !!out && typeof out.text === 'string' && Number.isFinite(out.rows);
+}
+
 // Crea un ejecutor con estado PARA UNA CORRIDA DE UN AGENTE: lleva la cuenta
 // de llamadas, la secuencia journaleada y la caché.
 //
@@ -645,7 +651,7 @@ export function createToolExecutor({
 
       let out;
       let source = 'cache';
-      if (hit && hit.payload && hit.payload.text) {
+      if (resultadoValido(hit && hit.payload)) {
         out = hit.payload;
       } else {
         source = 'run';
@@ -653,6 +659,18 @@ export function createToolExecutor({
           out = await runner(args, ctx);
         } catch (e) {
           out = { text: `La herramienta falló: ${String((e && e.message) || e)}. No hay resultado para esta consulta.`, rows: 0, error: true };
+        }
+        // ── NULL NO ES CERO FILAS (2026-10-20) ─────────────────────────
+        // Grok: screener()→null, ficha(MU)→null, ficha(WDC)→null. Un resultado
+        // sin texto o sin conteo NO es "no hay nada": es la herramienta
+        // fallando sin decirlo. El agente tiene que recibirlo como falla, con
+        // palabras, y el journal tiene que marcarlo `error` — si no, se publica
+        // igual que un filtro que legítimamente dejó cero nombres.
+        if (!resultadoValido(out)) {
+          out = {
+            text: `La herramienta falló: no devolvió un resultado (${out == null ? 'null' : 'sin ' + [typeof out.text !== 'string' ? 'texto' : null, !Number.isFinite(out.rows) ? 'conteo de filas' : null].filter(Boolean).join(' ni ')}). No hay datos para esta consulta — no significa que no haya nombres que cumplan.`,
+            rows: 0, error: true, sin_resultado: true,
+          };
         }
         if (cache && !out.error) await writeDayCache(key, out, now).catch(() => {});
       }
@@ -663,6 +681,7 @@ export function createToolExecutor({
       sequence.push({
         n, intento: intentos, tool: name, args, ms: Date.now() - t0, source,
         rows: out.rows ?? null, truncated: !!out.truncated, error: !!out.error,
+        ...(out.sin_resultado ? { sin_resultado: true } : {}),
         // El resultado COMPLETO, no el resumen: sin esto el replay no puede
         // reproducir la corrida — el modelo decidió mirando algo que no
         // guardamos. Ver el encabezado.
@@ -682,6 +701,7 @@ export function createToolExecutor({
         rows: s.rows, truncated: s.truncated,
         ...(s.refused ? { refused: s.refused } : {}),
         ...(s.error ? { error: true } : {}),
+        ...(s.sin_resultado ? { sin_resultado: true } : {}),
       }));
     },
   };

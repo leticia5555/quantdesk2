@@ -82,6 +82,30 @@ export function identidad(agentId) {
   };
 }
 
+// ── CADA PASO, EN UNA LÍNEA QUE SE LEE ───────────────────────────────
+// "ficha MU → 9 líneas", "noticias NVDA → 5 titulares", "screener(rvol_top) →
+// falló". Se arma ACÁ y no en las páginas: /liga y /liga/libros dibujan la
+// misma cadena, y dos lugares escribiendo la regla es cómo un día difieren.
+const UNIDAD = {
+  screener: ['nombre', 'nombres'], sector: ['nombre', 'nombres'],
+  noticias: ['titular', 'titulares'], ficha: ['línea', 'líneas'],
+};
+const plural = (n, tool) => { const u = UNIDAD[tool] || ['fila', 'filas']; return `${n} ${n === 1 ? u[0] : u[1]}`; };
+export function etiquetaDePaso(tool, args) {
+  const a = args || {};
+  const foco = a.ticker || a.etf || a.tema || null;
+  if (foco) return `${tool} ${foco}`;
+  const resto = Object.entries(a).filter(([, v]) => v != null && v !== false && v !== '')
+    .map(([k, v]) => (v === true ? k : `${k}=${Array.isArray(v) ? v.join(',') : v}`));
+  return `${tool}(${resto.join(', ')})`;
+}
+export function resultadoDePaso(s) {
+  if (s.refused) return s.refused === 'budget_exhausted' ? 'sin cupo' : 'rechazada';
+  // null NO es 0: es la herramienta fallando. Se dice con la palabra.
+  if (s.error || s.sin_resultado || s.rows == null) return 'falló';
+  return plural(s.rows, s.tool) + (s.truncated ? ' (truncado)' : '');
+}
+
 // La secuencia, en forma de historia. Cada paso con lo justo para leerse.
 export function secuenciaPublicable(ctx) {
   const t = ctx && ctx.tools;
@@ -92,9 +116,17 @@ export function secuenciaPublicable(ctx) {
     // Los argumentos YA acotados (lo que de verdad se ejecutó), no lo que pidió.
     argumentos: s.args || null,
     filas: s.rows ?? null,
-    truncado: !!s.truncated,
+    // Sólo cuando lo está, como `rechazada`: un `false` repetido en cada paso
+    // de cada tarjeta no dice nada y paga bytes en un feed de 200 filas.
+    ...(s.truncated ? { truncado: true } : {}),
     ms: s.ms ?? null,
     ...(s.refused ? { rechazada: s.refused } : {}),
+    // Antes el `error` del ejecutor se quedaba en el journal y acá salía como
+    // "0 filas": una herramienta caída se leía igual que un filtro vacío. Un
+    // paso ejecutado sin conteo (`rows: null`) también es una falla.
+    ...((s.error || s.sin_resultado || (!s.refused && s.rows == null)) ? { falló: true } : {}),
+    etiqueta: etiquetaDePaso(s.tool, s.args),
+    resultado: resultadoDePaso(s),
   }));
   return {
     usó_herramientas: pasos.length > 0,
@@ -129,6 +161,26 @@ export function secuenciaPublicable(ctx) {
     loop_cortó_por: t.stopped_by || null,
     pasos,
   };
+}
+
+// ── LAS HERRAMIENTAS QUE FALLARON, EN AVISOS ─────────────────────────
+// Una falla escondida en el paso 3 de una tarjeta colapsada no la ve nadie.
+// Una línea por agente, arriba de la página: cuántas, en cuántas corridas y
+// cuáles. Si un agente no puede investigar porque la herramienta se cae, su
+// libro no mide al modelo — mide la herramienta.
+export function avisosDeHerramientas(libros = []) {
+  const por = new Map();
+  for (const l of libros || []) {
+    const fallidos = ((l.investigacion && l.investigacion.pasos) || []).filter((p) => p && p.falló);
+    if (!fallidos.length) continue;
+    const id = (l.agente && l.agente.id) || 'desconocido';
+    const a = por.get(id) || { nombre: (l.agente && l.agente.nombre) || id, n: 0, corridas: 0, cuales: [] };
+    a.n += fallidos.length;
+    a.corridas++;
+    for (const p of fallidos) if (a.cuales.length < 6) a.cuales.push(p.etiqueta || p.herramienta);
+    por.set(id, a);
+  }
+  return [...por.values()].map((a) => `${a.nombre}: ${a.n} llamada${a.n === 1 ? '' : 's'} a herramientas fallaron en ${a.corridas} corrida${a.corridas === 1 ? '' : 's'} (${a.cuales.join(', ')}${a.n > a.cuales.length ? ', …' : ''}). No es "0 filas": la herramienta no devolvió resultado, y el agente decidió sin ese dato.`);
 }
 
 // ── LA COHERENCIA ENTRE LAS DOS ETAPAS ───────────────────────────────
@@ -500,7 +552,7 @@ export function resumenDeHerramientas(libros = []) {
   const porAgente = new Map();
   const vacio = () => ({
     corridas: 0, abortadas: 0, con_investigacion: 0, sin_uso: 0,
-    llamadas: 0, por_herramienta: {}, corridas_con_uso: {},
+    llamadas: 0, por_herramienta: {}, corridas_con_uso: {}, fallidas: 0,
   });
 
   for (const l of (Array.isArray(libros) ? libros : [])) {
@@ -517,6 +569,7 @@ export function resumenDeHerramientas(libros = []) {
       const t = String((p && p.herramienta) || '').trim().toLowerCase();
       if (!t) continue;
       a.llamadas++;
+      if (p.falló) a.fallidas++;
       a.por_herramienta[t] = (a.por_herramienta[t] || 0) + 1;
       enEstaCorrida.add(t);
     }
@@ -553,6 +606,7 @@ export function resumenDeHerramientas(libros = []) {
       corridas_vivas: vivasTotal,
       abortadas: filas.reduce((s, f) => s + f.abortadas, 0),
       llamadas: filas.reduce((s, f) => s + f.llamadas, 0),
+      fallidas: filas.reduce((s, f) => s + f.fallidas, 0),
       por_herramienta: porHerramienta,
       screener_pct_corridas: pct,
       // La lectura, para que el número no haya que interpretarlo dos veces.
@@ -905,6 +959,8 @@ export default async function handler(req, res) {
   }
 
   libros.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+
+  avisos.push(...avisosDeHerramientas(libros));
 
   const conObjetivo = libros.filter((l) => l.portafolio);
   const conHerramientas = libros.filter((l) => l.investigacion && l.investigacion.usó_herramientas);

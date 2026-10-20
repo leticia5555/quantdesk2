@@ -151,6 +151,17 @@ section{padding:20px 0 4px;}
 .ores{font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:.03em;
   margin-top:3px;padding-top:6px;border-top:1px solid var(--border);}
 .ores b{font-weight:700;}
+.decide{margin-top:11px;border-top:1px solid var(--border);padding-top:10px;}
+.decide h4{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;display:flex;gap:8px;flex-wrap:wrap;}
+.decide h4 a{color:var(--text3);margin-left:auto;font-weight:400;}
+.cadena{font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.7;word-break:break-word;}
+.cadena .flecha{color:var(--text3);}
+.cadena .zero{color:var(--amber);}
+.cadena .fallo{color:var(--red);font-weight:700;}
+.tesis{font-size:12px;color:var(--text2);line-height:1.5;padding:5px 0;border-bottom:1px solid var(--border);}
+.tesis:last-child{border-bottom:0;}
+.tesis b{font-family:var(--mono);font-size:11px;color:var(--text);}
+.tesis .w{font-family:var(--mono);font-size:10px;color:var(--text3);}
 .rfoot{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.05em;}
 .badge-soon{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.1em;padding:3px 7px;border-radius:3px;text-transform:uppercase;
   color:var(--amber);border:1px solid rgba(255,179,71,.35);background:rgba(255,179,71,.06);}
@@ -406,6 +417,37 @@ function tradesHtml(a){
     (j.ordenes.length>lista.length?'<div class="ofalta">y '+(j.ordenes.length-lista.length)+' más — el detalle completo en <a href="/liga/libros">/liga/libros</a>.</div>':'')+
     resumen+'</div>';
 }
+// ── CÓMO DECIDIÓ: la cadena de herramientas y la tesis de cada posición ──
+// Sale de /api/liga/libros (la última corrida EN VIVO de cada agente). La
+// etiqueta y el resultado de cada paso los arma el servidor: /liga/libros
+// dibuja la misma cadena, y una regla escrita dos veces termina difiriendo.
+let LIBROS={};
+function cadenaHtml(inv){
+  if(!inv) return '<div class="cadena">Esta corrida no journaleó herramientas.</div>';
+  if(inv.usó_herramientas===false||!inv.pasos||!inv.pasos.length)
+    return '<div class="cadena">Sin herramientas'+(inv.motivo?' — '+esc(inv.motivo):'')+': decidió con el tablero.</div>';
+  return '<div class="cadena">'+inv.pasos.map(s=>{
+    const cls = s.falló||s.rechazada ? 'fallo' : (s.filas===0?'zero':'');
+    return esc(s.etiqueta||s.herramienta||'—')+' <span class="flecha">→</span> '+
+      '<span class="'+cls+'">'+(s.falló?'✕ ':'')+esc(s.resultado||'')+'</span>';
+  }).join(' <span class="flecha">·</span> ')+'</div>';
+}
+function decideHtml(a){
+  const l=LIBROS[a.id]; if(!l) return '';
+  const hora=new Date(l.fecha);
+  const cuando=isFinite(hora)?hora.toLocaleString('es-MX',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+  const pesos=(l.portafolio&&l.portafolio.pesos)||{};
+  const tesis=(l.portafolio&&l.portafolio.tesis)||null;
+  const filas = tesis && Object.keys(tesis).length
+    ? Object.entries(tesis).sort((x,y)=>Math.abs(pesos[y[0]]||0)-Math.abs(pesos[x[0]]||0)).map(([t,x])=>
+        '<div class="tesis"><b>'+esc(t)+'</b>'+(pesos[t]!=null?' <span class="w">'+(pesos[t]*100).toFixed(1)+'%</span>':'')+' — '+esc(x)+'</div>').join('')
+    : '<div class="tesis">Sin tesis por posición en esta corrida.</div>';
+  return '<div class="decide">'+
+    '<h4><span>cómo decidió · '+esc(cuando)+'</span><a href="/liga/libros?agente='+encodeURIComponent(a.id)+'">todas sus corridas →</a></h4>'+
+    cadenaHtml(l.investigacion)+
+    '<div style="margin-top:8px">'+filas+'</div>'+
+  '</div>';
+}
 // La fila del índice. NO lleva número: el orden por retorno la pone donde le
 // toca, pero un puesto la volvería competidora — y no decidió nada.
 function benchHtml(b){
@@ -512,7 +554,7 @@ function rowHtml(a){
         '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
       '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
-    plan+tradesHtml(a)+
+    plan+decideHtml(a)+tradesHtml(a)+
     '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
     // ── NO HAY TOPE DE POSICIONES, Y EL "/8" DECÍA QUE SÍ ─────────────
     // El 8 era del CONTRATO DE ACCIONES (el guard viejo), que el contrato de
@@ -529,7 +571,14 @@ function rowHtml(a){
   '</div>';
 }
 async function load(){
-  const data=await getJSON('/api/leaderboard');
+  // Las dos en paralelo. Si /liga/libros no contesta, la tabla sale igual y
+  // las filas sin bloque de decisión: el ranking no espera al razonamiento.
+  const [data,libros]=await Promise.all([getJSON('/api/leaderboard'),getJSON('/api/liga/libros?dias=3&fuente=en_vivo')]);
+  LIBROS={};
+  for(const l of ((libros&&libros.libros)||[])){
+    const id=l.agente&&l.agente.id;
+    if(id&&!LIBROS[id]) LIBROS[id]=l;   // vienen ordenados del más nuevo al más viejo
+  }
   const el=$('board');
   if(!data||!Array.isArray(data.agents)||!data.agents.length){
     el.innerHTML='<div class="row"><div class="rplan">La liga no está disponible ahora mismo. Vuelve en un momento.</div></div>';
