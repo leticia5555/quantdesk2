@@ -266,6 +266,16 @@ export function diagnosticoDeCorte(data, { maxTokens = ARENA_MAX_TOKENS, texto =
   return diag;
 }
 
+// ¿Respetó el presupuesto de razonamiento? Tres estados, porque una llamada
+// que razonó POCO no prueba nada: `false` (lo pasó: lo ignora), `true` (llegó
+// a ≥90% y se quedó abajo: respetado bajo carga), `null` (no se puso a prueba).
+export function respetoDelPresupuesto(presupuesto, usado) {
+  if (presupuesto == null || !Number.isFinite(Number(usado))) return null;
+  const u = Number(usado);
+  if (u > presupuesto * 1.1) return false;
+  return u >= presupuesto * 0.9 ? true : null;
+}
+
 // Cuerpo de OpenRouter, EXPORTADO para que /api/arena-smoke mande exactamente
 // el mismo payload que la corrida real (un smoke que manda otra cosa no prueba
 // nada). `reasoning.effort` es el parámetro unificado de OpenRouter; un modelo

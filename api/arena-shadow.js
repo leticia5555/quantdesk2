@@ -33,7 +33,7 @@
 import { ensureSchema } from './_lib/db.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import * as alpaca from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_REINTENTO_JSON, PROMPT_VERSION } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_REINTENTO_JSON, PROMPT_VERSION, presupuestoRazonamiento } from './_lib/arena-registry.js';
 import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd, diagnosticoDeCorte } from './_lib/arena-model.js';
 // `PROMPT_VERSION` ya NO viene de acá: era la única arista del ciclo que no
 // hoisteaba. Sale de _lib/arena-registry.js, que es hoja. Los cuatro que
@@ -616,6 +616,13 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   // techo de tokens que el modelo no alcanza a escribir antes del reloj sólo
   // cambia un corte por un timeout. Sin la duración no hay velocidad, y sin
   // velocidad el número se adivina.
+  // ── QUÉ SE PIDIÓ Y QUIÉN LO SIRVIÓ (2026-10-20) ────────────────────
+  // La sonda dio `respetado: true` (1115 de 4000) y el cierre real razonó
+  // 6000 de 4000. Para separar "el parámetro no llegó" de "el proveedor lo
+  // ignora", la fila del cierre tiene que decir las dos cosas: el presupuesto
+  // que pedimos y el proveedor que atendió. Sin esto, la causa es arqueología.
+  corte.presupuesto_razonamiento = presupuestoRazonamiento(agent.id, { techo: ARENA_MAX_TOKENS }).efectivo;
+  corte.proveedor = llm.proveedor || null;
   if (Number.isFinite(llm.ms)) {
     corte.ms = llm.ms;
     corte.tokens_por_s = corte.output_tokens && llm.ms > 0 ? +(corte.output_tokens / (llm.ms / 1000)).toFixed(1) : null;
