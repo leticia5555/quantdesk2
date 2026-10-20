@@ -33,7 +33,24 @@ const OUT = (() => { const i = args.indexOf('--out'); return i >= 0 ? args[i + 1
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
 const require = createRequire(import.meta.url);
-const PW = process.env.PW_PATH || '/tmp/claude-0/-home-user-quantdesk2/978a1f3c-866a-59be-9b12-d16e6c760a3e/scratchpad/node_modules/playwright-core';
+// ── DÓNDE ESTÁ PLAYWRIGHT ───────────────────────────────────────────
+// Acá había clavada una ruta absoluta a un scratchpad con el id de UNA
+// sesión adentro. O sea que estos arneses corrían en un solo contenedor y
+// nada más: en CI, en otra máquina o en una sesión nueva tiraban
+// MODULE_NOT_FOUND antes de abrir el navegador. Y de hecho dejaron de
+// correr acá mismo cuando ese scratchpad se limpió.
+// Ahora se busca por candidatos, con `PW_PATH` ganando por si hace falta
+// apuntarlo a mano.
+const PW = (() => {
+  const candidatos = [
+    process.env.PW_PATH,
+    'playwright-core',
+    '/opt/node-tools/node_modules/playwright-core',
+    join(ROOT, 'node_modules/playwright-core'),
+  ].filter(Boolean);
+  for (const c of candidatos) { try { return require.resolve(c); } catch { /* el siguiente */ } }
+  throw new Error('no se encontró playwright-core; poné PW_PATH apuntando a su carpeta');
+})();
 const { chromium } = require(PW);
 // El MISMO armador que el endpoint (una sola definición de qué es la página).
 const { armaPagina, chipsDeFuente, seccionesSinFuente } = await import(join(ROOT, 'api/_lib/noticias-pagina.js'));
@@ -59,7 +76,7 @@ const NOTAS = [
   // destacada, así que es la que tiene que caer al bloque por plazo.
   { url: 'https://valor.test/ibov', titular: 'Ibovespa fecha em alta de 1,2%',
     fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
-    publicado_en: hace(3), imagen: '/foto-ok.gif', imagen_via: 'og:image', tickers: [], fuente_dato: null },
+    publicado_en: hace(3), imagen: '/foto-valor-ibov.gif', imagen_via: 'og:image', tickers: [], fuente_dato: null },
   // La foto que TARDA seis segundos: su tarjeta cae por plazo vencido.
   { url: 'https://infobae.test/lenta', titular: 'El dólar se mueve antes de la Fed',
     fuente_id: 'infobae', fuente_nombre: 'Infobae', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
@@ -70,24 +87,38 @@ const NOTAS = [
     publicado_en: hace(6), imagen: '/foto-rota.gif', imagen_via: 'og:image', tickers: [], fuente_dato: null },
   { url: 'https://valor.test/petro', titular: 'Petrobras anuncia dividendo extraordinário',
     fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
-    publicado_en: hace(5), imagen: '/foto-ok.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
+    publicado_en: hace(5), imagen: '/foto-valor-petro.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
   { url: 'https://valor.test/real', titular: 'Real se valoriza frente ao dólar',
     fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
-    publicado_en: hace(7), imagen: '/foto-ok.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
+    publicado_en: hace(7), imagen: '/foto-valor-real.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
   { url: 'https://valor.test/vale', titular: 'Vale eleva projeção de produção',
     fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
-    publicado_en: hace(9), imagen: '/foto-ok.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
+    publicado_en: hace(9), imagen: '/foto-valor-vale.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
   { url: 'https://medio.test/nvidia', titular: 'Nvidia hits $1.4T valuation on AI demand',
     fuente_id: 'cnbc', fuente_nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'acciones',
-    publicado_en: hace(12), imagen: '/foto-ok.gif', imagen_via: 'media:content',
+    publicado_en: hace(12), imagen: '/foto-cnbc-nvidia.gif', imagen_via: 'media:content',
     tickers: ['NVDA'], fuente_dato: null },
+  // ── EL LOGO DISFRAZADO DE FOTO (Lety, contra producción, 2026-10-20) ──
+  // Seeking Alpha publica SU LOGO como `og:image` en todas sus notas, igual
+  // que Valor BR. La imagen carga perfecto, así que ni el relevo por `error`
+  // ni el plazo la tocaban: la nota entraba a la franja de arriba con un
+  // cartel de marca del tamaño de una foto. Tres notas, el mismo archivo.
+  { url: 'https://sa.test/nvda-thesis', titular: 'Nvidia: still a buy after the Q3 print',
+    fuente_id: 'seekingalpha', fuente_nombre: 'Seeking Alpha', tipo: 'medio', idioma: 'en', seccion: 'acciones',
+    publicado_en: hace(1), imagen: '/logo-sa.gif?v=3', imagen_via: 'og:image', tickers: ['NVDA'], fuente_dato: null },
+  { url: 'https://sa.test/amd-margin', titular: 'AMD margins: the bear case nobody prices',
+    fuente_id: 'seekingalpha', fuente_nombre: 'Seeking Alpha', tipo: 'medio', idioma: 'en', seccion: 'acciones',
+    publicado_en: hace(8), imagen: '/logo-sa.gif?v=7', imagen_via: 'og:image', tickers: ['AMD'], fuente_dato: null },
+  { url: 'https://sa.test/spy-outlook', titular: 'SPY outlook into year end',
+    fuente_id: 'seekingalpha', fuente_nombre: 'Seeking Alpha', tipo: 'medio', idioma: 'en', seccion: 'mercado',
+    publicado_en: hace(11), imagen: '/logo-sa.gif', imagen_via: 'og:image', tickers: [], fuente_dato: null },
   { url: 'https://medio.test/amd', titular: 'AMD <$100 es compra > 2027, dice la casa',
     fuente_id: 'marketwatch', fuente_nombre: 'MarketWatch', tipo: 'medio', idioma: 'en', seccion: 'mercado',
     publicado_en: hace(2), imagen: null, imagen_via: null,
     tickers: ['AMD'], fuente_dato: null },
   { url: 'https://medio.test/walmex', titular: 'Walmex sube 2% tras el reporte trimestral',
     fuente_id: 'el_financiero', fuente_nombre: 'El Financiero', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
-    publicado_en: hace(55), imagen: '/foto-ok.gif', imagen_via: 'og:image',
+    publicado_en: hace(55), imagen: '/foto-elfin-walmex.gif', imagen_via: 'og:image',
     imagen_leida_en: hace(50), tickers: ['WALMEX'], fuente_dato: null },
   { url: 'https://medio.test/peso', titular: 'El peso cierra en 18.42 por dólar',
     fuente_id: 'el_financiero', fuente_nombre: 'El Financiero', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
@@ -114,6 +145,7 @@ const NOTAS = [
 ];
 
 const GO = [
+  { id: 'seekingalpha', nombre: 'Seeking Alpha', idioma: 'en', tipo: 'medio', seccion: 'acciones' },
   { id: 'valor_br', nombre: 'Valor BR', idioma: 'pt', tipo: 'medio', seccion: 'mexico_latam' },
   { id: 'infobae', nombre: 'Infobae', idioma: 'es', tipo: 'medio', seccion: 'mexico_latam' },
   { id: 'reuters', nombre: 'Reuters', idioma: 'en', tipo: 'medio', seccion: 'mercado' },
@@ -127,6 +159,7 @@ const GO = [
   { id: 'sec_8k', nombre: 'SEC EDGAR 8-K', idioma: 'en', tipo: 'oficial', seccion: 'oficiales' },
 ];
 const CORRIDAS = [
+  { fuente_id: 'seekingalpha', ok: true, motivo: null, guardadas: 3, ultima_corrida: hace(20) },
   { fuente_id: 'valor_br', ok: true, motivo: null, guardadas: 12, ultima_corrida: hace(5) },
   { fuente_id: 'infobae', ok: true, motivo: null, guardadas: 2, ultima_corrida: hace(5) },
   { fuente_id: 'reuters', ok: true, motivo: null, guardadas: 3, ultima_corrida: hace(5) },
@@ -170,7 +203,17 @@ const server = createServer(async (req, res) => {
     conVolumen = url.searchParams.get('v') === '1';
     res.writeHead(200); return res.end('ok');
   }
-  if (url.pathname === '/foto-ok.gif') {
+  // Cualquier `/foto-*.gif` que no sea la rota ni la lenta es una foto buena.
+  // Son rutas DISTINTAS por nota a propósito: una foto de verdad es de su
+  // nota y no se repite. La que se repite es el logo, y para eso está
+  // `/logo-*.gif` más abajo.
+  if (/^\/foto-/.test(url.pathname) && !['/foto-rota.gif', '/foto-lenta.gif'].includes(url.pathname)) {
+    res.writeHead(200, { 'content-type': 'image/gif' }); return res.end(PIXEL);
+  }
+  // EL LOGO DE LA FUENTE: una sola imagen que la fuente publica en todas sus
+  // notas. Carga perfecto —por eso el relevo por `error` no la agarraba— y es
+  // justo lo que Lety vio como un bloque verde con el nombre del medio.
+  if (/^\/logo-/.test(url.pathname)) {
     res.writeHead(200, { 'content-type': 'image/gif' }); return res.end(PIXEL);
   }
   // La foto "rota": 404, como un hotlink que el medio no deja traer.
@@ -253,6 +296,74 @@ function chequeo(nombre, cond, detalle) {
   console.log(`${cond ? '  ✓' : '  ✗'} ${nombre}${detalle ? ' — ' + detalle : ''}`);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// NADA SE SALE DE LA PANTALLA, Y SI SE SALE SE DICE QUIÉN
+//
+// Había DOS comprobaciones de scroll horizontal —una a 390 y otra a 1440— y
+// las dos estaban en verde mientras Lety veía la página CORTADA a la
+// izquierda en producción: el logo, "Todo" y "ORDEN" comidos por el borde.
+//
+// El porqué: las dos medían `documentElement.scrollWidth > clientWidth`, y a
+// partir de 1000 px esta página pone `body{overflow:hidden}` para cumplir la
+// regla 8. Un desborde debajo de un `overflow:hidden` NO es scrolleable: se
+// RECORTA. `documentElement.scrollWidth` se queda igual al ancho de la
+// ventana y el check no puede ponerse rojo ni cuando sobran 200 px.
+//
+// O sea que la comprobación no medía el layout: medía el `overflow` que la
+// propia página se puso para esconder el problema.
+//
+// Lo que sí lo ve, las dos cosas:
+//   · `body.scrollWidth > body.clientWidth` — `scrollWidth` SÍ incluye el
+//     contenido recortado, así que detecta el desborde escondido;
+//   · el recorrido elemento por elemento, que además NOMBRA al culpable, que
+//     es lo que pidió Lety ("encuentra qué elemento se desborda").
+//
+// Los recorredores horizontales a propósito (`nav`, `.toggles`, `#fuentes`, y
+// `#destacadas` en el teléfono) quedan fuera: ahí el contenido más ancho que
+// la caja ES el diseño. Lo que no se perdona es que la CAJA se salga.
+// ═══════════════════════════════════════════════════════════════════════
+async function sinDesborde(pagina, ancho, etiqueta) {
+  const d = await pagina.evaluate(() => {
+    const sel = (e) => {
+      if (e.id) return '#' + e.id;
+      const c = (e.className || '').toString().trim().split(/\s+/).filter(Boolean)[0];
+      return e.tagName.toLowerCase() + (c ? '.' + c : '');
+    };
+    const recorredor = (e) => {
+      for (let p = e.parentElement; p; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX;
+        if (ox === 'auto' || ox === 'scroll') return true;
+      }
+      return false;
+    };
+    const vp = window.innerWidth;
+    const culpables = [];
+    for (const e of document.querySelectorAll('body *')) {
+      const r = e.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      if (recorredor(e)) continue;
+      if (r.left < -0.5 || r.right > vp + 0.5) {
+        culpables.push({ q: sel(e), izq: Math.round(r.left), der: Math.round(r.right) });
+      }
+    }
+    return {
+      vp,
+      // El desborde RECORTADO, el que `documentElement` no puede ver.
+      bodyDesborda: document.body.scrollWidth > document.body.clientWidth,
+      bodySW: document.body.scrollWidth,
+      bodyCW: document.body.clientWidth,
+      htmlDesborda: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      // Los diez primeros alcanzan para saber qué arreglar.
+      culpables: culpables.slice(0, 10),
+      cuantos: culpables.length,
+    };
+  });
+  chequeo(`sin scroll ni recorte horizontal a ${ancho} px${etiqueta ? ' (' + etiqueta + ')' : ''}`,
+    !d.bodyDesborda && !d.htmlDesborda && d.cuantos === 0,
+    JSON.stringify(d));
+  return d;
+}
+
 await new Promise((r) => server.listen(0, r));
 const BASE = `http://127.0.0.1:${server.address().port}`;
 
@@ -324,10 +435,7 @@ try {
   chequeo('y con la tipografía caída el titular sigue midiendo y ocupando lugar',
     tipografia.alto > 10 && tipografia.ancho > 50, JSON.stringify(tipografia));
 
-  const scroll = await p.evaluate(() => ({
-    h: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-  }));
-  chequeo('sin scroll horizontal a 390 px', !scroll.h);
+  await sinDesborde(p, 390);
 
   // ── LAS DESTACADAS ──────────────────────────────────────────────────
   // ── LAS DESTACADAS: TODAS CON FOTO, O NO ESTÁN ──────────────────────
@@ -635,9 +743,23 @@ try {
     // comprobación, no el layout.
     topes: [...document.querySelectorAll('.dest')].map((e) => Math.round(e.getBoundingClientRect().top)),
     anchoDest: Math.round(document.querySelector('.dest').getBoundingClientRect().width),
+    // Una caja que se recorre por dentro parte su primera fila contra el
+    // borde: eso es lo que Lety vio ("la primera nota sale cortada arriba").
+    conScrollInterno: [...document.querySelectorAll('main *')].filter((e) => {
+      const oy = getComputedStyle(e).overflowY;
+      return (oy === 'auto' || oy === 'scroll') && e.scrollHeight > e.clientHeight + 1;
+    }).map((e) => (e.id ? '#' + e.id : e.tagName.toLowerCase()) + ` sh=${e.scrollHeight} ch=${e.clientHeight}`),
   }));
-  chequeo('1440×1000 SIN scroll vertical (regla 8)', !caja1440.scrollV);
-  chequeo('ni horizontal', !caja1440.scrollH);
+  // ── LA REGLA 8 CEDE ACÁ, Y SE DICE ─────────────────────────────────
+  // Esta pantalla ya NO promete caber en 1440×1000: Lety pidió que la lista
+  // de Medios crezca con la página con "cargar más" (2026-10-20), y una
+  // lista paginada es más larga que la ventana por definición. La promesa
+  // que queda, y que sí se comprueba, es que nada se RECORTE: ni de lado
+  // (`sinDesborde`, los dos anchos) ni arriba (ninguna lista con scroll
+  // interno). `/mercado`, que es el tablero, sigue sin scroll.
+  chequeo('ninguna lista se recorre por dentro: la página crece (Lety, punto 4)',
+    caja1440.conScrollInterno.length === 0, JSON.stringify(caja1440.conScrollInterno));
+  await sinDesborde(d, 1440);
   // Las que SOBREVIVEN van en una fila. El número ya no es fijo: depende de
   // cuántas fotos cargaron, que es justamente lo que se quiso.
   chequeo('las destacadas que quedan van en UNA fila (misma coordenada de arriba)',
@@ -646,11 +768,32 @@ try {
   chequeo('dos columnas: la de medios y la lateral de 336 px',
     /336px/.test(caja1440.cols), caja1440.cols);
 
-  const pieVisible = await d.evaluate(() => {
+  // ── EL PIE, AHORA QUE LA PÁGINA CRECE ──────────────────────────────
+  // Antes se exigía que el pie se viera SIN recorrer, que era la regla 8.
+  // Con "cargar más" la página es más larga que la ventana a propósito, así
+  // que la promesa cambia: el pie va al FINAL del documento, después de las
+  // columnas, y se llega recorriendo. Lo que sigue prohibido es que algo se
+  // le encime, que es el defecto que Lety reportó la vez pasada.
+  const pieEsc = await d.evaluate(() => {
+    const p = document.getElementById('pie');
+    const r = p.getBoundingClientRect();
+    const cols = ['.col-medios', '.col-lado'].map((q) => {
+      const e = document.querySelector(q); if (!e) return null;
+      return { q, b: Math.round(e.getBoundingClientRect().bottom) };
+    }).filter(Boolean);
+    return { pieTop: Math.round(r.top), alto: Math.round(r.height),
+      cols, encimadas: cols.filter((c) => c.b > Math.round(r.top) + 1) };
+  });
+  chequeo('el pie va al final, después de las columnas, y nada se le encima',
+    pieEsc.alto > 0 && pieEsc.encimadas.length === 0, JSON.stringify(pieEsc));
+  await d.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await d.waitForTimeout(150);
+  const pieAlcanzable = await d.evaluate(() => {
     const r = document.getElementById('pie').getBoundingClientRect();
     return r.top < window.innerHeight && r.bottom > 0;
   });
-  chequeo('el pie se ve sin recorrer la página', pieVisible);
+  chequeo('y se llega a él recorriendo la página', pieAlcanzable);
+  await d.evaluate(() => window.scrollTo(0, 0));
 
   // ── EL PIE NO SE ENCIMA SOBRE LAS LISTAS ────────────────────────────
   // Lo que Lety vio en prod. La comprobación de arriba sólo miraba que el pie
@@ -676,25 +819,36 @@ try {
     }
     return sobre;
   });
+  // Con el volumen de producción, que es donde Lety lo vio.
+  await sinDesborde(d, 1440, 'volumen de producción');
   chequeo('el pie NO se encima sobre ninguna lista a 1440, con columnas llenas',
     encimaPie.length === 0, JSON.stringify(encimaPie));
-  // Y la lista se recorre POR DENTRO en vez de empujar la página: es la otra
-  // mitad del arreglo. Sin esto, "no se encima" se podría cumplir recortando
-  // la lista a la mitad sin forma de ver el resto.
-  const medioScroll = await d.evaluate(() => {
+  // ── LO CONTRARIO DE LO QUE DECÍA ANTES ─────────────────────────────
+  // Acá vivían dos comprobaciones que exigían lo que Lety pidió QUITAR: que
+  // `#medios` se recorriera por dentro y que lo avisara con un desvanecido.
+  // Eran correctas para la promesa vieja (1440×1000 sin scroll) y son falsas
+  // para la nueva ("que crezca normal con la página"). Se cambian por la
+  // promesa que queda: la lista se muestra ENTERA, nada recortado arriba, y
+  // la primera fila empieza donde empieza la caja.
+  const medioEntero = await d.evaluate(() => {
     const e = document.querySelector('#medios');
-    return { alto: Math.round(e.getBoundingClientRect().height), contenido: e.scrollHeight };
+    const filas = [...e.querySelectorAll('.fila')];
+    const caja = e.getBoundingClientRect();
+    const primera = filas.length ? filas[0].getBoundingClientRect() : null;
+    return {
+      filas: filas.length,
+      recortada: e.scrollHeight > e.clientHeight + 1,
+      scrollTop: e.scrollTop,
+      // La primera fila no puede empezar ARRIBA del borde de su caja: eso es
+      // exactamente "la primera nota sale cortada arriba".
+      primeraDentro: primera ? primera.top >= caja.top - 0.5 : null,
+    };
   });
-  chequeo('y la lista de medios se recorre por dentro, no empuja la página',
-    medioScroll.contenido > medioScroll.alto + 20, JSON.stringify(medioScroll));
-  // Una fila partida por la mitad contra el borde se lee como "roto" o como
-  // "el pie se encimó". El desvanecido dice que hay más y que se recorre.
-  const desvanece = await d.evaluate(() => {
-    const cs = getComputedStyle(document.querySelector('#medios'));
-    return cs.maskImage || cs.webkitMaskImage || 'none';
-  });
-  chequeo('y la lista que se recorre lo dice con un desvanecido abajo',
-    /gradient/.test(desvanece), desvanece);
+  chequeo('la lista de medios se muestra entera, sin recortarse por dentro',
+    medioEntero.filas > 0 && !medioEntero.recortada && medioEntero.scrollTop === 0,
+    JSON.stringify(medioEntero));
+  chequeo('y su primera nota NO sale cortada arriba (Lety, punto 4)',
+    medioEntero.primeraDentro === true, JSON.stringify(medioEntero));
   await d.goto(`${BASE}/__volumen?v=0`);
   await d.goto(`${BASE}/mercado/noticias`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.dest');
@@ -704,8 +858,18 @@ try {
   await d.waitForSelector('.grupo-fuente');
   const grupos = await d.evaluate(() =>
     [...document.querySelectorAll('.grupo-fuente b')].map((e) => e.textContent));
+  // El nombre que va primero depende del fixture —y cambió en cuanto Medios
+  // dejó de repetir lo que ya está arriba (punto 5 de Lety), porque las
+  // cuentas por fuente cambiaron—. Lo que se comprueba es la PROPIEDAD: que
+  // las cuentas bajen. Un nombre clavado acá mide el fixture, no el orden.
+  const cuentas = await d.evaluate(() =>
+    [...document.querySelectorAll('.grupo-fuente')].map((g) => {
+      const n = g.querySelector('.n');
+      return Number(String((n && n.textContent) || '').replace(/\D/g, '')) || 0;
+    }));
   chequeo('"Por fuente" agrupa y la que más publicó va primero',
-    grupos.length >= 2 && grupos[0] === 'Valor BR', JSON.stringify(grupos));
+    grupos.length >= 2 && cuentas.every((c, i) => i === 0 || cuentas[i - 1] >= c),
+    JSON.stringify({ grupos, cuentas }));
   // El desempate por alfabeto se fija en la prueba unitaria
   // (mercado-noticias-pagina.test.mjs), donde se puede construir un empate de
   // verdad: acá las tres fuentes tienen cuentas distintas, así que "el orden
@@ -743,6 +907,26 @@ try {
     geo.dest && geo.col && geo.dest.b <= geo.col.t, JSON.stringify({ dest: geo.dest, col: geo.col }));
   chequeo('y la zona de la revista no desborda su propia fila',
     geo.zona && geo.zona.sh <= geo.zona.h + 1, JSON.stringify(geo.zona));
+  // ── EL LOGO DEL MEDIO NO LLEGA A LA FRANJA DE ARRIBA ───────────────
+  // Lety, contra producción (2026-10-20): Valor BR salía como un bloque
+  // verde con su nombre, y Seeking Alpha igual. No era relleno nuestro: era
+  // la `og:image` de la fuente, que es su logo. En el fixture, Seeking Alpha
+  // tiene TRES notas con el mismo archivo (y distinto `?v=`, como los sellos
+  // de caché de verdad): ninguna puede aparecer arriba.
+  const arriba = await d.evaluate(() => {
+    const fuentes = (sel) => [...document.querySelectorAll(sel)]
+      .map((e) => e.getAttribute('data-fuente') || '').filter(Boolean);
+    return { portada: fuentes('#portada img.foto'), rejilla: fuentes('#destacadas img.foto') };
+  });
+  chequeo('ninguna destacada usa el logo de su fuente como foto (Lety, puntos 1 y 2)',
+    ![...arriba.portada, ...arriba.rejilla].some((f) => /Seeking Alpha/i.test(f)),
+    JSON.stringify(arriba));
+  // Y la nota NO se pierde: sigue en la lista, que es donde se lee bien.
+  const enLista = await d.evaluate(() =>
+    [...document.querySelectorAll('#medios .fila .meta b')].map((e) => e.textContent));
+  chequeo('pero su nota sigue en la lista, no se descarta',
+    enLista.some((f) => /Seeking Alpha/i.test(f)), JSON.stringify(enLista.slice(0, 12)));
+
   chequeo('la portada entra entera, sin recortarse',
     geo.portada && geo.portada.b <= geo.dest.t, JSON.stringify({ portada: geo.portada, dest: geo.dest }));
 
