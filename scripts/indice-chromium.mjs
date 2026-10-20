@@ -59,7 +59,28 @@ const SESIONES = 180;   // MENOS que 200: la media larga no se puede dibujar
 const CIERRES = Array.from({ length: SESIONES }, (_, i) => 5000 + Math.sin(i / 18) * 420 + i * 2.4);
 
 // La respuesta CRUDA de Yahoo v8, tal como la parsea `extractYahooCandles`.
+// Con `unAnio`, la serie de un AÑO DE CALENDARIO con 252 cierres: la forma
+// que devuelve Yahoo con `range=1y`. Es el caso que Lety vio salir "—" en la
+// fila "1A" (2026-10-21): 252 son exactamente un año bursátil, y la cuenta
+// pedía 253 porque entre 252 cierres hay 251 saltos.
+let unAnio = false;
+const CIERRES_ANIO = Array.from({ length: 252 }, (_, i) => 5000 + Math.sin(i / 20) * 300 + i * 1.8);
+
 function yahooChart(moneda = 'USD') {
+  if (unAnio) {
+    const paso = (365 * DIA) / (CIERRES_ANIO.length - 1);
+    return {
+      chart: { result: [{
+        meta: { currency: moneda },
+        timestamp: CIERRES_ANIO.map((_, i) => Math.round(FIN - (CIERRES_ANIO.length - 1 - i) * paso)),
+        indicators: { quote: [{
+          open: CIERRES_ANIO.map((c) => c - 6), high: CIERRES_ANIO.map((c) => c + 18),
+          low: CIERRES_ANIO.map((c) => c - 22), close: CIERRES_ANIO.slice(),
+          volume: CIERRES_ANIO.map(() => 1000),
+        }] },
+      }] },
+    };
+  }
   const ts = CIERRES.map((_, i) => FIN - (SESIONES - 1 - i) * DIA);
   return {
     chart: { result: [{
@@ -149,6 +170,7 @@ for (const campo of ['t', 'o', 'h', 'l', 'c']) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/__romper') { fallaSerie = url.searchParams.get('v') === '1'; res.writeHead(200); return res.end('ok'); }
+  if (url.pathname === '/__anio') { unAnio = url.searchParams.get('v') === '1'; res.writeHead(200); return res.end('ok'); }
 
   if (url.pathname === '/api/mercado-indice') {
     pedidos++;
@@ -325,8 +347,36 @@ try {
   chequeo('5A sale como "—" porque la serie no llega, no desaparece',
     cincoA && cincoA.a.startsWith('—'), JSON.stringify(cincoA));
   chequeo('y el "—" lleva su causa en el title (regla 2)',
-    tabla.titulos.some((t) => /sesiones|cierre|punto/.test(t)),
+    tabla.titulos.some((t) => /sesiones|cierre|punto|días/.test(t)),
     tabla.titulos.filter(Boolean).slice(0, 2).join(' | '));
+
+  // ── "1A" CON UN AÑO DE DATOS DA UN NÚMERO ───────────────────────────
+  // Lety, 2026-10-21: *"1A sale — con 252 sesiones."* 252 son exactamente un
+  // año bursátil. Acá se sirve la serie tal como la devuelve Yahoo con
+  // `range=1y`: 252 cierres repartidos en 365 días de calendario.
+  await p.goto(`${BASE}/__anio?v=1`);
+  await p.goto(`${BASE}/mercado/indice/SPX`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#tabla-rend tbody tr');
+  const conAnio = await p.evaluate(() => {
+    const fila = (per) => {
+      const tr = [...document.querySelectorAll('#tabla-rend tbody tr')]
+        .find((x) => x.children[0].textContent.trim() === per);
+      return tr ? tr.children[1].textContent.trim() : null;
+    };
+    return { sesiones: document.getElementById('rend-nota').textContent,
+             unA: fila('1A'), seisM: fila('6M'), tresM: fila('3M'), tresA: fila('3A') };
+  });
+  chequeo('con un año de calendario y 252 cierres, "1A" da un número',
+    /\d/.test(conAnio.unA || '') && !String(conAnio.unA).startsWith('—'),
+    JSON.stringify(conAnio));
+  chequeo('y 3M y 6M también, que se medían igual de corto',
+    /\d/.test(conAnio.tresM || '') && /\d/.test(conAnio.seisM || ''),
+    JSON.stringify({ tresM: conAnio.tresM, seisM: conAnio.seisM }));
+  chequeo('pero "3A" sigue en "—": un año no son tres',
+    String(conAnio.tresA).startsWith('—'), String(conAnio.tresA));
+  await p.goto(`${BASE}/__anio?v=0`);
+  await p.goto(`${BASE}/mercado/indice/SPX`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#tabla-rend tbody tr');
   // Cada % lleva su etiqueta de periodo: `qdPctTag` lanza si falta, así que
   // esto además prueba que ninguno se pintó por fuera del pintor de la regla 1.
   const etiquetas = await p.evaluate(() =>

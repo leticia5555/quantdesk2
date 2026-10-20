@@ -18,9 +18,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 import {
   INDICES, indiceDe, mediaMovil, ultimaMedia, rango52, volatilidad,
-  contraMedia, pesosPorCapitalizacion, periodosDisponibles, PERIODOS_FICHA, serieConvertida,
+  contraMedia, pesosPorCapitalizacion, PERIODOS_FICHA, serieConvertida,
 } from '../api/_lib/mercado-indice.js';
 
 const serieDe = (cs) => cs.map((c, i) => ({ t: 1000 + i * 86400, c }));
@@ -182,24 +187,29 @@ test('"+N más = X%" sale del resto, no de una resta a ojo', () => {
 });
 
 // ── PERIODOS ─────────────────────────────────────────────────────────
-test('la tabla declara los NUEVE periodos y dice cuáles no alcanza', () => {
-  const unAnio = serieDe(Array.from({ length: 252 }, (_, i) => 100 + i));
-  const p = periodosDisponibles(unAnio);
-  assert.equal(p.length, PERIODOS_FICHA.length);
-  const sin = p.filter((x) => !x.alcanza).map((x) => x.periodo);
-  // Con un año exacto: 1A sí, 3A y 5A no.
-  assert.deepEqual(sin, ['3A', '5A']);
-  const tresA = p.find((x) => x.periodo === '3A');
-  assert.match(tresA.motivo, /252 sesiones y 3A necesita 756/, tresA.motivo);
-});
-
-test('la fila que no alcanza NO se esconde: viaja con su causa', () => {
-  // Una tabla a la que le faltan filas sin decirlo se lee como si esos
-  // periodos no importaran.
-  const corta = serieDe([100, 101, 102]);
-  const p = periodosDisponibles(corta);
-  assert.equal(p.length, 9, 'las nueve filas siguen ahí');
-  assert.ok(p.every((x) => x.alcanza || x.motivo), 'cada una que no alcanza dice por qué');
+//
+// `periodosDisponibles` SE FUE. Era una tabla de sesiones mínimas que decidía
+// lo mismo que `qdPeriodChange` y no coincidía con él: decía que "1A"
+// alcanzaba con 252 cierres mientras el calculador devolvía "—" (Lety,
+// 2026-10-21). La ficha pinta lo que dice el calculador.
+//
+// Lo que sí se fija acá es que la lista de periodos de la ficha y la del
+// calculador sean la MISMA. Si alguien agrega "10A" a una sola, esto se pone
+// rojo antes de que la ficha pinte una fila que nadie sabe calcular.
+test('los nueve periodos de la ficha son los que el calculador conoce', () => {
+  const require2 = createRequire(import.meta.url);
+  const { QD_PERIODS, qdPeriodChange } = require2(join(ROOT, 'qd-periods.js'));
+  assert.equal(PERIODOS_FICHA.length, 9);
+  for (const p of PERIODOS_FICHA) {
+    assert.ok(QD_PERIODS[p], `el calculador no conoce ${p}`);
+  }
+  // Y una serie de un año contesta lo que tiene que contestar: 1A sí, 3A no.
+  // Es el caso que salía "—" con un año entero de datos.
+  const unAnio = Array.from({ length: 252 }, (_, i) => ({
+    t: Math.round(1000 + i * (365 * 86400) / 251), c: 100 + i,
+  }));
+  assert.ok(Number.isFinite(qdPeriodChange(unAnio, '1A').pct), 'un año de datos tiene que dar 1A');
+  assert.equal(qdPeriodChange(unAnio, '3A').pct, null, 'un año no son tres');
 });
 
 // ── LA SERIE EN OTRA MONEDA ──────────────────────────────────────────
