@@ -122,13 +122,30 @@ test('/mercado/noticias carga sólo scripts clásicos, y su bloque en línea com
   assert.doesNotThrow(() => new Function(enLinea[0]), 'el bloque en línea no compila');
 });
 
-test('la página de noticias usa de qd-mercados sólo lo que ese archivo exporta', () => {
-  const html = readFileSync(join(ROOT, 'noticias.html'), 'utf8');
+test('las pantallas arman el chip con la MISMA función, la de qd-mercados', () => {
+  // Lety, 2026-10-20: *"El chip de todas las páginas nuevas dice 'no se sabe
+  // de qué día es el último cierre'. Usa la misma función que el mapa."*
+  //
+  // La causa fue que el mapa tenía la composición dentro de su `pintarChip` y
+  // las pantallas nuevas llamaban a `qdEstadoMercado` en crudo. Esta prueba
+  // fija lo contrario: nadie compone el renglón a mano. Si alguien agrega una
+  // pantalla y se escribe su propio chip, esto se pone rojo.
   const require2 = createRequire(import.meta.url);
   const mercados = require2(join(ROOT, 'qd-mercados.js'));
-  for (const nombre of ['qdEstadoMercado']) {
-    assert.ok(html.includes(nombre), `la página debería usar ${nombre} para el chip`);
-    assert.equal(typeof mercados[nombre], 'function', `${nombre} no está exportado`);
+  assert.equal(typeof mercados.chipDeMercado, 'function', 'chipDeMercado no está exportado');
+  for (const pagina of ['mercado.html', 'noticias.html', 'indice.html', 'insiders.html']) {
+    const html = readFileSync(join(ROOT, pagina), 'utf8');
+    assert.ok(html.includes('chipDeMercado'), `${pagina} debería armar el chip con chipDeMercado`);
+  }
+});
+
+test('y ninguna pantalla deja en el renglón la queja por el cierre que falta', () => {
+  // La frase que se vio en producción. Puede seguir existiendo como MOTIVO
+  // (va al `title`), pero no armada a mano dentro de una página.
+  for (const pagina of ['mercado.html', 'noticias.html', 'indice.html', 'insiders.html']) {
+    const codigo = codigoDe(pagina);
+    assert.doesNotMatch(codigo, /no se sabe de qué día/,
+      `${pagina} vuelve a componer la queja a mano`);
   }
 });
 

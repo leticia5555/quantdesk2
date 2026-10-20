@@ -94,23 +94,80 @@ test('un chip de fuente filtra a esa fuente y a ninguna otra', () => {
 });
 
 // ── LAS DESTACADAS ───────────────────────────────────────────────────
-test('cuatro destacadas: primero las que SÍ traen foto', () => {
+//
+// LA REGLA ES "UNA POR FUENTE", Y SE ESCRIBIÓ DESPUÉS DEL DEFECTO.
+// La primera versión elegía las cuatro notas con foto más nuevas, y en
+// producción eso dio las cuatro tarjetas del mismo medio: Valor BR publica
+// todo con imagen, así que se llevaba la franja entera (Lety, 2026-10-20).
+// El medio que más publica no es "lo destacado".
+test('cuatro destacadas, una por fuente: primero las que SÍ traen foto', () => {
   const ns = [
-    nota({ url: 'a', imagen: null }),
-    nota({ url: 'b', imagen: 'https://i/1.jpg' }),
-    nota({ url: 'c', imagen: null }),
-    nota({ url: 'd', imagen: 'https://i/2.jpg' }),
-    nota({ url: 'e', imagen: null }),
+    nota({ url: 'a', fuente_id: 'f1', fuente_nombre: 'F1', imagen: null }),
+    nota({ url: 'b', fuente_id: 'f2', fuente_nombre: 'F2', imagen: 'https://i/1.jpg' }),
+    nota({ url: 'c', fuente_id: 'f3', fuente_nombre: 'F3', imagen: null }),
+    nota({ url: 'd', fuente_id: 'f4', fuente_nombre: 'F4', imagen: 'https://i/2.jpg' }),
+    nota({ url: 'e', fuente_id: 'f5', fuente_nombre: 'F5', imagen: null }),
   ];
   const r = destacadasDe(ns);
   assert.equal(r.destacadas.length, 4);
   assert.equal(r.con_foto, 2);
   assert.equal(r.sin_foto, 2);
   assert.ok(r.destacadas[0].imagen && r.destacadas[1].imagen, 'las dos con foto van primero');
+  assert.equal(r.fuentes_distintas, 4);
+  assert.equal(r.repetidas, 0);
+  assert.equal(r.motivo_repetidas, null);
+});
+
+test('el medio que publica TODO con foto aporta una, no las cuatro', () => {
+  // El caso de producción, exacto: un medio con cuatro notas con imagen y
+  // tres medios más con una sin imagen cada uno.
+  const ns = [
+    ...Array.from({ length: 4 }, (_, i) => nota({
+      url: 'valor' + i, fuente_id: 'valor_br', fuente_nombre: 'Valor BR',
+      imagen: 'https://valor/' + i + '.jpg', publicado_en: `2026-10-20T1${5 - i}:00:00.000Z`,
+    })),
+    nota({ url: 'x', fuente_id: 'cnbc', fuente_nombre: 'CNBC', publicado_en: '2026-10-20T11:00:00.000Z' }),
+    nota({ url: 'y', fuente_id: 'mw', fuente_nombre: 'MarketWatch', publicado_en: '2026-10-20T10:00:00.000Z' }),
+    nota({ url: 'z', fuente_id: 'fin', fuente_nombre: 'El Financiero', publicado_en: '2026-10-20T09:00:00.000Z' }),
+  ];
+  const r = destacadasDe(ns);
+  const ids = r.destacadas.map((n) => n.fuente_id);
+  assert.equal(new Set(ids).size, 4, 'cuatro fuentes distintas: ' + JSON.stringify(ids));
+  assert.equal(ids.filter((f) => f === 'valor_br').length, 1);
+  // Y la que aporta es su MÁS NUEVA: 15:00, no una de las de atrás.
+  assert.equal(r.destacadas.find((n) => n.fuente_id === 'valor_br').url, 'valor0');
+});
+
+test('de una fuente con y sin foto, la que ENCABEZA es la que trae foto', () => {
+  const r = destacadasDe([
+    nota({ url: 'nueva', fuente_id: 'f1', imagen: null, publicado_en: '2026-10-20T15:00:00.000Z' }),
+    nota({ url: 'vieja', fuente_id: 'f1', imagen: 'https://i/1.jpg', publicado_en: '2026-10-20T09:00:00.000Z' }),
+  ]);
+  // Con una sola fuente se rellena con lo que hay —dos huecos serían peor—
+  // pero la que representa a la fuente es la que tiene imagen, aunque sea
+  // más vieja: la franja de arriba es de tarjetas con foto.
+  assert.equal(r.destacadas[0].url, 'vieja');
+  assert.equal(r.fuentes_distintas, 1);
+  assert.equal(r.repetidas, 1);
+});
+
+test('con menos de cuatro fuentes se repite medio, y se DICE', () => {
+  // Dos fuentes vivas: dejar dos huecos sería peor que repetir, pero repetir
+  // en silencio haría leer "cuatro medios hablan de esto" donde hay dos.
+  const r = destacadasDe([
+    nota({ url: 'a1', fuente_id: 'f1', publicado_en: '2026-10-20T15:00:00.000Z' }),
+    nota({ url: 'a2', fuente_id: 'f1', publicado_en: '2026-10-20T14:00:00.000Z' }),
+    nota({ url: 'b1', fuente_id: 'f2', publicado_en: '2026-10-20T13:00:00.000Z' }),
+    nota({ url: 'b2', fuente_id: 'f2', publicado_en: '2026-10-20T12:00:00.000Z' }),
+  ]);
+  assert.equal(r.destacadas.length, 4);
+  assert.equal(r.fuentes_distintas, 2);
+  assert.equal(r.repetidas, 2);
+  assert.match(r.motivo_repetidas, /2 fuente/);
 });
 
 test('sin ninguna foto salen cuatro destacadas igual, y se dice por qué no hay foto', () => {
-  const r = destacadasDe(Array.from({ length: 6 }, (_, i) => nota({ url: 'n' + i })));
+  const r = destacadasDe(Array.from({ length: 6 }, (_, i) => nota({ url: 'n' + i, fuente_id: 'f' + i })));
   assert.equal(r.destacadas.length, 4);
   assert.equal(r.con_foto, 0);
   // Regla 2: el hueco dice su causa real, no "sin imagen".
@@ -118,7 +175,7 @@ test('sin ninguna foto salen cuatro destacadas igual, y se dice por qué no hay 
 });
 
 test('con menos de cuatro notas no se rellena con nada: salen las que hay', () => {
-  const r = destacadasDe([nota({ url: 'a' }), nota({ url: 'b' })]);
+  const r = destacadasDe([nota({ url: 'a', fuente_id: 'f1' }), nota({ url: 'b', fuente_id: 'f2' })]);
   assert.equal(r.destacadas.length, 2);
 });
 

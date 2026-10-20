@@ -90,15 +90,59 @@ export function filtra(notas, { seccion = 'todo', idioma = 'todo', q = '', fuent
  * pantalla pueda decir POR QUÉ un bloque no tiene imagen (regla 2).
  */
 export function destacadasDe(notas, { cuantas = 4 } = {}) {
-  const conFoto = (notas || []).filter((n) => n.imagen);
-  const sinFoto = (notas || []).filter((n) => !n.imagen);
-  const destacadas = [...conFoto.slice(0, cuantas)];
-  for (const n of sinFoto) {
-    if (destacadas.length >= cuantas) break;
-    destacadas.push(n);
+  // UNA POR FUENTE.
+  //
+  // La primera versión era `conFoto.slice(0, cuantas)`, y en producción eso
+  // dio las cuatro destacadas del MISMO medio (Valor BR, que publica todas
+  // sus notas con imagen — Lety, 2026-10-20). No era un empate casual: el
+  // medio que más publica con foto se lleva la fila entera, siempre, y la
+  // franja de arriba deja de ser "lo destacado" para ser "quién publica más".
+  //
+  // Así que se elige por FUENTE y no por nota: de cada fuente, su mejor
+  // candidata —la que trae foto si alguna la trae, y entre ésas la más
+  // nueva—, y después se ordenan esas candidatas. Las que tienen foto van
+  // primero porque la fila del artboard es de tarjetas con imagen; a igualdad,
+  // manda la hora.
+  const porRecencia = (a, b) => String(b.publicado_en || '').localeCompare(String(a.publicado_en || ''));
+  const ordenadas = [...(notas || [])].sort(porRecencia);
+
+  const mejorPorFuente = new Map();
+  for (const n of ordenadas) {
+    const k = n.fuente_id || n.fuente_nombre || 'sin_fuente';
+    const previa = mejorPorFuente.get(k);
+    // Ya ordenadas por hora, la primera que entra es la más nueva; sólo la
+    // desbanca una CON foto cuando la que estaba no la tenía.
+    if (!previa) { mejorPorFuente.set(k, n); continue; }
+    if (!previa.imagen && n.imagen) mejorPorFuente.set(k, n);
+  }
+  const candidatas = [...mejorPorFuente.values()].sort((a, b) => {
+    if (!!a.imagen !== !!b.imagen) return a.imagen ? -1 : 1;
+    return porRecencia(a, b);
+  });
+
+  const destacadas = candidatas.slice(0, cuantas);
+  const fuentes = destacadas.length;
+
+  // SI NO ALCANZAN LAS FUENTES, SE REPITE Y SE DICE.
+  // Con dos fuentes vivas no hay cuatro medios distintos que mostrar, y
+  // dejar dos huecos sería peor que repetir. Lo que no se hace es repetir
+  // en silencio: `motivo_repetidas` lo declara y la pantalla lo pinta.
+  let repetidas = 0;
+  if (destacadas.length < cuantas) {
+    const yaEstan = new Set(destacadas.map((n) => n.url));
+    for (const n of ordenadas) {
+      if (destacadas.length >= cuantas) break;
+      if (yaEstan.has(n.url)) continue;
+      destacadas.push(n); yaEstan.add(n.url); repetidas++;
+    }
   }
   return {
     destacadas,
+    fuentes_distintas: fuentes,
+    repetidas,
+    motivo_repetidas: repetidas
+      ? `sólo ${fuentes} fuente(s) con notas en la ventana: ${repetidas} de las ${cuantas} son del mismo medio que otra`
+      : null,
     con_foto: destacadas.filter((n) => n.imagen).length,
     sin_foto: destacadas.filter((n) => !n.imagen).length,
     motivo_sin_foto: 'el feed no trajo media:content ni enclosure de imagen',
@@ -172,7 +216,9 @@ export function armaPagina(notas, { seccion = 'todo', idioma = 'todo', q = '', f
     total: vistas.length,
     destacadas: dest.destacadas,
     destacadas_con_foto: dest.con_foto,
+    destacadas_fuentes: dest.fuentes_distintas,
     motivo_sin_foto: dest.motivo_sin_foto,
+    motivo_repetidas: dest.motivo_repetidas,
     medios: orden === 'fuente' ? [] : medios.slice(0, porColumna),
     medios_total: medios.length,
     medios_por_fuente: orden === 'fuente' ? porFuente(medios) : [],
