@@ -132,7 +132,7 @@ import { beat } from './_lib/heartbeat.js';
 import { crearCliente } from './_lib/edgar.js';
 import {
   urlIndiceDiario, diasHabiles, parseIndiceEdgar, form4DelIndice, coberturaDeDia,
-  ownershipDeEnvio, urlDeArchivo,
+  ownershipDeEnvio, urlDeArchivo, urlListadoTrimestre, diasPublicados,
 } from './_lib/edgar-indice.js';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -470,18 +470,59 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
   const fechas = diasHabiles(hoy.toISOString().slice(0, 10), dias);
   const resumen = [];
 
+  // ── PRIMERO: QUÉ DÍAS EXISTEN ───────────────────────────────────────
+  // Antes esto se inferÃ­a del código de respuesta de cada día, y la SEC
+  // contesta 403 —no 404— cuando el archivo no está. O sea que un feriado y
+  // un User-Agent rechazado y un proxy sin salida daban el mismo código, y el
+  // job decidía "EDGAR no publicó" para los tres (Lety, contra producción).
+  //
+  // El listado del trimestre lo dice sin ambigüedad. Se pide UNA vez por
+  // trimestre, no una por día.
+  const listados = new Map();
+  const fallosDeListado = new Map();
   for (const fecha of fechas) {
+    const url = urlListadoTrimestre(fecha);
+    if (!url || listados.has(url) || fallosDeListado.has(url)) continue;
+    try {
+      const { json } = await cli.json(url, { kind: 'daily-index-listado' });
+      listados.set(url, diasPublicados(json, { tipo: 'form' }));
+    } catch (e) {
+      // Sin listado NO se adivina: el día queda en error y se dice por qué.
+      // Inventar "no publicó" acá es justo el bug que se está arreglando.
+      fallosDeListado.set(url, String((e && e.message) || e));
+    }
+  }
+
+  for (const fecha of fechas) {
+    const urlListado = urlListadoTrimestre(fecha);
+    const publicados = listados.get(urlListado);
+    const falloListado = fallosDeListado.get(urlListado);
+
+    // ── EL DÍA NO EXISTE EN EDGAR: ESO NO ES UN ERROR ─────────────────
+    if (publicados && !publicados.has(fecha)) {
+      await sqlBatch([[
+        `insert into mercado_form4_dias (fecha, lineas_form4, enmiendas, indice_leido_en, motivo)
+         values ($1, null, null, now(), $2)
+         on conflict (fecha) do update set indice_leido_en = now(), motivo = excluded.motivo`,
+        [fecha, 'EDGAR no publicó índice ese día (no está en el listado del trimestre)'],
+      ]]);
+      resumen.push({ fecha, lineas: null, publicado: false, error: false,
+        motivo: 'EDGAR no publicó índice ese día (no está en el listado del trimestre)' });
+      continue;
+    }
+
     const url = urlIndiceDiario(fecha);
     let texto = null; let motivo = null;
-    try {
-      ({ texto } = await cli.texto(url, { kind: 'daily-index' }));
-    } catch (e) {
-      // UN 404 NO ES UN ERROR: es la respuesta. EDGAR no publica índice los
-      // días que no abre, así que la ausencia del archivo es cómo se detecta
-      // un feriado sin tener un calendario escrito a mano que se pudra solo.
-      motivo = (e && e.status === 404)
-        ? 'EDGAR no publicó índice ese día (feriado o fin de semana)'
-        : String((e && e.message) || e);
+    if (falloListado) {
+      motivo = `no se pudo leer el listado del trimestre, así que no se sabe si el día existe: ${falloListado}`;
+    } else {
+      try {
+        ({ texto } = await cli.texto(url, { kind: 'daily-index' }));
+      } catch (e) {
+        // Ya NO se traduce un código a "feriado": el listado ya dijo que el
+        // día existe, así que si la descarga falla es una falla.
+        motivo = `el listado dice que ${fecha} existe pero la descarga falló: ${String((e && e.message) || e)}`;
+      }
     }
 
     if (!texto) {
@@ -491,12 +532,36 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
          on conflict (fecha) do update set indice_leido_en = now(), motivo = excluded.motivo`,
         [fecha, motivo],
       ]]);
-      resumen.push({ fecha, lineas: null, motivo });
+      resumen.push({ fecha, lineas: null, publicado: publicados ? true : null, error: true, motivo });
       continue;
     }
 
-    const { filas } = parseIndiceEdgar(texto);
+    const { filas, descartadas } = parseIndiceEdgar(texto);
     const f4 = form4DelIndice(filas);
+
+    // ── CERO FORM 4 EN UN DÍA QUE EDGAR PUBLICÓ ES UN ERROR ───────────
+    // Lety: *"un día hábil con 0 Form 4 no debe decir «no publicó»: debe
+    // salir como error"*. Y tiene razón por una razón concreta: eso es
+    // exactamente lo que pasó. El índice traía 991 Form 4, el parser no
+    // entendía el formato de la fecha, las 991 se iban a `descartadas` —que
+    // el job ni mirabaa— y el día se guardaba con 0 como si fuera un dato.
+    //
+    // `descartadas` existía justamente para esto y se estaba tirando. Una
+    // alarma que nadie lee no es una alarma.
+    if (f4.total === 0) {
+      const porque = descartadas > 0
+        ? `el índice de ${fecha} trae ${filas.length + descartadas} documentos y el parser no entendió ${descartadas}: cambió el formato`
+        : `el índice de ${fecha} se leyó entero (${filas.length} documentos) y no trae ni un Form 4, lo que no pasa en un día hábil`;
+      await sqlBatch([[
+        `insert into mercado_form4_dias (fecha, lineas_form4, enmiendas, indice_leido_en, motivo)
+         values ($1, null, null, now(), $2)
+         on conflict (fecha) do update set lineas_form4 = null, indice_leido_en = now(), motivo = excluded.motivo`,
+        [fecha, porque],
+      ]]);
+      resumen.push({ fecha, lineas: 0, documentos: filas.length, descartadas, publicado: true, error: true, motivo: porque });
+      continue;
+    }
+
     const lotes = [[
       `insert into mercado_form4_dias (fecha, lineas_form4, enmiendas, indice_leido_en, motivo)
        values ($1, $2, $3, now(), null)
@@ -518,19 +583,22 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
       ]);
     }
     await sqlBatch(lotes);
-    resumen.push({ fecha, lineas: f4.total, enmiendas: f4.enmiendas, motivo: null });
+    resumen.push({ fecha, lineas: f4.total, enmiendas: f4.enmiendas, descartadas, publicado: true, error: false, motivo: null });
   }
 
-  // EL LATIDO DICE "EL CRON CORRIÓ", no "trajo filings". Un día sin índice
-  // —feriado— es una corrida correcta, y marcarla en rojo haría sonar la
-  // alarma cada 25 de diciembre. Lo que sí es error es que NINGÚN día se haya
-  // podido leer: ahí la fuente está caída.
-  const leidos = resumen.filter((r) => r.lineas != null).length;
-  await beat('mercado:form4-indice', leidos || !resumen.length ? 'ok' : 'error', {
-    dias: fechas.length, con_indice: leidos,
+  // EL LATIDO: un día que EDGAR no publicó es una corrida correcta y no baja
+  // el semáforo. Lo que sí lo baja es un día que SÍ existe y no se pudo leer,
+  // o que se leyó y dio cero: eso es la fuente rota o el formato cambiado, y
+  // es lo que estuvo en silencio cinco días.
+  const conError = resumen.filter((r) => r.error).length;
+  const leidos = resumen.filter((r) => r.lineas).length;
+  await beat('mercado:form4-indice', conError ? 'error' : 'ok', {
+    dias: fechas.length, con_indice: leidos, con_error: conError,
+    descartadas: resumen.reduce((a, r) => a + (r.descartadas || 0), 0),
     form4: resumen.reduce((a, r) => a + (r.lineas || 0), 0),
   }).catch(() => {});
-  return { job: 'indice', dias: fechas.length, fechas: resumen, ua: cli.ua, req_por_segundo: cli.reqPorSegundo };
+  return { job: 'indice', dias: fechas.length, con_error: conError, fechas: resumen,
+    ua: cli.ua, req_por_segundo: cli.reqPorSegundo };
 }
 
 /**

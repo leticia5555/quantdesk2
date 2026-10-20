@@ -214,11 +214,16 @@
      prod). El desvanecido es la señal de que hay más y se puede recorrer.
      Va sólo donde la lista REALMENTE se recorre: en el teléfono las listas
      crecen hacia abajo y no hay nada que desvanecer. */
-  @media (min-width:1000px){
-    .lista.scrollable,#oficiales{
-      -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent 100%);
-      mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent 100%)}
-  }
+  /* El desvanecido de abajo se fue con el scroll interno: era la señal de
+     "hay más abajo, recorré la caja", y ya no hay caja que recorrer. Una
+     lista que termina donde termina no necesita avisar nada. */
+
+  /* La sección que no tiene nada: su título con la causa al lado, y se
+     acaba. Sin borde, sin alto y sin flex-grow que le reserve lugar. */
+  .seccion-vacia{flex:none}
+  .seccion-vacia h2{margin-bottom:0}
+  .seccion-vacia h2 span{display:inline}
+  .seccion-vacia .lista{display:none}
 
   .aviso{font-family:var(--mono);font-size:11px;color:#c9a227;line-height:1.5;
     border:1px dashed #3a3222;border-radius:8px;padding:9px 11px;margin:10px 0}
@@ -253,34 +258,53 @@
        y cada lista se recorre por dentro. Es el mismo patrón que `.pantalla`
        en `mercado.html`, y por la misma razón: un alto medido nunca queda
        viejo. */
-    html,body{height:100%}
-    body{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+    /* ── LA PÁGINA CRECE, NO SE RECORTA ───────────────────────────────
+       Acá había un candado: `body{height:100dvh;overflow:hidden}` y cada
+       lista recorriéndose por dentro, para cumplir la regla 8 (1440×1000 sin
+       scroll). Lety, mirando producción (2026-10-20): *"La lista de Medios
+       no debe ser una caja con scroll interno. Debe crecer normal con la
+       página, mostrar unas 10 notas y luego «cargar más». La primera nota
+       sale cortada arriba."*
+
+       La nota cortada arriba era el candado: una caja con `overflow-y:auto`
+       recorrida un poco deja su primera fila partida contra el borde, y eso
+       no se lee como "hay más arriba", se lee como que la página está rota.
+
+       CONSECUENCIA, Y ES A PROPÓSITO: esta pantalla ya NO cabe en 1440×1000
+       sin recorrerse. La regla 8 se cumple donde la pantalla es un tablero
+       —`/mercado`, que sigue sin scroll— y acá cede, porque una lista de
+       noticias con "cargar más" es por definición más larga que la ventana.
+       Lo que NO cede es el recorte: nada se corta ni de lado ni arriba, y de
+       eso sí hay comprobación en los dos anchos. */
+    body{display:flex;flex-direction:column;min-height:100dvh}
     /* `max-content` y NO `auto` en la primera fila: cuando el contenido
        total pasa del alto de la pantalla, una fila `auto` SE ENCOGE por
        debajo de su contenido y lo que sobra se pinta encima de la fila
        siguiente — en la captura de 1440 la rejilla de destacadas aparecía
        cortada y las columnas empezaban encima. `max-content` no se encoge:
        la que cede es la fila de las columnas, que ya se recorre por dentro. */
-    main{flex:1;min-height:0;grid-template-rows:max-content minmax(0,1fr) auto;
-      overflow:hidden;padding-bottom:0;
+    main{grid-template-rows:max-content auto auto;
+      padding-bottom:0;
       /* `align-items:stretch`, y NO el `start` de la regla de arriba.
          Con `start` cada columna se mide por su CONTENIDO y se sale de su
          fila hacia abajo: con nueve notas por columna no se notaba, con las
          de producción (16 fuentes, decenas de notas) la lista de medios
          llegaba 600 px más abajo del pie y le pasaba por debajo (Lety, en
-         Chrome contra prod, 2026-10-20). Estirada, la fila manda y es
-         `#medios` el que se recorre por dentro, que es lo que se quería. */
-      align-items:stretch}
-    .col-medios,.col-lado{min-height:0;display:flex;flex-direction:column}
-    /* `flex:1` + `min-height:0` es lo que deja que el hijo se recorra en vez
-       de empujar: sin el `min-height:0` el contenido fija el alto mínimo del
-       flex item y el scroll se va a la página. */
-    .scrollable{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
-    .col-lado > div{display:flex;flex-direction:column;min-height:0}
-    .col-lado > div:first-child{flex:1 1 55%}
-    .col-lado > div:last-child{flex:1 1 45%}
-    #oficiales{flex:1;min-height:0;overflow-y:auto}
-    #mas-medios{flex:none}
+         Chrome contra prod, 2026-10-20).
+
+         Ahora que la página crece, el pie va DESPUÉS de las columnas en el
+         documento y no hay nada que encimar: la fila mide lo que miden las
+         columnas y el pie empieza abajo. Vuelve `start` para que cada
+         columna mida su contenido en vez de estirarse al alto de la otra. */
+      align-items:start}
+    .col-medios,.col-lado{display:flex;flex-direction:column}
+    /* NADA SE RECORRE POR DENTRO. Las tres listas crecen con la página, que
+       es lo que se pidió. `.scrollable` queda como clase sin efecto en vez
+       de borrarse del marcado: la pantalla la pone en `#medios` y borrarla
+       de un lado y no del otro es como se rompen estas cosas. */
+    .scrollable{overflow:visible}
+    .col-lado > div{display:flex;flex-direction:column}
+    #oficiales{overflow:visible}
     footer{grid-column:1 / -1;margin-top:8px;padding:10px 0 12px}
   }
 </style>
@@ -577,14 +601,40 @@
     return 'sin notas en las últimas ' + ((datos.filtros && datos.filtros.horas) || 72) + ' horas';
   }
 
+  /**
+   * UNA SECCIÓN VACÍA NO OCUPA EL LUGAR DE UNA LLENA.
+   *
+   * Lety, mirando producción (2026-10-20): *"Si Newsletters está vacío, que
+   * la sección no aparezca o quede en una línea, no un cuadro grande."*
+   *
+   * El cuadro grande era `.vacio`: un recuadro punteado con el motivo
+   * adentro, del mismo tamaño que una lista con notas. Al lado de dos
+   * columnas llenas se lee como un hueco, y es casi siempre lo que pasa con
+   * newsletters —publican una vez al día—.
+   *
+   * La causa NO se tira: sigue dicha, en una línea, al lado del título. Es
+   * la regla 2, que pide la causa real; nunca pidió que ocupara 120 px.
+   * `#medios` sí conserva el recuadro: ahí "no hay nada" es noticia, porque
+   * la pantalla entera es eso.
+   */
   function pintarColumna(id, notas, total, notaEl, extras){
     var el = document.getElementById(id);
     var ns = (notas || []).concat(extras || []);
     if(!ns.length){
+      var enUnaLinea = id !== 'medios';
+      if(enUnaLinea){
+        el.innerHTML = '';
+        var caja = el.parentElement;
+        if(notaEl) document.getElementById(notaEl).textContent = '· ' + motivoVacio();
+        if(caja) caja.classList.add('seccion-vacia');
+        return;
+      }
       el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>';
       if(notaEl) document.getElementById(notaEl).textContent = '';
       return;
     }
+    var caja2 = el.parentElement;
+    if(caja2) caja2.classList.remove('seccion-vacia');
     if(notaEl){
       document.getElementById(notaEl).textContent = '· ' + ns.length
         + (total > ns.length ? ' de ' + total : '');

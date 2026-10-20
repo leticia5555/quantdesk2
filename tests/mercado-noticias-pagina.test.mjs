@@ -244,13 +244,30 @@ test('el tope por columna recorta pero el total dice cuántas había: así "carg
   assert.equal(r.medios_total, 40);
 });
 
-test('las destacadas se repiten en la columna a propósito: sacarlas descuadra el conteo', () => {
+test('lo que está arriba NO se repite en Medios', () => {
+  // ESTA PRUEBA EXIGÍA LA REPETICIÓN, con el argumento de que sacarla
+  // descuadraba el conteo y hacía que "cargar más" devolviera huecos.
+  // Lety, mirando producción (2026-10-20): *"No repitas en Medios las notas
+  // que ya están en destacadas."*
+  //
+  // El argumento de los huecos era real y se resolvió donde tocaba: la lista
+  // se arma DESPUÉS de restar, así que `porColumna` cuenta notas que se van
+  // a ver y el total no incluye lo que ya está arriba.
   const ns = Array.from({ length: 6 }, (_, i) => nota({ url: 'm' + i, imagen: 'https://i/' + i }));
   const r = armaPagina(ns);
   const urls = new Set(r.medios.map((n) => n.url));
-  assert.ok(r.destacadas.every((d) => urls.has(d.url)),
-    'cada destacada sigue estando en su lista');
-  assert.equal(r.medios_total, 6);
+  // Por URL y no por cuántos elementos hay: la portada de la revista y la
+  // primera destacada son LA MISMA NOTA, así que contar las listas sumadas
+  // la contaría dos veces. `armaPagina` resta por URL, y la prueba también.
+  const arriba = new Set([r.revista.portada, ...r.revista.medianas, ...r.destacadas]
+    .filter(Boolean).map((n) => n.url));
+  assert.ok(arriba.size > 0, 'el fixture tiene que poner algo arriba o no mide nada');
+  for (const u of arriba) {
+    assert.ok(!urls.has(u), `${u} está arriba y además en Medios`);
+  }
+  // Y el total es lo que queda para la lista, no el total de la ventana: si
+  // contara lo de arriba, "cargar más (N)" prometería notas que nunca llegan.
+  assert.equal(r.medios_total, 6 - arriba.size);
 });
 
 test('un filtro que no deja nada da listas vacías, no un error', () => {
@@ -424,4 +441,93 @@ test('un sitio que no contesta se corta por tiempo y lo dice', async () => {
   });
   assert.equal(r.html, null);
   assert.match(r.motivo, /no contestó en 40 ms/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL LOGO DEL MEDIO NO ES UNA FOTO
+//
+// Lety, contra producción a 1440 (2026-10-20):
+//   · *"Valor (BR) sale como bloque verde con el nombre."*
+//   · *"Seeking Alpha usa su logo como og:image. Si la misma URL de imagen se
+//     repite en 2 o más notas de la misma fuente, es un logo y no cuenta como
+//     foto."*
+//
+// Lo primero NO era relleno nuestro: el relleno estaba borrado y los tres
+// caminos de pintado exigen `n.imagen` y emiten un `<img>`. Era la propia
+// `og:image` de Valor, que es su logo verde con su nombre encima. O sea el
+// mismo defecto que Seeking Alpha, y una sola regla los tapa a los dos.
+// ═══════════════════════════════════════════════════════════════════════
+
+import { logosDeFuente, esLogoDeFuente, conFotoReal, claveDeImagen } from '../api/_lib/noticias-pagina.js';
+
+const notaLogo = (i, fuente, imagen, extra = {}) => ({
+  url: `https://${fuente}.test/${i}`, titular: `titular ${i}`,
+  fuente_id: fuente, fuente_nombre: fuente, tipo: 'medio', idioma: 'en', seccion: 'mercado',
+  publicado_en: `2026-10-20T1${9 - (i % 10)}:00:00Z`, imagen, tickers: [], ...extra,
+});
+
+test('dos notas de la misma fuente con la misma imagen: es el logo', () => {
+  const ns = [notaLogo(1, 'sa', 'https://sa.test/logo.png'), notaLogo(2, 'sa', 'https://sa.test/logo.png')];
+  const logos = logosDeFuente(ns);
+  assert.equal(logos.size, 1);
+  assert.ok(esLogoDeFuente(ns[0], logos));
+  assert.ok(esLogoDeFuente(ns[1], logos));
+});
+
+test('UNA sola nota con esa imagen todavía no es un logo', () => {
+  // El umbral es dos, y con una sola no hay forma de saberlo: una foto que
+  // aparece una vez es exactamente lo que es una foto.
+  const ns = [notaLogo(1, 'cnbc', 'https://cnbc.test/foto.jpg')];
+  assert.equal(logosDeFuente(ns).size, 0);
+  assert.equal(conFotoReal(ns).conFoto.length, 1);
+});
+
+test('el sello de caché no disfraza al logo: la query no cuenta', () => {
+  // Los logos vienen con `?v=3` o un sello que cambia sin que cambie la
+  // imagen. Comparando con la query adentro, dos copias del MISMO logo se
+  // verían distintas y las dos entrarían a destacadas.
+  assert.equal(claveDeImagen('https://sa.test/logo.png?v=3'), 'https://sa.test/logo.png');
+  assert.equal(claveDeImagen('https://sa.test/logo.png#x'), 'https://sa.test/logo.png');
+  const ns = [notaLogo(1, 'sa', 'https://sa.test/logo.png?v=3'),
+    notaLogo(2, 'sa', 'https://sa.test/logo.png?v=7')];
+  assert.equal(logosDeFuente(ns).size, 1, 'el mismo logo con dos sellos sigue siendo uno');
+});
+
+test('la misma imagen en DOS fuentes distintas no es el logo de ninguna', () => {
+  // Dos medios que publican la misma foto de agencia (Reuters, AP) es normal
+  // y no dice nada sobre si es un logo. La cuenta es POR FUENTE.
+  const ns = [notaLogo(1, 'cnbc', 'https://agencia/foto.jpg'), notaLogo(2, 'mw', 'https://agencia/foto.jpg')];
+  assert.equal(logosDeFuente(ns).size, 0);
+  assert.equal(conFotoReal(ns).conFoto.length, 2);
+});
+
+test('la nota del logo NO se descarta: pierde la franja, no la lista', () => {
+  const ns = [notaLogo(1, 'sa', 'https://sa.test/logo.png'), notaLogo(2, 'sa', 'https://sa.test/logo.png'),
+    notaLogo(3, 'cnbc', 'https://cnbc.test/foto-real.jpg')];
+  const r = armaPagina(ns);
+  const arriba = new Set([r.revista.portada, ...r.revista.medianas, ...r.destacadas]
+    .filter(Boolean).map((n) => n.url));
+  for (const u of arriba) assert.ok(!/sa\.test/.test(u), `${u} es un logo y llegó a la franja`);
+  // Y las dos notas de Seeking Alpha siguen estando: en la lista.
+  const enLista = new Set(r.medios.map((n) => n.url));
+  assert.ok(enLista.has('https://sa.test/1') && enLista.has('https://sa.test/2'),
+    'la nota no se tira por traer el logo del medio');
+});
+
+test('el motivo dice la causa real y cuántas veces se repitió (regla 2)', () => {
+  const ns = [notaLogo(1, 'valor', 'https://valor.test/logo.png'),
+    notaLogo(2, 'valor', 'https://valor.test/logo.png'),
+    notaLogo(3, 'valor', 'https://valor.test/logo.png')];
+  const { descartadas } = conFotoReal(ns);
+  assert.equal(descartadas.length, 3);
+  assert.match(descartadas[0].motivo, /es su logo/);
+  assert.match(descartadas[0].motivo, /3 notas/, 'el número es el dato que permite verificarlo');
+});
+
+test('si TODO lo que hay con imagen es un logo, la franja no aparece y dice por qué', () => {
+  const ns = [notaLogo(1, 'sa', 'https://sa.test/logo.png'), notaLogo(2, 'sa', 'https://sa.test/logo.png')];
+  const d = destacadasDe(ns);
+  assert.deepEqual(d.destacadas, []);
+  assert.match(d.motivo_vacio, /logo de su medio/,
+    'no puede decir "ninguna trae foto": sí traen imagen, y la causa es otra');
 });

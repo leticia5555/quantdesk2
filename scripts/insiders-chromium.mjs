@@ -31,7 +31,24 @@ const OUT = (() => { const i = args.indexOf('--out'); return i >= 0 ? args[i + 1
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
 const require = createRequire(import.meta.url);
-const PW = process.env.PW_PATH || '/tmp/claude-0/-home-user-quantdesk2/978a1f3c-866a-59be-9b12-d16e6c760a3e/scratchpad/node_modules/playwright-core';
+// ── DÓNDE ESTÁ PLAYWRIGHT ───────────────────────────────────────────
+// Acá había clavada una ruta absoluta a un scratchpad con el id de UNA
+// sesión adentro. O sea que estos arneses corrían en un solo contenedor y
+// nada más: en CI, en otra máquina o en una sesión nueva tiraban
+// MODULE_NOT_FOUND antes de abrir el navegador. Y de hecho dejaron de
+// correr acá mismo cuando ese scratchpad se limpió.
+// Ahora se busca por candidatos, con `PW_PATH` ganando por si hace falta
+// apuntarlo a mano.
+const PW = (() => {
+  const candidatos = [
+    process.env.PW_PATH,
+    'playwright-core',
+    '/opt/node-tools/node_modules/playwright-core',
+    join(ROOT, 'node_modules/playwright-core'),
+  ].filter(Boolean);
+  for (const c of candidatos) { try { return require.resolve(c); } catch { /* el siguiente */ } }
+  throw new Error('no se encontró playwright-core; poné PW_PATH apuntando a su carpeta');
+})();
 const { chromium } = require(PW);
 const { form4Completo, filasDeForm4, topDeLaSemana } = await import(join(ROOT, 'api/_lib/form4.js'));
 const { FORM4_COMPLETO, FORM4_CON_NAMESPACE } = await import(join(ROOT, 'tests/fixtures/form4.mjs'));
