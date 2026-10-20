@@ -445,6 +445,11 @@
   </div>
   <button type="button" class="compartir" id="btn-compartir">Compartir imagen</button>
   <a class="ir-noticias" href="/mercado/noticias">noticias →</a>
+  <!-- R8: /mercado es la home. La terminal completa no desaparece — cambia
+       de nombre y de lugar: "Modo experto" en el menú, como pide el encargo.
+       En el celular vive abajo de los paneles, no acá: la cabecera es el
+       sitio más caro de la pantalla y el mapa tiene que caber en una. -->
+  <a class="ir-noticias" id="modo-experto" href="/app">Modo experto →</a>
 </header>
 
 <nav role="tablist" aria-label="Mercado">
@@ -1812,7 +1817,11 @@
     // En el celular los dos contenedores se apilan en este mismo orden, así
     // que la pantalla de 390 px no cambia.
     document.getElementById('p-tablas').innerHTML = html;
-    document.getElementById('p-lado').innerHTML = bloqueHoy() + bloqueSemana() + bloqueArena();
+    // R8: "Abrir la terminal completa", que el encargo pide en CADA pantalla
+    // nueva. Va al final de la columna lateral —donde sobra sitio— y no en la
+    // cabecera, que en el celular le quitaría alto al mapa.
+    document.getElementById('p-lado').innerHTML = bloqueHoy() + bloqueSemana() + bloqueArena()
+      + '<a class="ver-todas" id="abrir-terminal" href="/app">Abrir la terminal completa · Modo experto →</a>';
     el.hidden = false;
     if(!panelesPedido) cargarPaneles();
     if(!noticiasPedido) cargarNoticias();
