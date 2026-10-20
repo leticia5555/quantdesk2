@@ -94,6 +94,8 @@ export function secuenciaPublicable(ctx) {
     filas: s.rows ?? null,
     truncado: !!s.truncated,
     ms: s.ms ?? null,
+    // Tokens que la llamada agregó a la conversación (corridas nuevas).
+    ...(s.tokens != null ? { tokens: s.tokens } : {}),
     ...(s.refused ? { rechazada: s.refused } : {}),
   }));
   return {
@@ -607,7 +609,7 @@ export function ordenesSueltas(actions = [], account = null, estado = null) {
 //   · `abortadas` — una corrida que murió antes de investigar no cuenta como
 //     "decidió no usarla". Mezclarlas haría parecer desuso lo que es una falla
 //     del proveedor.
-export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector'];
+export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector', 'eventos'];
 
 export function resumenDeHerramientas(libros = []) {
   const porAgente = new Map();
