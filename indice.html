@@ -273,7 +273,45 @@
   }
 
   // ── ARITMÉTICA DE LA FICHA (espejo exacto de api/_lib/mercado-indice.js)
-  function cierreDe(p){ return p && Number.isFinite(p.close) ? p.close : (p && Number.isFinite(p.c) ? p.c : null); }
+  // ═══════════════════════════════════════════════════════════════
+  // LA FORMA DE UNA VELA SE FIJA EN LA PUERTA, UNA VEZ.
+  //
+  // Esta pantalla salió a producción sin pintar: "cargando SPX…" para
+  // siempre, la gráfica en blanco y los nueve periodos en "—", con
+  // `/api/mercado-indice?idx=SPX` contestando 200 y con velas (Lety,
+  // 2026-10-20).
+  //
+  // La causa: `/api/candles` —que es de donde sale la serie— devuelve
+  // `{t,o,h,l,c,v}`, y media pantalla leía `{time,open,high,low,close}`,
+  // que es la forma que pide Lightweight Charts. Las dos formas convivían
+  // porque el fixture de la corrida en Chromium estaba ESCRITO A MANO con
+  // la segunda: la comprobación pasaba sobre una forma que el endpoint
+  // nunca devolvió. Con la de verdad, `setData` recibía `time: undefined`,
+  // lanzaba, y `pintar()` moría en la gráfica — antes de la tabla y antes
+  // del pie. De ahí los tres síntomas a la vez.
+  //
+  // Así que la forma CANÓNICA de la pantalla es la del endpoint —`t,o,h,l,c`,
+  // en segundos— y la de la librería se arma sólo al dibujar. Se acepta
+  // `time/open/…` a la entrada porque nada cuesta, pero ya no circula.
+  function normalizaVela(v){
+    if(!v) return null;
+    var n = function(x){ return Number.isFinite(Number(x)) ? Number(x) : null; };
+    var t = n(v.t != null ? v.t : v.time);
+    var c = n(v.c != null ? v.c : v.close);
+    if(t == null || c == null) return null;
+    return { t: t, c: c,
+             o: n(v.o != null ? v.o : v.open),
+             h: n(v.h != null ? v.h : v.high),
+             l: n(v.l != null ? v.l : v.low) };
+  }
+  function normalizaVelas(vs){
+    var out = [];
+    (vs || []).forEach(function(v){ var x = normalizaVela(v); if(x) out.push(x); });
+    // Por tiempo, siempre: Lightweight Charts rechaza una serie desordenada,
+    // y `qdPeriodChange` cuenta sesiones hacia atrás desde el final.
+    return out.sort(function(a,b){ return a.t - b.t; });
+  }
+  function cierreDe(p){ return p && Number.isFinite(p.c) ? p.c : null; }
 
   function mediaMovil(serie, n){
     var out = new Array(serie.length).fill(null), suma = 0, dentro = 0;
@@ -288,7 +326,7 @@
   }
 
   function rango52(serie){
-    var pts = serie.map(function(p){ return { t:p.time || p.t, c:cierreDe(p) }; })
+    var pts = serie.map(function(p){ return { t:p.t, c:p.c }; })
       .filter(function(p){ return Number.isFinite(p.c); });
     if(!pts.length) return { max:null, min:null, motivo:'la serie no trae cierres' };
     var v = pts.slice(-252), max = v[0], min = v[0];
@@ -337,15 +375,17 @@
       motivo:'el tipo de cambio trae ' + pts.length + ' punto(s): sin dos no hay con qué convertir' };
     var out = [], desc = 0, i = 0;
     (velas || []).forEach(function(v){
-      var t = Number(v.time != null ? v.time : v.t);
+      var t = Number(v.t);
       if(!isFinite(t)){ desc++; return; }
       while(i + 1 < pts.length && pts[i+1].t <= t) i++;
       if(pts[i].t > t){ desc++; return; }
-      var k = pts[i].c, c = { time: t };
-      ['open','high','low','close'].forEach(function(campo){
-        if(isFinite(v[campo])) c[campo] = v[campo] * k;
+      var k = pts[i].c, c = { t: t };
+      ['o','h','l','c'].forEach(function(campo){
+        // `Number(null)` es 0, no NaN: un cierre ausente convertido en 0
+        // hunde la gráfica hasta el eje. Se pregunta por el finito.
+        if(Number.isFinite(v[campo])) c[campo] = v[campo] * k;
       });
-      if(!isFinite(c.close)){ desc++; return; }
+      if(!Number.isFinite(c.c)){ desc++; return; }
       out.push(c);
     });
     return { velas: out, descartadas: desc,
@@ -377,9 +417,8 @@
 
   // ── EL % DE UN PERIODO: SIEMPRE qdPeriodChange ─────────────────────
   function serieParaPeriodos(){
-    return ((datos && datos.serie && datos.serie.velas) || []).map(function(v){
-      return { t: v.time || v.t, c: cierreDe(v) };
-    }).filter(function(p){ return Number.isFinite(p.c); });
+    return ((datos && datos.serie && datos.serie.velas) || [])
+      .map(function(v){ return { t: v.t, c: v.c }; });
   }
 
   function cambioLocal(periodo){
@@ -463,13 +502,18 @@
     var ix = (datos && datos.indice) || {};
     var el = document.getElementById('chip');
     if(!ix.bolsa){ el.textContent = '—'; return; }
-    try{
-      var e = qdEstadoMercado(ix.bolsa, new Date());
-      // `e.etiqueta` ES el nombre de la bolsa, no su estado: concatenarlos
-      // daba "NYSE/Nasdaq: NYSE/Nasdaq". El estado legible es `e.texto`.
-      el.textContent = (e.nombre || ix.bolsa) + ': ' + (e.texto || (e.abierto ? 'abierto' : 'cerrado'));
-      el.className = 'chip' + (e.abierto ? ' abierto' : '');
-    }catch(err){ el.textContent = 'sin estado de mercado'; }
+    // La MISMA función que el mapa (`chipDeMercado`). Antes se pintaba el
+    // texto crudo de `estadoDeBolsa`, que con la bolsa cerrada y sin pasarle
+    // el último cierre decía "no se sabe de qué día es el último cierre" —
+    // y esta ficha SÍ sabe de qué día es: lo tiene en la última vela.
+    var velas = (datos && datos.serie && datos.serie.velas) || [];
+    var ult = velas.length ? velas[velas.length - 1] : null;
+    var cierre = ult && Number.isFinite(ult.t)
+      ? new Date(ult.t * 1000).toISOString().slice(0, 10) : null;
+    var c = chipDeMercado(ix.bolsa, { ahora: new Date(), ultimoCierre: cierre, muestra: 'la serie' });
+    el.textContent = c.chip;
+    el.title = c.motivo;
+    el.className = 'chip' + (c.abierto ? ' abierto' : '');
   }
 
   function pintarTablaRendimiento(){
@@ -610,7 +654,7 @@
     var filas = velas.filter(function(v){ return Number.isFinite(cierreDe(v)); });
     if(estado.tipo === 'velas'){
       var ok = filas.filter(function(v){
-        return Number.isFinite(v.open) && Number.isFinite(v.high) && Number.isFinite(v.low) && Number.isFinite(v.close);
+        return Number.isFinite(v.o) && Number.isFinite(v.h) && Number.isFinite(v.l) && Number.isFinite(v.c);
       });
       if(!ok.length){
         // Sin OHLC no hay velas: se dice y se pinta línea, en vez de dejar el
@@ -622,14 +666,15 @@
           upColor:'#00c97d', downColor:'#E24B4A', wickUpColor:'#00c97d', wickDownColor:'#E24B4A',
           borderVisible:false
         });
+        // Acá, y sólo acá, se traduce a la forma de la librería.
         serieChart.setData(ok.map(function(v){
-          return { time:v.time, open:v.open, high:v.high, low:v.low, close:v.close };
+          return { time:v.t, open:v.o, high:v.h, low:v.l, close:v.c };
         }));
       }
     }
     if(estado.tipo === 'linea'){
       serieChart = chart.addSeries(LightweightCharts.LineSeries, { color:'#8ab4f8', lineWidth:2 });
-      serieChart.setData(filas.map(function(v){ return { time:v.time, value:cierreDe(v) }; }));
+      serieChart.setData(filas.map(function(v){ return { time:v.t, value:v.c }; }));
     }
 
     // ── LOS OVERLAYS: SÓLO ARITMÉTICA ────────────────────────────────
@@ -642,7 +687,7 @@
       var n = par[0], color = par[1];
       var m = mediaMovil(filas, n);
       var puntos = [];
-      for(var i = 0; i < filas.length; i++) if(m[i] != null) puntos.push({ time: filas[i].time, value: m[i] });
+      for(var i = 0; i < filas.length; i++) if(m[i] != null) puntos.push({ time: filas[i].t, value: m[i] });
       if(!puntos.length){
         // NO se dibuja una media que no existe. Se dice.
         avisos.push('sin media de ' + n + ' días: la serie trae ' + filas.length + ' cierres');
@@ -679,14 +724,37 @@
   function pintar(){
     pintarIndices();
     pintarToggles();
-    pintarChip();
-    pintarTitular();
-    pintarGrafica();
-    pintarTablaRendimiento();
-    pintarDatos();
-    pintarComponentes();
-    pintarNoticias();
-    pintarPie();
+    // CADA PANEL, POR SU CUENTA.
+    //
+    // Antes era una lista de llamadas seguidas, y la ficha salió a producción
+    // congelada en "cargando SPX…": la gráfica lanzaba y se llevaba por
+    // delante a la tabla, los datos y el pie, que venían después. El síntoma
+    // —"no cargó"— apunta al endpoint, que estaba contestando perfecto.
+    //
+    // Un panel que truena es un panel que falta: se dice, en su sitio, y los
+    // otros siete se pintan. La consola sigue teniendo el error completo para
+    // quien lo busque.
+    [['chip', pintarChip, 'chip'],
+     ['titular', pintarTitular, 'nivel'],
+     ['gráfica', pintarGrafica, 'grafica'],
+     ['tabla de rendimiento', pintarTablaRendimiento, null],
+     ['datos', pintarDatos, null],
+     ['componentes', pintarComponentes, 'componentes'],
+     ['noticias', pintarNoticias, 'noticias'],
+     ['pie', pintarPie, null]].forEach(function(par){
+      try{ par[1](); }
+      catch(e){
+        if(window.console && console.error) console.error('panel "' + par[0] + '":', e);
+        var el = par[2] && document.getElementById(par[2]);
+        if(el) el.innerHTML = '<div class="aviso">no se pudo pintar ' + esc(par[0])
+          + ': ' + esc(String((e && e.message) || e)) + '</div>';
+      }
+    });
+    // El pie NUNCA se queda en "cargando": si su propio pintado falló, acá se
+    // dice. Que el pie siga diciendo "cargando" con los datos ya en la mano
+    // es la mentira más barata de esta pantalla.
+    var pie = document.getElementById('pie');
+    if(datos && /^cargando/.test(pie.textContent)) pie.textContent = 'la ficha llegó, pero no se pudo armar el pie';
   }
 
   function cargar(){
@@ -695,7 +763,11 @@
     document.getElementById('pie').textContent = 'cargando ' + estado.idx + '…';
     fetch('/api/mercado-indice?idx=' + encodeURIComponent(estado.idx) + '&rango=' + encodeURIComponent(estado.rango))
       .then(function(r){ return r.json(); })
-      .then(function(j){ datos = j; })
+      .then(function(j){
+        datos = j;
+        // LA PUERTA. Todo lo que sigue ve una sola forma de vela.
+        if(datos && datos.serie) datos.serie.velas = normalizaVelas(datos.serie.velas);
+      })
       .catch(function(e){ datos = { error: String((e && e.message) || e), indice:{ id: estado.idx } }; })
       .then(function(){ pidiendo = false; pintar(); });
   }

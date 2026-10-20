@@ -39,25 +39,112 @@ const MOMENTO = Date.parse('2026-10-20T16:30:00Z');
 const DIA = 86400;
 const FIN = Math.floor(Date.parse('2026-10-19T00:00:00Z') / 1000);
 
-// 180 sesiones con una forma reconocible: sube, cae, se recupera. Sirve para
-// que el máximo y el mínimo de 52 semanas NO sean el primero ni el último.
-const SESIONES = 180;
-const VELAS = Array.from({ length: SESIONES }, (_, i) => {
-  const t = FIN - (SESIONES - 1 - i) * DIA;
-  const base = 5000 + Math.sin(i / 18) * 420 + i * 2.4;
-  const open = base - 6;
-  const close = base;
-  return { time: t, open, high: base + 18, low: base - 22, close };
-});
+// ═══════════════════════════════════════════════════════════════════
+// EL FIXTURE SALE DEL ENDPOINT, NO DE MI MANO.
+//
+// La versión anterior escribía el JSON de `/api/mercado-indice` a mano, con
+// velas `{time, open, high, low, close}` — la forma que pide Lightweight
+// Charts. El endpoint devuelve `{t,o,h,l,c,v}`, que es lo que sale de
+// `/api/candles`. Las 38 comprobaciones pasaban contra una forma que el
+// endpoint NUNCA devolvió, y en producción la ficha se quedó en
+// "cargando SPX…" con la gráfica en blanco y los nueve periodos en "—"
+// (Lety, 2026-10-20).
+//
+// Así que acá se corre el handler DE VERDAD —el mismo archivo que Vercel
+// sirve— y lo único que se finge es la RED: Yahoo y el SIE de Banxico. Si
+// mañana alguien cambia la forma de una vela en `api/candles.js`, esta
+// corrida lo ve. Un fixture escrito a mano, por definición, no.
+// ═══════════════════════════════════════════════════════════════════
+const SESIONES = 180;   // MENOS que 200: la media larga no se puede dibujar
+const CIERRES = Array.from({ length: SESIONES }, (_, i) => 5000 + Math.sin(i / 18) * 420 + i * 2.4);
 
-const FIX = Array.from({ length: 200 }, (_, i) => ({
-  date: new Date((FIN - (199 - i) * DIA) * 1000).toISOString().slice(0, 10),
-  value: 18.2 + Math.sin(i / 25) * 0.6,
-}));
+// La respuesta CRUDA de Yahoo v8, tal como la parsea `extractYahooCandles`.
+function yahooChart(moneda = 'USD') {
+  const ts = CIERRES.map((_, i) => FIN - (SESIONES - 1 - i) * DIA);
+  return {
+    chart: { result: [{
+      meta: { currency: moneda },
+      timestamp: ts,
+      indicators: { quote: [{
+        open: CIERRES.map((c) => c - 6),
+        high: CIERRES.map((c) => c + 18),
+        low: CIERRES.map((c) => c - 22),
+        close: CIERRES.slice(),
+        volume: CIERRES.map(() => 1000),
+      }] },
+    }] },
+  };
+}
 
+// La respuesta CRUDA del SIE, con sus fechas DD/MM/AAAA y su "N/E".
+const FIX_CRUDO = {
+  bmx: { series: [{ idSerie: 'SF43718', titulo: 'Tipo de cambio FIX',
+    datos: Array.from({ length: 200 }, (_, i) => {
+      const d = new Date((FIN - (199 - i) * DIA) * 1000);
+      const [a, m, dd] = d.toISOString().slice(0, 10).split('-');
+      return { fecha: `${dd}/${m}/${a}`, dato: (18.2 + Math.sin(i / 25) * 0.6).toFixed(4) };
+    }) }] },
+};
+
+// Las noticias siguen siendo fixture: vienen de Neon y acá no hay Postgres.
+// Su forma SÍ está fijada aparte, en la prueba de contratos.
+const NOTICIAS_FIXTURE = {
+  filas: [{ url: 'https://medio.test/spx', titular: 'El S&P 500 cierra en máximos del mes',
+            fuente_id: 'cnbc', fuente_nombre: 'CNBC', publicado_en: '2026-10-20T15:00:00.000Z' }],
+  total: 1, de: 40, fuente: 'neon:mercado_noticias', motivo: null,
+};
+
+process.env.BANXICO_TOKEN = process.env.BANXICO_TOKEN || 'ficticio-para-la-corrida';
+const fetchReal = globalThis.fetch;
 let fallaSerie = false;
+globalThis.fetch = async (recurso, opciones) => {
+  const u = String((recurso && recurso.url) || recurso || '');
+  const json = (o, status = 200) => new Response(JSON.stringify(o), {
+    status, headers: { 'content-type': 'application/json' },
+  });
+  if (u.includes('query1.finance.yahoo.com/v8/finance/chart/')) {
+    // El 429 de verdad: Yahoo contestando que no. La pantalla tiene que
+    // decirlo, no quedarse en blanco.
+    if (fallaSerie) return json({ error: 'Too Many Requests' }, 429);
+    const moneda = /%5EMXX|\^MXX/.test(u) ? 'MXN' : 'USD';
+    return json(yahooChart(moneda));
+  }
+  if (u.includes('banxico.org.mx')) return json(FIX_CRUDO);
+  // Nada más sale a la red en esta corrida. Si algo lo intenta, se ve.
+  throw new Error('la corrida intentó salir a la red: ' + u);
+};
+
+const { default: mercadoIndiceHandler } = await import(join(ROOT, 'api/mercado-indice.js'));
+
+async function fichaDeVerdad(idx, rango) {
+  let code = 200; let body = null;
+  const res = {
+    setHeader() {}, getHeader() {}, status(c) { code = c; return this; },
+    json(o) { body = o; return this; }, send(o) { body = o; return this; }, end() { return this; },
+  };
+  await mercadoIndiceHandler({ method: 'GET', query: { idx, rango }, headers: {}, url: '/' }, res);
+  // Las noticias no pueden venir de Neon acá: se completan con el fixture,
+  // dicho en voz alta en vez de escondido dentro del armado.
+  if (body && (!body.noticias || !(body.noticias.filas || []).length)) body.noticias = NOTICIAS_FIXTURE;
+  return { code, body };
+}
+
+
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css' };
 let pedidos = 0;
+
+// Las velas TAL COMO LAS SIRVE EL ENDPOINT. Las comprobaciones que rehacen la
+// aritmética (volatilidad, rango de 52 semanas) miden contra esto y no contra
+// una copia local: si el endpoint recorta o reordena la serie, se ve acá.
+const VELAS = (await fichaDeVerdad('SPX')).body.serie.velas;
+if (!Array.isArray(VELAS) || VELAS.length !== SESIONES) {
+  throw new Error(`el endpoint devolvió ${(VELAS || []).length} velas y el fixture tiene ${SESIONES}`);
+}
+// Y la forma es la del productor, no la de la librería de gráficas: es el
+// defecto que costó la ficha entera.
+for (const campo of ['t', 'o', 'h', 'l', 'c']) {
+  if (!Number.isFinite(VELAS[0][campo])) throw new Error('la vela del endpoint no trae ' + campo);
+}
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -65,32 +152,10 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === '/api/mercado-indice') {
     pedidos++;
-    const id = String(url.searchParams.get('idx') || 'SPX').toUpperCase();
-    const ix = INDICES.find((i) => i.id === id);
-    res.writeHead(200, { 'content-type': 'application/json' });
-    if (!ix) return res.end(JSON.stringify({ error: 'no conozco ' + id, conocidos: INDICES.map((i) => i.id) }));
-    return res.end(JSON.stringify({
-      indice: ix,
-      serie: fallaSerie
-        ? { velas: [], motivo: 'yahoo respondió HTTP 429', fuente: null }
-        : { velas: VELAS, moneda: ix.moneda, rango: url.searchParams.get('rango') || '1y',
-            fuente: 'yahoo:v8/chart (interval=1d, range=1y)', motivo: null },
-      fix: { serie: FIX.map((p) => ({ t: Date.parse(p.date + 'T12:00:00Z') / 1000, c: p.value })),
-             valor: FIX[FIX.length - 1].value, fecha: FIX[FIX.length - 1].date,
-             fuente: 'banxico:SF43718 (FIX)', motivo: null },
-      noticias: { filas: [{ url: 'https://medio.test/spx', titular: 'El S&P 500 cierra en máximos del mes',
-                            fuente_id: 'cnbc', fuente_nombre: 'CNBC', publicado_en: '2026-10-20T15:00:00.000Z' }],
-                  total: 1, de: 40, fuente: 'neon:mercado_noticias',
-                  metodo: 'coincidencia del titular con "' + ix.nombre + '" o "' + ix.id + '"', motivo: null },
-      componentes: { componentes: [], metodo: null, fuente: null,
-                     motivo: 'la membresía verificada de este índice sale de las tenencias del ETF que lo replica ('
-                       + ix.etf + '), que hoy sólo lee el Arena. Queda pendiente de conectar: ver el PR.' },
-      sin_dato: {
-        pu_agregado: 'el P/U agregado necesita el `metric` de Finnhub por componente, y sin la lista de componentes no hay sobre qué agregarlo',
-        cap_total: 'la capitalización total del índice necesita la lista de componentes, y no la tenemos verificada',
-      },
-      generado_en: new Date(MOMENTO).toISOString(),
-    }));
+    const { code, body } = await fichaDeVerdad(
+      url.searchParams.get('idx') || 'SPX', url.searchParams.get('rango') || undefined);
+    res.writeHead(code, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(body));
   }
 
   let p = url.pathname;
@@ -158,6 +223,59 @@ try {
 
   chequeo('la ficha carga sin errores de consola', errores.length === 0, errores.slice(0, 2).join(' | '));
   chequeo('UNA sola petición para abrir (regla 7)', pedidos === 1, `fueron ${pedidos}`);
+
+  // ── LA FICHA NO SE QUEDA EN "CARGANDO" ──────────────────────────────
+  // Es el síntoma con el que salió a producción: el pie decía "cargando
+  // SPX…" para siempre porque la gráfica lanzaba y se llevaba por delante a
+  // todo lo que venía después. Mirar el pie es mirar si `pintar()` llegó al
+  // final.
+  const estadoDePintado = await p.evaluate(() => ({
+    pie: (document.getElementById('pie').textContent || '').slice(0, 40),
+    paneles_rotos: [...document.querySelectorAll('.aviso')]
+      .map((e) => e.textContent).filter((t) => /no se pudo pintar/.test(t)),
+    nivel: (document.getElementById('nivel').textContent || '').trim(),
+  }));
+  chequeo('el pie NO se queda en "cargando" con los datos en la mano',
+    !/^cargando/.test(estadoDePintado.pie), estadoDePintado.pie);
+  chequeo('ningún panel se quedó sin pintar',
+    estadoDePintado.paneles_rotos.length === 0, JSON.stringify(estadoDePintado.paneles_rotos));
+  chequeo('el nivel del índice es un número, no un guión',
+    /\d/.test(estadoDePintado.nivel), estadoDePintado.nivel);
+
+  // ── LO QUE SE VE EN PANTALLA VA SIN JERGA ───────────────────────────
+  // Lety, 2026-10-20: *"Lo que se ve en pantalla va sin jerga: el aviso de
+  // insiders dice `getcurrent` con backticks."*
+  //
+  // Lo que NO entra acá son las fuentes declaradas (`yahoo:v8/chart`,
+  // `banxico:SF43718`): eso es la procedencia que pide la regla 3, y es
+  // deliberado que se vea. Lo que se persigue es el nombre interno de un
+  // endpoint, de un campo o de un archivo del repo, y las comillas de código.
+  const jerga = await p.evaluate(() => {
+    const malas = [];
+    const PROHIBIDO = [
+      [/`/, 'comillas de código'],
+      [/\.(js|json|mjs)\b/, 'nombre de archivo'],
+      [/api\/_lib/, 'ruta del repo'],
+      [/getcurrent|companyfacts|quoteSummary|metric=all|cik_str|infotable/i, 'nombre interno de un endpoint o campo'],
+    ];
+    const paseo = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = paseo.nextNode())) {
+      const t = (n.textContent || '').trim();
+      if (!t) continue;
+      const padre = n.parentElement;
+      if (padre && (padre.tagName === 'SCRIPT' || padre.tagName === 'STYLE')) continue;
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push(por + ': ' + t.slice(0, 70));
+    }
+    // Y lo que vive en un `title`, que también se lee.
+    for (const el of document.querySelectorAll('[title]')) {
+      const t = el.getAttribute('title') || '';
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push('en un title · ' + por + ': ' + t.slice(0, 70));
+    }
+    return malas;
+  });
+  chequeo('nada de lo que se ve en pantalla trae jerga de código',
+    jerga.length === 0, JSON.stringify(jerga.slice(0, 3)));
   chequeo('sin scroll horizontal a 390 px',
     !(await p.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)));
 
@@ -246,7 +364,7 @@ try {
     porK['Máximo 52 semanas'].v);
   chequeo('la capitalización total y el P/U agregado van en "—" CON su causa',
     porK['Capitalización total'].v === '—' && /lista de componentes/.test(porK['Capitalización total'].f)
-    && porK['P/U agregado'].v === '—' && /Finnhub/.test(porK['P/U agregado'].f),
+    && porK['P/U agregado'].v === '—' && /fundamentales de cada componente/.test(porK['P/U agregado'].f),
     porK['P/U agregado'].f.slice(0, 70));
   chequeo('el ETF que lo replica y lo del SIC salen del catálogo',
     porK['ETF que lo replica'].v.includes('IVV') && /SIC/.test(porK['Se compra en México'].v),
