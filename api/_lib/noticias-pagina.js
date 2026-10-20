@@ -78,74 +78,54 @@ export function filtra(notas, { seccion = 'todo', idioma = 'todo', q = '', fuent
 }
 
 /**
- * LAS CUATRO DESTACADAS. Con foto sólo si el feed la trajo.
+ * LAS DESTACADAS: HASTA CUATRO, TODAS CON FOTO.
  *
- * El encargo prohíbe scrapear `og:image`, así que no hay forma de conseguir una
- * foto que el feed no mande. Si no hay cuatro con foto, las que faltan se
- * llenan con las más recientes SIN foto y la pantalla les pinta el bloque de
- * color con el nombre de la fuente: cuatro huecos serían peor que cuatro
- * tarjetas, y una foto traída de otra nota sería mentir sobre cuál es.
+ * El encargo de septiembre decía que la foto salía sólo si el feed la traía,
+ * y prohibía ir a buscar el `og:image`. Lety lo cambió el 2026-10-22 mirando
+ * el iPhone: la foto se lee ahora de la propia nota en la cosecha
+ * (`imagenDeLaPagina`, más abajo), y una nota sin foto YA NO es destacada.
  *
- * Devuelve `{ destacadas, con_foto, sin_foto, motivo_sin_foto }` para que la
- * pantalla pueda decir POR QUÉ un bloque no tiene imagen (regla 2).
+ * Devuelve `{ destacadas, con_foto, con_foto_total, motivo_vacio }`: lo
+ * último es lo que la pantalla dice cuando no hay ninguna (regla 2).
  */
 export function destacadasDe(notas, { cuantas = 4 } = {}) {
-  // UNA POR FUENTE.
+  // ── SÓLO ES DESTACADA LO QUE TIENE FOTO DE VERDAD ───────────────────
   //
-  // La primera versión era `conFoto.slice(0, cuantas)`, y en producción eso
-  // dio las cuatro destacadas del MISMO medio (Valor BR, que publica todas
-  // sus notas con imagen — Lety, 2026-10-20). No era un empate casual: el
-  // medio que más publica con foto se lleva la fila entera, siempre, y la
-  // franja de arriba deja de ser "lo destacado" para ser "quién publica más".
+  // Antes se completaban las cuatro con lo que hubiera y las que no traían
+  // imagen se dibujaban como un bloque de color con el nombre del medio. En
+  // el iPhone eso se ve mal (Lety, 2026-10-22), y tiene razón: un rectángulo
+  // plano al lado de tres fotos reales no se lee como "esta nota no trajo
+  // imagen", se lee como que la página está rota.
   //
-  // Así que se elige por FUENTE y no por nota: de cada fuente, su mejor
-  // candidata —la que trae foto si alguna la trae, y entre ésas la más
-  // nueva—, y después se ordenan esas candidatas. Las que tienen foto van
-  // primero porque la fila del artboard es de tarjetas con imagen; a igualdad,
-  // manda la hora.
+  // Entonces la franja de destacadas es exactamente lo que promete: notas con
+  // foto. Si hay menos de cuatro, se muestran las que haya; si no hay
+  // ninguna, la sección no aparece. Una sección vacía no es un hueco que
+  // haya que llenar: es la respuesta.
+  //
+  // UNA POR FUENTE. La primera versión era `conFoto.slice(0, cuantas)`, y en
+  // producción eso dio las cuatro del MISMO medio (Valor BR publica todo con
+  // imagen). El que más publica no es "lo destacado".
   const porRecencia = (a, b) => String(b.publicado_en || '').localeCompare(String(a.publicado_en || ''));
-  const ordenadas = [...(notas || [])].sort(porRecencia);
+  const conFoto = (notas || []).filter((n) => n && n.imagen).sort(porRecencia);
 
   const mejorPorFuente = new Map();
-  for (const n of ordenadas) {
+  for (const n of conFoto) {
     const k = n.fuente_id || n.fuente_nombre || 'sin_fuente';
-    const previa = mejorPorFuente.get(k);
-    // Ya ordenadas por hora, la primera que entra es la más nueva; sólo la
-    // desbanca una CON foto cuando la que estaba no la tenía.
-    if (!previa) { mejorPorFuente.set(k, n); continue; }
-    if (!previa.imagen && n.imagen) mejorPorFuente.set(k, n);
+    if (!mejorPorFuente.has(k)) mejorPorFuente.set(k, n);
   }
-  const candidatas = [...mejorPorFuente.values()].sort((a, b) => {
-    if (!!a.imagen !== !!b.imagen) return a.imagen ? -1 : 1;
-    return porRecencia(a, b);
-  });
+  const destacadas = [...mejorPorFuente.values()].sort(porRecencia).slice(0, cuantas);
 
-  const destacadas = candidatas.slice(0, cuantas);
-  const fuentes = destacadas.length;
-
-  // SI NO ALCANZAN LAS FUENTES, SE REPITE Y SE DICE.
-  // Con dos fuentes vivas no hay cuatro medios distintos que mostrar, y
-  // dejar dos huecos sería peor que repetir. Lo que no se hace es repetir
-  // en silencio: `motivo_repetidas` lo declara y la pantalla lo pinta.
-  let repetidas = 0;
-  if (destacadas.length < cuantas) {
-    const yaEstan = new Set(destacadas.map((n) => n.url));
-    for (const n of ordenadas) {
-      if (destacadas.length >= cuantas) break;
-      if (yaEstan.has(n.url)) continue;
-      destacadas.push(n); yaEstan.add(n.url); repetidas++;
-    }
-  }
   return {
     destacadas,
-    fuentes_distintas: fuentes,
-    repetidas,
-    motivo_repetidas: repetidas
-      ? `sólo ${fuentes} fuente(s) con notas en la ventana: ${repetidas} de las ${cuantas} son del mismo medio que otra`
-      : null,
-    con_foto: destacadas.filter((n) => n.imagen).length,
-    sin_foto: destacadas.filter((n) => !n.imagen).length,
-    motivo_sin_foto: 'el feed no trajo media:content ni enclosure de imagen',
+    fuentes_distintas: destacadas.length,
+    // Cuántas notas con foto quedaron fuera por ser de una fuente que ya
+    // estaba. Es el dato que dice si la franja se está quedando corta porque
+    // faltan fotos o porque falta variedad.
+    con_foto_total: conFoto.length,
+    con_foto: destacadas.length,
+    sin_foto: 0,
+    motivo_vacio: destacadas.length ? null
+      : 'ninguna de las notas de la ventana trae foto propia todavía',
   };
 }
 
@@ -217,8 +197,8 @@ export function armaPagina(notas, { seccion = 'todo', idioma = 'todo', q = '', f
     destacadas: dest.destacadas,
     destacadas_con_foto: dest.con_foto,
     destacadas_fuentes: dest.fuentes_distintas,
-    motivo_sin_foto: dest.motivo_sin_foto,
-    motivo_repetidas: dest.motivo_repetidas,
+    destacadas_candidatas: dest.con_foto_total,
+    motivo_destacadas: dest.motivo_vacio,
     medios: orden === 'fuente' ? [] : medios.slice(0, porColumna),
     medios_total: medios.length,
     medios_por_fuente: orden === 'fuente' ? porFuente(medios) : [],
@@ -232,4 +212,132 @@ export function armaPagina(notas, { seccion = 'todo', idioma = 'todo', q = '', f
     conteos: Object.fromEntries(SECCIONES.map((s) => [s.id,
       filtra(notas, { seccion: s.id, idioma, q, fuente }).length])),
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA FOTO DE LA NOTA — leída de la propia página del artículo
+//
+// Hasta el 2026-10-22 la foto salía sólo si el feed la traía en
+// `media:content` o `enclosure`, y las que no, se dibujaban como un bloque de
+// color con el nombre del medio. En el iPhone eso se ve mal (Lety), y tiene
+// razón: un rectángulo de color plano al lado de tres fotos reales no se lee
+// como "esta nota no trajo imagen", se lee como que la página está rota.
+//
+// Así que la foto se busca donde SIEMPRE está: en la etiqueta `og:image` de
+// la propia nota, que es la que el medio publica para que su enlace se vea
+// bien en WhatsApp o en X. Es la misma que el medio quiere que se vea.
+//
+// LO QUE ESTO NO ES: no se baja la imagen, no se guarda, no se recorta y no
+// se lee el cuerpo del artículo. Se lee la cabecera del HTML, se queda la URL
+// y se descarta el resto. Lo que se muestra sigue siendo titular, fuente y
+// hora, y el link va al sitio del medio.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Las etiquetas que publican la imagen de una nota, en orden de preferencia. */
+const PROPIEDADES_IMAGEN = [
+  'og:image:secure_url',
+  'og:image:url',
+  'og:image',
+  'twitter:image',
+  'twitter:image:src',
+];
+
+/**
+ * La URL de la imagen que la página declara, o null con su causa.
+ *
+ * Se parsea con expresiones regulares y no con un DOM entero a propósito: en
+ * una función serverless, traer un parser de HTML para leer cuatro etiquetas
+ * de la cabecera es cargar megabytes para mirar cien bytes. Lo que se busca
+ * está en `<head>` y tiene una forma muy acotada.
+ *
+ * Las trampas que cubre, todas vistas en feeds reales:
+ *   · el orden de los atributos cambia (`content` antes que `property`);
+ *   · comillas dobles, simples o ninguna;
+ *   · `name=` en vez de `property=` (Twitter lo usa así);
+ *   · rutas relativas y protocolo implícito (`//cdn.medio.com/foto.jpg`);
+ *   · entidades HTML en la URL (`&amp;` en una query).
+ */
+export function imagenDeLaPagina(html, urlNota) {
+  const texto = String(html || '');
+  if (!texto.trim()) return { url: null, via: null, motivo: 'la página llegó vacía' };
+  // Sólo la cabecera: el cuerpo de un artículo puede traer `og:image` dentro
+  // de un bloque de comentarios o de un script, y además es donde está el
+  // texto que NO queremos leer.
+  const finHead = texto.search(/<\/head>/i);
+  const cabeza = finHead > 0 ? texto.slice(0, finHead) : texto.slice(0, 200_000);
+
+  const metas = cabeza.match(/<meta\b[^>]*>/gi) || [];
+  const porPropiedad = new Map();
+  for (const m of metas) {
+    const prop = (m.match(/\b(?:property|name)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i) || [])
+      .slice(1).find(Boolean);
+    const cont = (m.match(/\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i) || [])
+      .slice(1).find(Boolean);
+    if (!prop || !cont) continue;
+    const k = prop.trim().toLowerCase();
+    if (!porPropiedad.has(k)) porPropiedad.set(k, cont.trim());
+  }
+
+  for (const prop of PROPIEDADES_IMAGEN) {
+    const crudo = porPropiedad.get(prop);
+    if (!crudo) continue;
+    const url = normalizaUrlImagen(crudo, urlNota);
+    if (url) return { url, via: prop, motivo: null };
+  }
+  return {
+    url: null, via: null,
+    motivo: porPropiedad.size
+      ? 'la nota no declara og:image ni twitter:image'
+      : 'la página no trae etiquetas meta legibles',
+  };
+}
+
+/**
+ * La URL absoluta y servible, o null.
+ *
+ * Se exige `https`: una imagen por `http` en una página servida por `https`
+ * la bloquea el navegador y la tarjeta quedaría con el hueco — que es
+ * justamente lo que se vino a quitar. Un `data:` tampoco entra: pesan y no se
+ * pueden volver a pedir.
+ */
+export function normalizaUrlImagen(crudo, urlNota) {
+  let u = String(crudo || '')
+    .replace(/&amp;/g, '&').replace(/&#38;/g, '&').replace(/&quot;/g, '"')
+    .trim();
+  if (!u || /^data:/i.test(u)) return null;
+  // Protocolo implícito: `//cdn.medio.com/foto.jpg`.
+  if (/^\/\//.test(u)) u = 'https:' + u;
+  try {
+    const abs = new URL(u, urlNota || undefined);
+    if (abs.protocol === 'http:') abs.protocol = 'https:';
+    if (abs.protocol !== 'https:') return null;
+    return abs.toString();
+  } catch { return null; }
+}
+
+/**
+ * A QUÉ NOTAS SE LES VA A PEDIR LA FOTO, y por qué a tan pocas.
+ *
+ * Leer la página de una nota es una petición al sitio del medio. Hacerlo para
+ * las 300 notas de una cosecha sería 300 peticiones a terceros por corrida
+ * —y a los mismos ocho dominios—, que es exactamente el tipo de cortesía que
+ * hace que un medio nos bloquee. Sólo se piden las que PUEDEN llegar a ser
+ * destacadas: las más nuevas, y una por fuente antes que dos de la misma.
+ *
+ * El orden es el mismo que usa `destacadasDe` para elegir, así que lo que se
+ * pide es lo que se va a mostrar y no una muestra al azar.
+ */
+export function candidatasDeFoto(filas, { cuantas = 20 } = {}) {
+  const sinFoto = (filas || []).filter((f) => f && f.url && !f.imagen);
+  const porRecencia = (a, b) => String(b.publicado_en || '').localeCompare(String(a.publicado_en || ''));
+  const ordenadas = [...sinFoto].sort(porRecencia);
+  const vistas = new Set();
+  const primeraVuelta = [];
+  const resto = [];
+  for (const f of ordenadas) {
+    const k = f.fuente_id || f.fuente_nombre || 'sin_fuente';
+    if (vistas.has(k)) { resto.push(f); continue; }
+    vistas.add(k); primeraVuelta.push(f);
+  }
+  return [...primeraVuelta, ...resto].slice(0, cuantas);
 }

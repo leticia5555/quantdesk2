@@ -75,11 +75,12 @@ const NOTAS = [
     tickers: ['NVDA'], fuente_dato: null },
   { url: 'https://medio.test/amd', titular: 'AMD <$100 es compra > 2027, dice la casa',
     fuente_id: 'marketwatch', fuente_nombre: 'MarketWatch', tipo: 'medio', idioma: 'en', seccion: 'mercado',
-    publicado_en: hace(30), imagen: '/foto-rota.gif', imagen_via: 'enclosure',
+    publicado_en: hace(2), imagen: '/foto-rota.gif', imagen_via: 'og:image',
     tickers: ['AMD'], fuente_dato: null },
   { url: 'https://medio.test/walmex', titular: 'Walmex sube 2% tras el reporte trimestral',
     fuente_id: 'el_financiero', fuente_nombre: 'El Financiero', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
-    publicado_en: hace(55), imagen: null, imagen_via: null, tickers: ['WALMEX'], fuente_dato: null },
+    publicado_en: hace(55), imagen: '/foto-ok.gif', imagen_via: 'og:image',
+    imagen_leida_en: hace(50), tickers: ['WALMEX'], fuente_dato: null },
   { url: 'https://medio.test/peso', titular: 'El peso cierra en 18.42 por dólar',
     fuente_id: 'el_financiero', fuente_nombre: 'El Financiero', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
     publicado_en: hace(90), imagen: null, imagen_via: null, tickers: [], fuente_dato: null },
@@ -175,7 +176,12 @@ const server = createServer(async (req, res) => {
     pedidosApi++;
     const q = url.searchParams;
     const antesDe = q.get('antes_de');
-    const base = conVolumen ? [...NOTAS, ...RELLENO] : NOTAS;
+    // ORDENADAS POR HORA, como las devuelve la consulta (`order by
+    // publicado_en desc`). El fixture es un arreglo escrito a mano y su orden
+    // de declaración no tiene por qué coincidir: si no se ordena acá, la
+    // pantalla recibe algo que la base nunca devolvería.
+    const base = (conVolumen ? [...NOTAS, ...RELLENO] : [...NOTAS])
+      .sort((a, b) => String(b.publicado_en).localeCompare(String(a.publicado_en)));
     const notas = errorDeLectura ? [] : base.filter((n) => !antesDe || n.publicado_en < antesDe);
     const armado = armaPagina(notas, {
       seccion: q.get('seccion') || 'todo',
@@ -312,68 +318,48 @@ try {
   chequeo('sin scroll horizontal a 390 px', !scroll.h);
 
   // ── LAS DESTACADAS ──────────────────────────────────────────────────
-  // El plazo del relevo de fotos es de 4 s: se espera a que venza antes de
-  // mirar, o la foto que cuelga se leería como "todavía cargando".
-  await p.waitForTimeout(4600);
-  const dest = await p.evaluate(() => {
-    const ds = [...document.querySelectorAll('.dest')];
-    return ds.map((d) => ({
+  // ── LAS DESTACADAS: TODAS CON FOTO, O NO ESTÁN ──────────────────────
+  //
+  // Lety, 2026-10-22, mirando el iPhone: una destacada sin foto salía como un
+  // bloque de color con el nombre del medio y se veía mal. Ahora una
+  // destacada es una nota CON FOTO, y la que no carga se QUITA.
+  //
+  // El fixture lo pone difícil a propósito: de las cuatro candidatas, una
+  // trae una foto que contesta 404 y otra una que tarda seis segundos. Las
+  // dos tarjetas tienen que desaparecer.
+  await p.waitForTimeout(5600);   // el plazo de la tarjeta es de 5 s
+  const dest = await p.evaluate(() => [...document.querySelectorAll('.dest')].map((d) => {
+    const img = d.querySelector('img.foto');
+    return {
       tit: d.querySelector('.tit').textContent,
       fuente: (d.querySelector('.meta b') || {}).textContent || null,
-      foto: !!d.querySelector('img.foto'),
-      // Alto del hueco de imagen: 0 cuando no hay NI foto NI bloque.
-      alto_media: (() => {
-        const m = d.querySelector('img.foto, .bloque');
-        return m ? Math.round(m.getBoundingClientRect().height) : 0;
-      })(),
-      bloque: d.querySelector('.bloque') ? d.querySelector('.bloque').textContent.trim() : null,
-    }));
-  });
-  chequeo('cuatro destacadas', dest.length === 4, String(dest.length));
-  chequeo('la que SÍ traía foto la muestra', dest.some((d) => d.foto));
+      href: d.getAttribute('href'),
+      tieneImg: !!img,
+      // `naturalWidth > 0` es la única prueba de que la foto se PINTÓ: un
+      // `<img>` con una URL rota existe en el DOM igual que uno bueno.
+      cargada: !!img && img.complete && img.naturalWidth > 0,
+      bloque: !!d.querySelector('.bloque'),
+    };
+  }));
 
-  // ── CUATRO MEDIOS, NO CUATRO NOTAS DEL MISMO ────────────────────────
-  // En producción las cuatro salieron de Valor BR, que publica todo con
-  // imagen: `conFoto.slice(0,4)` le daba la fila entera al medio que más
-  // publica. El fixture trae ese medio con cuatro notas con foto, primeras
-  // en la lista, para que esta comprobación se ponga roja si alguien vuelve
-  // a elegir por nota en vez de por fuente.
-  const fuentesDest = dest.map((d) => d.fuente);
-  chequeo('las cuatro destacadas son de cuatro fuentes DISTINTAS',
-    new Set(fuentesDest).size === 4, JSON.stringify(fuentesDest));
-  chequeo('y el medio que publica todo con foto aporta una, no cuatro',
-    fuentesDest.filter((f) => f === 'Valor BR').length === 1, JSON.stringify(fuentesDest));
+  // LA COMPROBACIÓN QUE PIDIÓ: ninguna tarjeta sin `<img>` cargada.
+  chequeo('ninguna destacada sin foto cargada, a 390 px',
+    dest.length > 0 && dest.every((d) => d.tieneImg && d.cargada),
+    JSON.stringify(dest.map((d) => ({ f: d.fuente, img: d.tieneImg, ok: d.cargada }))));
+  chequeo('no queda NI UN bloque de color de relleno',
+    dest.every((d) => !d.bloque), JSON.stringify(dest.map((d) => d.bloque)));
+  chequeo('la que trae una foto que contesta 404 se QUITA, no se rellena',
+    !dest.some((d) => d.fuente === 'MarketWatch'), JSON.stringify(dest.map((d) => d.fuente)));
+  chequeo('y la que trae una foto que llega tarde también',
+    !dest.some((d) => d.fuente === 'Valor BR'), JSON.stringify(dest.map((d) => d.fuente)));
+  chequeo('las que quedan son de fuentes distintas',
+    new Set(dest.map((d) => d.fuente)).size === dest.length, JSON.stringify(dest.map((d) => d.fuente)));
+  chequeo('cada tarjeta enlaza a la nota y dice su fuente',
+    dest.every((d) => /^https?:\/\//.test(d.href || '') && d.fuente),
+    JSON.stringify(dest.map((d) => ({ h: d.href, f: d.fuente }))));
   const notaDest = await p.textContent('#dest-nota');
-  chequeo('la nota declara de cuántas fuentes son', /4 fuentes distintas/.test(notaDest), notaDest);
-
-  // ── SIN FOTO NO SE RESERVA EL HUECO DE LA FOTO ──────────────────────
-  // Lo que se vio en prod: cuadros grises vacíos arriba de la página.
-  const sinFoto = dest.filter((d) => !d.foto && !d.bloque);
-  chequeo('la destacada que el feed no trajo con foto NO reserva hueco de imagen',
-    sinFoto.length > 0 && sinFoto.every((d) => d.alto_media === 0),
-    JSON.stringify(dest.map((d) => ({ f: d.fuente, foto: d.foto, h: d.alto_media }))));
-  // La foto 404 cae al bloque de color CON el nombre de la fuente: ahí el
-  // hueco YA estaba medido y dejarlo vacío haría saltar la tarjeta.
-  chequeo('la foto que contesta 404 cae al bloque con el nombre de la fuente',
-    dest.some((d) => d.bloque === 'MarketWatch'), JSON.stringify(dest.map((d) => d.bloque)));
-  chequeo('y la foto que llega tarde también cae al bloque, por plazo vencido',
-    dest.some((d) => d.bloque === 'Valor BR'), JSON.stringify(dest.map((d) => d.bloque)));
-  chequeo('ninguna destacada queda con un hueco de imagen vacío',
-    dest.every((d) => d.alto_media === 0 || d.foto || d.bloque),
-    JSON.stringify(dest.map((d) => ({ h: d.alto_media, foto: d.foto, b: d.bloque }))));
-
-  // Y la tarjeta sin foto no se estira al alto de las que la tienen: eso
-  // sería reservar el hueco de la foto por la puerta de atrás, que es como se
-  // veía en la captura aunque el elemento de imagen ya no estuviera.
-  const altos = await p.evaluate(() => [...document.querySelectorAll('.dest')].map((d) => ({
-    media: !!d.querySelector('img.foto, .bloque'),
-    alto: Math.round(d.getBoundingClientRect().height),
-  })));
-  const conMedia = altos.filter((a) => a.media).map((a) => a.alto);
-  const sinMedia = altos.filter((a) => !a.media).map((a) => a.alto);
-  chequeo('y la tarjeta sin foto es MÁS BAJA que las que sí la traen',
-    sinMedia.length > 0 && conMedia.length > 0 && Math.max(...sinMedia) < Math.min(...conMedia),
-    JSON.stringify({ conMedia, sinMedia }));
+  chequeo('la nota cuenta las que HAY en pantalla, no las que llegaron',
+    new RegExp('· ' + dest.length + ' nota').test(notaDest), `${dest.length} tarjetas · ${notaDest}`);
 
   // ── EL ARREGLO DEL ESPACIO PERDIDO, EN PANTALLA ─────────────────────
   const titulares = await p.evaluate(() =>
@@ -605,8 +591,10 @@ try {
   }));
   chequeo('1440×1000 SIN scroll vertical (regla 8)', !caja1440.scrollV);
   chequeo('ni horizontal', !caja1440.scrollH);
-  chequeo('las cuatro destacadas en UNA fila (misma coordenada de arriba)',
-    caja1440.destacadas === 4 && new Set(caja1440.topes).size === 1,
+  // Las que SOBREVIVEN van en una fila. El número ya no es fijo: depende de
+  // cuántas fotos cargaron, que es justamente lo que se quiso.
+  chequeo('las destacadas que quedan van en UNA fila (misma coordenada de arriba)',
+    caja1440.destacadas >= 1 && new Set(caja1440.topes).size === 1,
     JSON.stringify({ n: caja1440.destacadas, topes: caja1440.topes, ancho: caja1440.anchoDest }));
   chequeo('dos columnas: la de medios y la lateral de 336 px',
     /336px/.test(caja1440.cols), caja1440.cols);

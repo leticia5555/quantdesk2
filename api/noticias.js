@@ -28,7 +28,8 @@
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import REGISTRO from './_lib/news-sources.json' with { type: 'json' };
 import { filasDeFuente, dedupe, cambiosDeTasa, tickersDeFila } from './_lib/noticias.js';
-import { armaPagina, chipsDeFuente, seccionesSinFuente, SECCIONES } from './_lib/noticias-pagina.js';
+import { armaPagina, chipsDeFuente, seccionesSinFuente, SECCIONES,
+  imagenDeLaPagina, candidatasDeFoto } from './_lib/noticias-pagina.js';
 import banxicoHandler from './banxico.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import { beat } from './_lib/heartbeat.js';
@@ -58,7 +59,7 @@ export const TOPE_PAGINA = 400;
  */
 export const SQL_PAGINA = (conCursor) => `
   select url, titular, fuente_id, fuente_nombre, tipo, idioma, seccion,
-         publicado_en, imagen, imagen_via, tickers, fuente_dato
+         publicado_en, imagen, imagen_via, imagen_leida_en, tickers, fuente_dato
     from mercado_noticias
    where publicado_en >= now() - ($1 || ' hours')::interval
      ${conCursor ? 'and publicado_en < $3' : ''}
@@ -82,6 +83,18 @@ export const SCHEMA_NOTICIAS = [
      fuente_dato    text,
      visto_en       timestamptz not null default now()
    )`,
+  // ── LA FOTO LEÍDA DE LA NOTA ────────────────────────────────────
+  // `imagen_leida_en` es CUÁNDO se leyó esa URL, que es lo que la vuelve
+  // citable: una foto puede cambiar o caerse y hay que poder decir de cuándo
+  // es la que estamos enseñando.
+  //
+  // `imagen_intento_en` es la CACHÉ: marca que ya se fue a buscar. Sin ella,
+  // cada corrida volvería a pedir la página de las mismas notas viejas que no
+  // tienen og:image — 20 peticiones por corrida a los mismos medios, para
+  // nada. Con ella, una nota se intenta UNA vez.
+  `alter table mercado_noticias add column if not exists imagen_leida_en timestamptz`,
+  `alter table mercado_noticias add column if not exists imagen_intento_en timestamptz`,
+  `alter table mercado_noticias add column if not exists imagen_motivo text`,
   // Por fecha: "lo de hoy" siempre pide lo último y nada más.
   `create index if not exists mercado_noticias_fecha_idx
      on mercado_noticias (publicado_en desc)`,
@@ -199,6 +212,116 @@ async function guarda(filas) {
   return filas.length;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// LA COSECHA DE FOTOS
+//
+// Lety, 2026-10-22: en el iPhone, una destacada sin foto salía como un bloque
+// de color con el nombre del medio y se veía mal. La foto ahora se lee de la
+// propia nota (`og:image`), que es la que el medio publica para que su enlace
+// se vea bien al compartirlo.
+//
+// LOS TOPES, que no son decoración:
+//   · ~20 notas por corrida, elegidas como las elige la pantalla (una por
+//     fuente antes que dos de la misma). Pedir las 300 sería 300 peticiones a
+//     ocho dominios por corrida: así es como un medio nos bloquea;
+//   · 4 s por página y 8 s para el paso entero. El job tiene un presupuesto y
+//     las fotos son lo ÚLTIMO que se hace: si no alcanza, no se hace y la
+//     cosecha de titulares no se ve afectada;
+//   · 256 KB por página. Sólo hace falta la cabecera; un artículo entero con
+//     sus scripts pesa megabytes y nada de eso se mira;
+//   · un intento por nota, para siempre. La marca queda en la tabla aunque no
+//     haya foto: es la caché, y sin ella cada corrida repetiría las mismas
+//     peticiones fallidas.
+// ═══════════════════════════════════════════════════════════════════════
+export const FOTOS_POR_CORRIDA = 20;
+const FOTO_TIMEOUT_MS = 4000;
+const FOTO_PRESUPUESTO_MS = 8000;
+const FOTO_MAX_BYTES = 256 * 1024;
+const FOTO_A_LA_VEZ = 5;
+// Se dice quiénes somos. Un `User-Agent` de navegador fingido es mentirle al
+// medio sobre quién está pidiendo; uno propio deja que nos bloqueen si no nos
+// quieren, que es su derecho.
+export const FOTO_UA = 'QuantDeskBot/1.0 (+https://quantdesk.app; lector de og:image para enlazar la nota)';
+
+/** La cabecera de una página, acotada en tiempo y en bytes. */
+export async function cabeceraDe(url, { fetchImpl = fetch, timeoutMs = FOTO_TIMEOUT_MS } = {}) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetchImpl(url, {
+      signal: ctl.signal, redirect: 'follow',
+      headers: { 'user-agent': FOTO_UA, accept: 'text/html,application/xhtml+xml' },
+    });
+    if (!r.ok) return { html: null, motivo: `la nota respondió HTTP ${r.status}` };
+    const tipo = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
+    if (tipo && !/html|xml/i.test(tipo)) return { html: null, motivo: `la nota no devolvió HTML (${tipo.split(';')[0]})` };
+    // Se lee de a pedazos y se corta: el `<head>` viene al principio.
+    if (r.body && typeof r.body.getReader === 'function') {
+      const lector = r.body.getReader();
+      const dec = new TextDecoder();
+      let texto = ''; let bytes = 0;
+      for (;;) {
+        const { done, value } = await lector.read();
+        if (done) break;
+        bytes += value.byteLength;
+        texto += dec.decode(value, { stream: true });
+        if (bytes >= FOTO_MAX_BYTES || /<\/head>/i.test(texto)) { try { await lector.cancel(); } catch { /* ya cerrado */ } break; }
+      }
+      return { html: texto, motivo: null };
+    }
+    const texto = await r.text();
+    return { html: texto.slice(0, FOTO_MAX_BYTES), motivo: null };
+  } catch (e) {
+    return { html: null, motivo: e && e.name === 'AbortError'
+      ? `la nota no contestó en ${timeoutMs} ms` : String((e && e.message) || e) };
+  } finally { clearTimeout(t); }
+}
+
+async function cosechaFotos({ t0, fetchImpl = fetch } = {}) {
+  const candidatas = candidatasDeFoto(await sql(`
+    select url, fuente_id, publicado_en
+      from mercado_noticias
+     where imagen is null
+       and imagen_intento_en is null
+       and publicado_en >= now() - interval '48 hours'
+     order by publicado_en desc
+     limit 80`, []), { cuantas: FOTOS_POR_CORRIDA });
+  if (!candidatas.length) return { pedidas: 0, con_foto: 0, sin_foto: 0, ms: 0 };
+
+  const tF = Date.now();
+  const resultados = [];
+  for (let i = 0; i < candidatas.length; i += FOTO_A_LA_VEZ) {
+    if (Date.now() - tF > FOTO_PRESUPUESTO_MS) break;
+    const tanda = candidatas.slice(i, i + FOTO_A_LA_VEZ);
+    resultados.push(...await Promise.all(tanda.map(async (n) => {
+      const { html, motivo } = await cabeceraDe(n.url, { fetchImpl });
+      if (!html) return { url: n.url, imagen: null, via: null, motivo };
+      const img = imagenDeLaPagina(html, n.url);
+      return { url: n.url, imagen: img.url, via: img.via, motivo: img.motivo };
+    })));
+  }
+
+  // El intento se marca SIEMPRE, con foto o sin ella: es la caché.
+  await sqlBatch(resultados.map((r) => ([
+    `update mercado_noticias
+        set imagen = coalesce($2, imagen),
+            imagen_via = case when $2 is null then imagen_via else $3 end,
+            imagen_leida_en = case when $2 is null then imagen_leida_en else now() end,
+            imagen_intento_en = now(),
+            imagen_motivo = $4
+      where url = $1`,
+    [r.url, r.imagen, r.via, r.motivo],
+  ])));
+
+  return {
+    pedidas: resultados.length,
+    con_foto: resultados.filter((r) => r.imagen).length,
+    sin_foto: resultados.filter((r) => !r.imagen).length,
+    sin_pedir: candidatas.length - resultados.length,
+    ms: Date.now() - tF,
+  };
+}
+
 async function jobFeeds({ t0, max }) {
   await ensureSchema();
   const fuentes = fuentesGo().slice(0, max || undefined);
@@ -242,9 +365,18 @@ async function jobFeeds({ t0, max }) {
     leidas: todas.length, guardadas,
   }).catch(() => {});
 
+  // LAS FOTOS VAN AL FINAL, y sólo si sobró presupuesto. Los titulares son
+  // lo que la pantalla necesita para existir; la foto es lo que la hace
+  // mirable. Si hay que sacrificar una, es la foto.
+  let fotos = { pedidas: 0, sin_pedir: null, motivo: 'no alcanzó el presupuesto de la corrida' };
+  if (Date.now() - t0 < PRESUPUESTO_MS) {
+    try { fotos = await cosechaFotos({ t0 }); } catch (e) { fotos = { pedidas: 0, error: String((e && e.message) || e) }; }
+  }
+
   return {
     job: 'feeds',
     fuentes: fuentes.length,
+    fotos,
     caidas: estados.filter((e) => e.caida).map((e) => ({ id: e.id, motivo: e.motivo })),
     leidas: todas.length,
     duplicadas_url: d.duplicadas_url,
