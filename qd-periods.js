@@ -52,13 +52,19 @@ const QD_PERIODS = {
   // pantalla por la regla 1: el día que el % de 3M se calcule en un HTML,
   // habrá dos definiciones de "tres meses" y van a discrepar.
   // Las sesiones son las del año bursátil: 252 al año, 21 al mes.
-  '3M': { label: '3M', tradingDays: 63 },
-  '6M': { label: '6M', tradingDays: 126 },
-  '1A': { label: '1A', tradingDays: 252 },
-  '3A': { label: '3A', tradingDays: 756 },
-  '5A': { label: '5A', tradingDays: 1260 },
+  // Los largos se anclan POR FECHA (`meses`), no contando sesiones. Por qué,
+  // abajo en `qdAnclaMeses`.
+  '3M': { label: '3M', meses: 3 },
+  '6M': { label: '6M', meses: 6 },
+  '1A': { label: '1A', meses: 12 },
+  '3A': { label: '3A', meses: 36 },
+  '5A': { label: '5A', meses: 60 },
   'YTD': { label: 'YTD', ancla: 'ytd' },
 };
+
+// Cuántos días de calendario puede quedarse corta la serie sin que el periodo
+// se considere no cubierto. Ver `qdAnclaMeses`.
+const QD_GRACIA_DIAS = 7;
 
 // El ancla de YTD: el último cierre de un año anterior al de `ahora`.
 // Devuelve el índice, o null CON motivo — nunca un aproximado.
@@ -78,6 +84,70 @@ function qdAnclaYtd(pts, ahora) {
   };
 }
 
+/**
+ * EL ANCLA DE UN PERIODO LARGO: POR FECHA, NO CONTANDO SESIONES.
+ *
+ * "1A" salía "—" con 252 sesiones (Lety, 2026-10-21), que son exactamente un
+ * año bursátil. La cuenta pedía 253 porque `tradingDays` es la DISTANCIA en
+ * sesiones hasta el ancla y entre 252 cierres hay 251 saltos: un off-by-one.
+ *
+ * Subir el número a 251 lo habría tapado un día y lo habría dejado igual de
+ * frágil: un año de Yahoo trae 250, 252 o 253 cierres según cuántos feriados
+ * cayeron en días hábiles, y con 250 la tabla volvería a decir "—" sobre un
+ * año entero de datos.
+ *
+ * La causa de fondo es que "un año" es una distancia de CALENDARIO y se
+ * estaba midiendo en sesiones. Así que el ancla es ahora la última sesión en
+ * o antes de la misma fecha de hace N meses. Es lo que YTD ya hacía, y por lo
+ * mismo.
+ *
+ * LA GRACIA DE SIETE DÍAS, y por qué no es un número inventado: la serie de
+ * un año empieza en el primer día hábil DESPUÉS de la fecha de corte, así que
+ * casi nunca hay un cierre en o antes del ancla exacta — por un fin de semana
+ * o un feriado. Sin gracia, "1A" sobre una serie de exactamente un año diría
+ * "—" siempre. Con más de siete días la cosa cambia de naturaleza: ya no es
+ * el calendario desalineado, es que faltan datos.
+ *
+ * Cuando se usa la gracia, el número sale y la `nota` dice la distancia REAL.
+ * No es lo mismo que `motivo`: `motivo` es "no hay número"; `nota` es "hay
+ * número y esto es lo que mide". Un % con la etiqueta equivocada sigue siendo
+ * peor que un hueco, y por eso la distancia viaja.
+ */
+function qdAnclaMeses(pts, meses) {
+  const ultimo = pts[pts.length - 1];
+  if (!Number.isFinite(ultimo && ultimo.t)) {
+    return { refIdx: null, motivo: 'la serie no trae fechas: un periodo de calendario se ancla por fecha' };
+  }
+  const objetivo = new Date(ultimo.t * 1000);
+  objetivo.setUTCMonth(objetivo.getUTCMonth() - meses);
+  const tObjetivo = objetivo.getTime() / 1000;
+
+  // La ÚLTIMA sesión en o antes de la fecha objetivo.
+  for (let i = pts.length - 1; i >= 0; i--) {
+    if (Number.isFinite(pts[i].t) && pts[i].t <= tObjetivo) return { refIdx: i, motivo: null, nota: null };
+  }
+
+  // No hay ninguna: la serie empieza después. ¿Por cuánto?
+  const primero = pts[0];
+  if (!Number.isFinite(primero.t)) {
+    return { refIdx: null, motivo: 'la serie no trae fechas: un periodo de calendario se ancla por fecha' };
+  }
+  const faltanDias = Math.round((primero.t - tObjetivo) / 86400);
+  const fecha = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+  if (faltanDias <= QD_GRACIA_DIAS) {
+    const diasReales = Math.round((ultimo.t - primero.t) / 86400);
+    return {
+      refIdx: 0, motivo: null,
+      nota: `la serie empieza el ${fecha(primero.t)}: el periodo mide ${diasReales} días`,
+    };
+  }
+  return {
+    refIdx: null,
+    motivo: `la serie empieza el ${fecha(primero.t)} y el periodo necesita llegar al ${fecha(tObjetivo)}:`
+      + ` faltan ${faltanDias} días`,
+  };
+}
+
 // Única fuente de verdad del % por periodo. Ningún componente resta precios
 // ni divide por su cuenta.
 function qdPeriodChange(series, periodKey, ahora) {
@@ -85,7 +155,7 @@ function qdPeriodChange(series, periodKey, ahora) {
   if (!per) throw new Error('qdPeriodChange: periodo desconocido ' + periodKey);
   const pts = (series || []).filter((p) => p && Number.isFinite(p.c) && p.c > 0);
   const n = pts.length;
-  const out = { value: null, pct: null, periodLabel: per.label, window: pts, refIdx: 0, refValue: null, motivo: null };
+  const out = { value: null, pct: null, periodLabel: per.label, window: pts, refIdx: 0, refValue: null, motivo: null, nota: null };
   if (n < 2) {
     out.motivo = n ? 'la serie trae un solo punto: no hay contra qué comparar' : 'no hay serie para este instrumento';
     return out;
@@ -97,16 +167,23 @@ function qdPeriodChange(series, periodKey, ahora) {
     const a = qdAnclaYtd(pts, ahora);
     if (a.refIdx == null) { out.motivo = a.motivo; out.window = pts; return out; }
     refIdx = a.refIdx;
+  } else if (per.meses) {
+    // Periodo de CALENDARIO: el ancla es una fecha, no un conteo de sesiones.
+    const a = qdAnclaMeses(pts, per.meses);
+    if (a.refIdx == null) { out.motivo = a.motivo; out.window = pts; return out; }
+    refIdx = a.refIdx;
+    out.nota = a.nota || null;
   } else {
     // ── LA SERIE TIENE QUE CUBRIR EL PERIODO ─────────────────────────
     // Esto era `Math.max(0, n - 1 - tradingDays)`, y ese `max(0, …)` es un
     // NÚMERO MAL esperando a que alguien pida un periodo largo: con 180
     // sesiones y un pedido de 5A, el ancla caía en el primer punto y el
     // resultado salía etiquetado "5A" siendo el cambio de ocho meses.
-    // Nadie lo había visto porque hasta R4 los únicos periodos eran 1D, 1S y
-    // 1M, que casi siempre caben.
     //
-    // Un % con la etiqueta equivocada es peor que un "—": el "—" se nota.
+    // 1D, 1S y 1M se siguen midiendo en SESIONES y no en calendario, a
+    // propósito: son los tres del mapa, llevan meses en pantalla y cambiarles
+    // el ancla cambiaría números que ya se están leyendo. Los largos nacieron
+    // con R4 y no tienen esa deuda.
     const ref = n - 1 - per.tradingDays;
     if (ref < 0) {
       out.motivo = `la serie trae ${n} sesiones y ${per.label} necesita ${per.tradingDays + 1}`;

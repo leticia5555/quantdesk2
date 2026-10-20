@@ -219,20 +219,26 @@ export function pesosPorCapitalizacion(miembros, caps, { tope = 12 } = {}) {
  */
 export const PERIODOS_FICHA = ['1D', '1S', '1M', '3M', '6M', 'YTD', '1A', '3A', '5A'];
 
-const SESIONES_MINIMAS = { '1D': 2, '1S': 6, '1M': 22, '3M': 64, '6M': 127, YTD: 2, '1A': 252, '3A': 756, '5A': 1260 };
-
-export function periodosDisponibles(serie, periodos = PERIODOS_FICHA) {
-  const n = (serie || []).filter((p) => Number.isFinite(cierre(p))).length;
-  return periodos.map((p) => {
-    const min = SESIONES_MINIMAS[p] || 2;
-    return {
-      periodo: p,
-      alcanza: n >= min,
-      motivo: n >= min ? null
-        : `la serie trae ${n} sesiones y ${p} necesita ${min}`,
-    };
-  });
-}
+/**
+ * `periodosDisponibles` SE FUE, Y NO SE REEMPLAZA.
+ *
+ * Era una tabla propia de sesiones mínimas —`{'1A': 252, '3A': 756…}`— o sea
+ * una SEGUNDA opinión sobre la misma pregunta que contesta `qdPeriodChange`.
+ * Y las dos no coincidían: ésta decía que con 252 cierres "1A" alcanzaba, y
+ * el calculador devolvía "—". La ficha pinta lo que dice el calculador, así
+ * que la discrepancia salía en pantalla (Lety, 2026-10-21).
+ *
+ * No se delega al calculador desde acá porque `qd-periods.js` es un
+ * `<script>` clásico y traerlo pediría `createRequire(import.meta.url)`, y
+ * `import.meta` está prohibido en `api/`: tumbó `/api/arena-universe` el
+ * 2026-09-15 y hay una prueba que lo vigila.
+ *
+ * Tampoco hacía falta: ni el endpoint ni la pantalla la llamaban. La pantalla
+ * ya pinta las nueve filas y deja que `qdPeriodChange` diga cuál alcanza y
+ * cuál no, que es exactamente lo que esta función intentaba adivinar por su
+ * cuenta. Dos tablas decidiendo lo mismo es el bug que este proyecto ya pagó
+ * dos veces (#241 y #245).
+ */
 
 /**
  * LA SERIE DEL ÍNDICE, EXPRESADA EN OTRA MONEDA.

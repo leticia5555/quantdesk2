@@ -55,11 +55,13 @@ const SERIE_LARGA = Array.from({ length: 300 }, (_, i) => ({
   c: 100 + i * 0.4 + (i % 11) * 1.1,
 }));
 
-test('GEMELAS: 1D, 1S, 1M y 3M dan exactamente lo mismo en las dos implementaciones', () => {
-  // Con la serie LARGA: `3M` necesita 64 cierres y la de 60 no los tiene, así
-  // que compararlos ahí no medía la paridad — medía el recorte, y desde R4
-  // `qd-periods.js` ya no recorta (ver la prueba de la divergencia, al final).
-  for (const p of ['1D', '1S', '1M', '3M']) {
+test('GEMELAS: 1D, 1S y 1M dan exactamente lo mismo en las dos implementaciones', () => {
+  // `3M` SALIÓ de esta lista el 2026-10-21. Los tres que quedan se miden en
+  // SESIONES en los dos lados y tienen que dar lo mismo al dígito; `3M` pasó
+  // a anclarse por calendario de este lado —ver la prueba de la divergencia,
+  // al final— porque un periodo de calendario medido en sesiones nunca
+  // cuadra: para "1 año" hacían falta 253 cierres y un año sólo trae ~252.
+  for (const p of ['1D', '1S', '1M']) {
     const a = APP.qdPeriodChange(SERIE_LARGA, p);
     const b = MERCADO.qdPeriodChange(SERIE_LARGA, p, AHORA);
     assert.equal(b.pct, a.pct, `${p}: pct distinto`);
@@ -191,27 +193,89 @@ test('una serie más corta que el periodo da "—" CON su causa, no el cambio en
   const serie = Array.from({ length: 180 }, (_, i) => ({ t: 1000 + i * 86400, c: 100 + i }));
   const r = MERCADO.qdPeriodChange(serie, '5A');
   assert.equal(r.pct, null, 'no puede dar un número');
-  assert.match(r.motivo, /180 sesiones y 5A necesita 1261/, r.motivo);
+  assert.match(r.motivo, /faltan \d+ días/, r.motivo);
   // Y la etiqueta sigue siendo la pedida: el "—" dice de qué periodo es.
   assert.equal(r.periodLabel, '5A');
 });
 
-test('y cuando SÍ cubre, el ancla es el punto exacto, no el primero', () => {
-  const serie = Array.from({ length: 300 }, (_, i) => ({ t: 1000 + i * 86400, c: 100 + i }));
-  const r = MERCADO.qdPeriodChange(serie, '1A');
-  // 300 puntos, 1A = 252 sesiones atrás → ancla en el índice 47.
-  assert.equal(r.refIdx, 300 - 1 - 252);
-  assert.equal(r.refValue, 100 + 47);
+// ═══════════════════════════════════════════════════════════════════════
+// "1A" CON UN AÑO DE DATOS TIENE QUE DAR UN NÚMERO
+//
+// Lety, 2026-10-21: *"1A sale — con 252 sesiones."* 252 son exactamente un
+// año bursátil. La cuenta pedía 253 porque `tradingDays` es la DISTANCIA en
+// sesiones hasta el ancla y entre 252 cierres hay 251 saltos.
+//
+// Subir el número a 251 lo habría tapado un día: un año de Yahoo trae 250,
+// 252 o 253 cierres según cuántos feriados cayeron en días hábiles, y con 250
+// la tabla volvería a decir "—" sobre un año entero de datos. La causa de
+// fondo es que "un año" es una distancia de CALENDARIO y se medía en
+// sesiones.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Una serie como la de Yahoo: cubre `dias` de calendario con `cierres`
+// puntos, que es la forma real (fines de semana y feriados fuera).
+const comoYahoo = (dias, cierres, fin = Date.parse('2026-10-19T00:00:00Z') / 1000) => {
+  const paso = (dias * 86400) / (cierres - 1);
+  return Array.from({ length: cierres }, (_, i) => ({
+    t: Math.round(fin - (cierres - 1 - i) * paso), c: 100 + i * 0.2,
+  }));
+};
+
+test('1A con un año de calendario y 252 cierres da un número, no "—"', () => {
+  const r = MERCADO.qdPeriodChange(comoYahoo(365, 252), '1A');
+  assert.ok(Number.isFinite(r.pct), 'el caso de Lety: ' + r.motivo);
+  assert.equal(r.nota, null, 'cubre el año entero: no hay nada que advertir');
 });
 
-test('los cinco periodos largos de la ficha existen, con sus sesiones del año bursátil', () => {
-  const largos = { '3M': 63, '6M': 126, '1A': 252, '3A': 756, '5A': 1260 };
-  for (const [k, dias] of Object.entries(largos)) {
-    // Con exactamente `dias + 1` puntos alcanza, y con uno menos no: es la
-    // forma de fijar el número de sesiones sin leerlo de la tabla.
-    const justo = Array.from({ length: dias + 1 }, (_, i) => ({ t: 1000 + i * 86400, c: 100 + i }));
-    assert.ok(Number.isFinite(MERCADO.qdPeriodChange(justo, k).pct), `${k} con ${dias + 1} puntos debería alcanzar`);
-    assert.equal(MERCADO.qdPeriodChange(justo.slice(1), k).pct, null, `${k} con ${dias} puntos NO debería alcanzar`);
+test('y con 250 cierres también: el año no se mide contando sesiones', () => {
+  // Un año con más feriados en día hábil trae menos cierres y sigue siendo un
+  // año. Es lo que hacía frágil al conteo.
+  assert.ok(Number.isFinite(MERCADO.qdPeriodChange(comoYahoo(365, 250), '1A').pct));
+  assert.ok(Number.isFinite(MERCADO.qdPeriodChange(comoYahoo(366, 253), '1A').pct));
+});
+
+test('si la serie se queda corta por unos días, el número sale y se DICE cuánto mide', () => {
+  // La serie de un año empieza el primer día hábil DESPUÉS del corte, así que
+  // casi nunca hay un cierre en o antes del ancla exacta. Sin gracia, "1A"
+  // sobre un año de datos diría "—" siempre.
+  const r = MERCADO.qdPeriodChange(comoYahoo(362, 250), '1A');
+  assert.ok(Number.isFinite(r.pct));
+  assert.match(r.nota, /362 días/);
+  // `nota` NO es `motivo`: motivo es "no hay número", nota es "hay número y
+  // esto es lo que mide". Confundirlos pintaría un hueco donde hay dato.
+  assert.equal(r.motivo, null);
+});
+
+test('pero una serie de diez meses NO se pinta como "1A"', () => {
+  // La protección que el guardia vino a dar sigue viva: lo que se afloja son
+  // días, no meses.
+  const r = MERCADO.qdPeriodChange(comoYahoo(300, 207), '1A');
+  assert.equal(r.pct, null);
+  assert.match(r.motivo, /faltan \d+ días/);
+  assert.match(r.motivo, /2025-10-19/, 'dice a qué fecha tenía que llegar');
+});
+
+test('el ancla es la última sesión en o antes de la fecha de hace N meses', () => {
+  const fin = Date.parse('2026-10-19T00:00:00Z') / 1000;
+  const serie = comoYahoo(500, 340, fin);
+  const r = MERCADO.qdPeriodChange(serie, '1A');
+  const anclaT = serie[r.refIdx].t;
+  const objetivo = new Date(fin * 1000);
+  objetivo.setUTCMonth(objetivo.getUTCMonth() - 12);
+  assert.ok(anclaT <= objetivo.getTime() / 1000, 'el ancla no puede ser posterior al objetivo');
+  assert.ok(serie[r.refIdx + 1].t > objetivo.getTime() / 1000, 'y tiene que ser la ÚLTIMA que cumple');
+});
+
+test('los cinco periodos largos se anclan por calendario, con sus meses', () => {
+  const largos = { '3M': 3, '6M': 6, '1A': 12, '3A': 36, '5A': 60 };
+  for (const [k, meses] of Object.entries(largos)) {
+    assert.equal(MERCADO.QD_PERIODS[k].meses, meses, `${k} son ${meses} meses`);
+    // Con el calendario justo cubierto alcanza; con la mitad, no.
+    const dias = Math.round(meses * 30.44);
+    assert.ok(Number.isFinite(MERCADO.qdPeriodChange(comoYahoo(dias + 3, 40 + meses * 2), k).pct),
+      `${k} con ${dias + 3} días debería alcanzar`);
+    assert.equal(MERCADO.qdPeriodChange(comoYahoo(Math.round(dias / 2), 40), k).pct, null,
+      `${k} con medio periodo NO debería alcanzar`);
   }
 });
 
@@ -236,10 +300,19 @@ test('LA DIVERGENCIA CON app.html, declarada y acotada', () => {
   //
   // Esta prueba se pone roja el día que alguien toque uno de los dos lados
   // sin mirar al otro, que es justo lo que hay que evitar.
-  // `3M` YA existía en app.html —con las mismas 63 sesiones, por suerte— así
-  // que lo que esta rebanada estrena son los CUATRO de arriba.
-  assert.equal(MERCADO.QD_PERIODS['3M'].tradingDays, APP.QD_PERIODS['3M'].tradingDays,
-    '3M tiene que medir lo mismo en los dos lados');
+  // `3M` existe en los dos lados y DESDE EL 2026-10-21 NO SE MIDE IGUAL:
+  // acá se ancla por calendario —tres meses son tres meses— y en app.html
+  // sigue contando 63 sesiones. Es el precio de arreglar el "1A" que salía
+  // "—" con un año entero de datos: un periodo de calendario medido en
+  // sesiones nunca cuadra, porque para "1 año" hacen falta 253 cierres y un
+  // año sólo trae ~252.
+  //
+  // La divergencia se declara acá en vez de esconderse. Portarla a app.html
+  // es una rebanada aparte: el encargo dice que app.html no se rediseña.
+  assert.equal(APP.QD_PERIODS['3M'].tradingDays, 63, 'app.html sigue contando sesiones');
+  assert.equal(MERCADO.QD_PERIODS['3M'].meses, 3, 'y acá se mide por calendario');
+  assert.equal(MERCADO.QD_PERIODS['3M'].tradingDays, undefined,
+    'si vuelve `tradingDays`, hay dos formas de medir lo mismo en el mismo archivo');
   for (const largo of ['6M', '1A', '3A', '5A']) {
     assert.ok(MERCADO.QD_PERIODS[largo], `qd-periods.js debería conocer ${largo}`);
     assert.ok(!APP.QD_PERIODS[largo], `app.html NO conoce ${largo} todavía: si ya lo conoce, actualizá esta prueba`);
