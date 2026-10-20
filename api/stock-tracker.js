@@ -722,7 +722,7 @@ async function buildForm4() {
     // (`api/_lib/form4.js`): una sola fuente de verdad por pantalla.
     scan: diag.scan || null,
     sources: diag.sources || {},
-    cobertura: 'la ventana del feed `getcurrent` de EDGAR más lo que la instancia acumuló; un arranque en frío sólo ve la ventana',
+    cobertura: 'los Form 4 que EDGAR publica en su lista de lo recién presentado, más lo que esta instancia ya había acumulado; recién arrancada sólo ve lo último',
     lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después de la operación',
     stale: false,
     generated_at: new Date().toISOString(),

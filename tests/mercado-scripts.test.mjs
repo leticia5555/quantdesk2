@@ -133,7 +133,7 @@ test('las pantallas arman el chip con la MISMA función, la de qd-mercados', () 
   const require2 = createRequire(import.meta.url);
   const mercados = require2(join(ROOT, 'qd-mercados.js'));
   assert.equal(typeof mercados.chipDeMercado, 'function', 'chipDeMercado no está exportado');
-  for (const pagina of ['mercado.html', 'noticias.html', 'indice.html']) {
+  for (const pagina of ['mercado.html', 'noticias.html', 'indice.html', 'insiders.html']) {
     const html = readFileSync(join(ROOT, pagina), 'utf8');
     assert.ok(html.includes('chipDeMercado'), `${pagina} debería armar el chip con chipDeMercado`);
   }
@@ -142,7 +142,7 @@ test('las pantallas arman el chip con la MISMA función, la de qd-mercados', () 
 test('y ninguna pantalla deja en el renglón la queja por el cierre que falta', () => {
   // La frase que se vio en producción. Puede seguir existiendo como MOTIVO
   // (va al `title`), pero no armada a mano dentro de una página.
-  for (const pagina of ['mercado.html', 'noticias.html', 'indice.html']) {
+  for (const pagina of ['mercado.html', 'noticias.html', 'indice.html', 'insiders.html']) {
     const codigo = codigoDe(pagina);
     assert.doesNotMatch(codigo, /no se sabe de qué día/,
       `${pagina} vuelve a componer la queja a mano`);
