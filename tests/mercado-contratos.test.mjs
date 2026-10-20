@@ -123,3 +123,100 @@ test('y enProceso conserva esa causa en vez de tapar con el código', async () =
   const mudo = async (req, res) => res.status(500).end();
   assert.match((await enProceso(mudo, {})).error, /HTTP 500/);
 });
+
+// ── /api/earnings → el bloque de UPA de /analiza ─────────────────────
+test('el historial de reportes viene en `history`, con `period` y `eps_estimate`', async () => {
+  const { default: earnings } = await import(join(ROOT, 'api/earnings.js'));
+  process.env.FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || 'ficticia';
+  const r = await conRed((u) => {
+    if (u.includes('/stock/earnings')) {
+      return json([{ period: '2026-07-30', quarter: 2, year: 2026, actual: 1.26, estimate: 1.2 }]);
+    }
+    if (u.includes('/calendar/earnings')) {
+      return json({ earningsCalendar: [{ symbol: 'NVDA', date: '2026-11-05', hour: 'amc', epsEstimate: 1.31, quarter: 3, year: 2026 }] });
+    }
+    if (u.includes('/stock/financials-reported')) return json({ data: [] });
+    if (u.includes('yahoo')) return json({ chart: { result: [] } });
+    return null;
+  }, () => corre(earnings, { ticker: 'NVDA' }));
+
+  assert.equal(r.code, 200);
+  // La llave es `history`. `earnings` —lo que la ficha pedía— no existe.
+  assert.ok(Array.isArray(r.body.history), 'tiene que venir `history`');
+  assert.equal(r.body.earnings, undefined, 'nunca hubo una llave `earnings`');
+  const q = r.body.history[0];
+  assert.ok('period' in q && 'eps_estimate' in q && 'eps_actual' in q,
+    'las llaves son period / eps_estimate / eps_actual: ' + JSON.stringify(Object.keys(q)));
+  assert.equal(q.date, undefined);
+  assert.equal(q.eps_est, undefined);
+  // El próximo reporte viene resuelto aparte, no escondido en el historial.
+  assert.equal(r.body.next_earnings.date, '2026-11-05');
+});
+
+test('y el bloque de UPA lee ESA forma, no la que yo había supuesto', async () => {
+  const { upaRealVsEstimado } = await import(join(ROOT, 'api/_lib/analiza.js'));
+  const r = upaRealVsEstimado([
+    { period: '2026-07-30', quarter: 2, year: 2026, eps_actual: 1.26, eps_estimate: 1.2 },
+    { period: '2026-04-30', quarter: 1, year: 2026, eps_actual: 1.1, eps_estimate: 1.15 },
+  ]);
+  assert.equal(r.filas.length, 2);
+  assert.equal(r.filas[0].fecha, '2026-07-30');
+  assert.ok(Math.abs(r.filas[0].sorpresa - 0.06) < 1e-9);
+  assert.equal(r.medidos, 2);
+  assert.equal(r.gano, 1);
+  assert.equal(r.motivo, null);
+});
+
+test('sin trimestres, el motivo dice la causa de la FUENTE, no "no devolvió"', async () => {
+  const { upaRealVsEstimado } = await import(join(ROOT, 'api/_lib/analiza.js'));
+  const r = upaRealVsEstimado([], { motivoFuente: 'Finnhub respondió HTTP 429' });
+  assert.match(r.motivo, /429/);
+});
+
+// ── Finnhub `metric` → la tabla de valuación de relevo ───────────────
+test('la valuación de relevo convierte las unidades de Finnhub', async () => {
+  const { tablaValuacionFinnhub } = await import(join(ROOT, 'api/_lib/analiza.js'));
+  const filas = tablaValuacionFinnhub({ metric: {
+    marketCapitalization: 4_400_000,          // MILLONES
+    enterpriseValue: 4_380_000,               // MILLONES
+    peTTM: 47.9,
+    roeTTM: 90.5,                             // POR CIENTO
+    dividendYieldIndicatedAnnual: 0.03,       // POR CIENTO
+  } });
+  const por = Object.fromEntries(filas.map((f) => [f.k, f]));
+
+  // Los millones. Es el tropiezo que ya costó que Apple midiera lo mismo que
+  // una small cap en el censo del mapa.
+  assert.equal(por['Capitalización'].valor, 4.4e12);
+  assert.equal(por['Valor de empresa'].valor, 4.38e12);
+  // Un múltiplo NO se toca: 47.9 veces es 47.9 veces en los dos proveedores.
+  assert.equal(por['P/U'].valor, 47.9);
+  // Los porcentajes. La pantalla multiplica por 100 porque la convención de
+  // adentro es la fracción: sin convertir, un ROE de 90.5% se pintaría 9050%.
+  assert.ok(Math.abs(por['ROE'].valor - 0.905) < 1e-12, String(por['ROE'].valor));
+  assert.ok(Math.abs(por['Dividendo'].valor - 0.0003) < 1e-12, String(por['Dividendo'].valor));
+  // Cada fila declara de cuál de los dos proveedores salió.
+  assert.equal(por['P/U'].fuente, 'finnhub:metric');
+  // Y lo que Finnhub no trajo se declara, no se inventa.
+  assert.equal(por['PEG'].valor, null);
+  assert.match(por['PEG'].motivo, /no devolvió/);
+});
+
+test('el margen de Finnhub se nombra por lo que es: NETO, no operativo', async () => {
+  const { tablaValuacionFinnhub } = await import(join(ROOT, 'api/_lib/analiza.js'));
+  const ks = tablaValuacionFinnhub({ metric: { netProfitMarginTTM: 55.2 } }).map((f) => f.k);
+  assert.ok(ks.includes('Margen neto'));
+  assert.ok(!ks.includes('Margen operativo'),
+    'dos márgenes distintos bajo la misma etiqueta es un número mal con cara de bueno');
+});
+
+// ── /api/stock-tracker?cat=13f → la pestaña de fondos ────────────────
+test('la fila de un fondo 13F trae `fund`, no `name`', () => {
+  // Acá no se corre el handler —son cinco peticiones a la SEC por fondo— sino
+  // que se lee el literal con el que arma la fila. Es grep, y es suficiente
+  // para lo único que falló: que la página pidiera una llave que no existe.
+  const src = readFileSync(join(ROOT, 'api/stock-tracker.js'), 'utf8');
+  assert.match(src, /\n\s*fund: fund\.name,/, 'la llave que viaja se llama `fund`');
+  const pagina = readFileSync(join(ROOT, 'insiders.html'), 'utf8');
+  assert.match(pagina, /f\.fund \|\|/, 'la página tiene que leer `fund` primero');
+});

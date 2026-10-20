@@ -77,6 +77,11 @@
     overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
   .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
     border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
+  /* El aviso: el dato está, pero hay que leerlo distinto —viene de otro
+     proveedor, o es de hace unos minutos—. No es un hueco, así que no va
+     punteado; es una advertencia, así que no se puede confundir con el dato. */
+  .aviso{font-family:var(--mono);font-size:11px;color:var(--ambar);line-height:1.5;
+    border:1px solid #3a3222;border-radius:8px;padding:8px 10px;margin:8px 0}
   /* El punteado es la forma de decir "esto NO está, y por qué". */
   .punteado{border:1px dashed #3a3222;border-radius:8px;padding:11px;background:transparent}
   .punteado b{display:block;font-size:12px;color:var(--ambar);margin-bottom:4px}
@@ -348,6 +353,11 @@
     var v = datos.valuacion || {};
     var html = '<h2>Valuación y finanzas<span>cada fila con su fuente</span></h2>';
     if(!v.filas || !v.filas.length) return html + '<div class="vacio">' + esc(v.motivo || 'sin datos') + '</div>';
+    // UN DATO VIEJO, O DE OTRO PROVEEDOR, SE DICE ARRIBA.
+    // Si Yahoo no contestó y la tabla viene de Finnhub —o si es la última
+    // respuesta buena, de hace unos minutos— eso cambia cómo hay que leer
+    // los números, y leerlo DESPUÉS de haberlos mirado no sirve de nada.
+    if(v.aviso) html += '<div class="aviso">' + esc(v.aviso) + '</div>';
     html += '<div class="panel"><table><tbody>' + v.filas.map(function(f){
       return '<tr><td class="izq">' + esc(f.k) + '</td>'
         + (f.valor == null
@@ -425,12 +435,18 @@
   }
 
   function pintarChip(){
+    // La misma función que el mapa, con el cierre REAL de la serie: esta
+    // ficha sí sabe de qué día es el último precio que está mostrando.
     var el = document.getElementById('chip');
-    try{
-      var e = qdEstadoMercado(datos && datos.es_mexicana ? 'bmv' : 'nyse', new Date());
-      el.textContent = (e.nombre || '') + ': ' + (e.texto || (e.abierto ? 'abierto' : 'cerrado'));
-      el.className = 'chip' + (e.abierto ? ' abierto' : '');
-    }catch(err){ el.textContent = 'sin estado de mercado'; }
+    var velas = (datos && datos.serie && datos.serie.velas) || [];
+    var ult = velas.length ? velas[velas.length - 1] : null;
+    var t = ult ? Number(ult.t != null ? ult.t : ult.time) : null;
+    var cierre = Number.isFinite(t) ? new Date(t * 1000).toISOString().slice(0, 10) : null;
+    var c = chipDeMercado(datos && datos.es_mexicana ? 'bmv' : 'nyse',
+      { ahora: new Date(), ultimoCierre: cierre, muestra: 'la serie' });
+    el.textContent = c.chip;
+    el.title = c.motivo;
+    el.className = 'chip' + (c.abierto ? ' abierto' : '');
   }
 
   function pintarEncabezado(){

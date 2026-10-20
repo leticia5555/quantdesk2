@@ -76,61 +76,140 @@ const FACTS = {
   } },
 };
 
-const CUERPO = () => {
-  const fin = A.trimestresDeCompanyFacts(FACTS);
-  return {
-    ticker: 'NVDA', nombre: 'NVIDIA Corporation', bolsa: 'NasdaqGS',
-    sector: 'Technology', moneda: 'USD', es_mexicana: false,
-    serie: { velas: VELAS, moneda: 'USD', rango: '5y', fuente: 'yahoo:v8/chart (interval=1d, range=5y)', motivo: null },
-    rendimiento: A.serieDeRendimiento(VELAS),
-    benchmark: { symbol: '^GSPC', nombre: 'S&P 500',
-      serie: { velas: BENCH, fuente: 'yahoo:v8/chart', motivo: null },
-      rendimiento: A.serieDeRendimiento(BENCH) },
-    fix: { serie: FIX.map((p) => ({ t: Date.parse(p.date + 'T12:00:00Z') / 1000, c: p.value })),
-           valor: FIX[FIX.length - 1].value, fecha: FIX[FIX.length - 1].date,
-           fuente: 'banxico:SF43718 (FIX)', motivo: null },
-    upa: A.upaRealVsEstimado(UPA),
-    proximo_reporte: { fecha: '2026-11-05', cuando: 'AMC', eps_estimado: 1.31, fuente: 'finnhub:earnings' },
-    financieros: { ...fin, cik: 320193, filas: fin.filas.map((f) => ({
-      ...f,
-      ingresos_link: A.linkDeFiling(320193, f.ingresos_accn),
-      utilidad_link: A.linkDeFiling(320193, f.utilidad_accn),
-    })) },
-    analistas: {
-      // EL CASO REAL: la Fase 0.8 dio NO-GO para el precio objetivo.
-      precio_objetivo: A.precioObjetivo({}),
-      recomendaciones: A.recomendaciones([
-        { period: '2026-10-01', strongBuy: 28, buy: 11, hold: 4, sell: 1, strongSell: 0 },
-        { period: '2026-09-01', strongBuy: 26, buy: 12, hold: 5, sell: 1, strongSell: 0 },
-      ]),
-      de_pago: A.DE_PAGO,
-    },
-    valuacion: { filas: A.tablaValuacion({
-      summaryDetail: { trailingPE: { raw: 48.2 }, dividendYield: { raw: 0.0003 } },
-      defaultKeyStatistics: { priceToBook: { raw: 42.1 } },
-      financialData: { returnOnEquity: { raw: 0.91 } },
-    }), fuente: 'yahoo:quoteSummary', motivo: null },
-    insiders: {
-      ultimas: [
-        { name: 'Huang Jensen', type: 'SELL', shares: 120000, value: 21_600_000, transactionDate: '2026-10-02' },
-        { name: 'Kress Colette', type: 'SELL', shares: 30000, value: 5_400_000, transactionDate: '2026-09-28' },
-      ],
-      neto_90: A.netoInsiders([
-        { transactionDate: '2026-10-02', type: 'SELL', value: 21_600_000 },
-        { transactionDate: '2026-09-28', type: 'SELL', value: 5_400_000 },
-        { transactionDate: '2026-09-10', type: 'BUY', value: 2_000_000 },
-      ], { hoy: new Date(MOMENTO) }),
-      total: 3, fuente: 'finnhub:insider-transactions (SEC Form 4)', motivo: null,
-    },
-    historia: { hitos: [], fuente: 'neon:historia', motivo: 'sin hitos registrados para este ticker' },
-    noticias: { filas: [{ url: 'https://medio.test/nvda', titular: 'Nvidia presenta su nueva generación',
-                          fuente_nombre: 'CNBC', publicado_en: '2026-10-20T14:00:00.000Z' }],
-                de: 60, fuente: 'neon:mercado_noticias',
-                metodo: 'cruce con el arreglo de tickers que calculó el job de noticias, sin IA', motivo: null },
-    agentes: { ruta: '/app?tab=analyze&ticker=NVDA' },
-    generado_en: new Date(MOMENTO).toISOString(),
-  };
+// ═══════════════════════════════════════════════════════════════════
+// EL CUERPO SALE DEL ENDPOINT, NO DE MI MANO.
+//
+// La versión anterior armaba la respuesta llamando a las funciones de
+// `api/_lib/analiza.js` una por una. O sea que probaba la aritmética y
+// SALTABA `api/analiza.js`, que es justo donde estaban los dos defectos que
+// Lety encontró en producción el 2026-10-20:
+//
+//   · pedía `cal.json.earnings` y el endpoint de reportes devuelve `history`
+//     (con `period` y `eps_estimate`): el bloque de UPA salía "sin
+//     trimestres" para NVDA, que tiene años de historial;
+//   · no resolvía el CIK desde el ticker, así que EDGAR salía vacío salvo
+//     que uno escribiera `&cik=1045810` a mano.
+//
+// Acá se corre el handler DE VERDAD y se finge la RED: Yahoo, la SEC,
+// Finnhub y el SIE, cada uno en su forma cruda.
+// ═══════════════════════════════════════════════════════════════════
+process.env.FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || 'ficticia-para-la-corrida';
+process.env.BANXICO_TOKEN = process.env.BANXICO_TOKEN || 'ficticio-para-la-corrida';
+
+const CIK_NVDA = 1045810;
+
+// Yahoo v8, crudo. Sin `adjclose`: así el rendimiento es DE PRECIO y la
+// pantalla tiene que decirlo — es el error que no se nota mirando el número.
+function yahooChart(velas, moneda = 'USD') {
+  return { chart: { result: [{
+    meta: { currency: moneda },
+    timestamp: velas.map((v) => v.time),
+    indicators: { quote: [{
+      open: velas.map((v) => v.close - 0.4), high: velas.map((v) => v.close + 1.1),
+      low: velas.map((v) => v.close - 1.4), close: velas.map((v) => v.close),
+      volume: velas.map(() => 1000),
+    }] },
+  }] } };
+}
+
+const QUOTE_SUMMARY = { quoteSummary: { result: [{
+  price: { longName: 'NVIDIA Corporation', exchangeName: 'NasdaqGS' },
+  assetProfile: { sector: 'Technology' },
+  summaryDetail: { trailingPE: { raw: 48.2 }, dividendYield: { raw: 0.0003 } },
+  defaultKeyStatistics: { priceToBook: { raw: 42.1 } },
+  financialData: { returnOnEquity: { raw: 0.91 } },
+  recommendationTrend: { trend: [
+    { period: '0m', strongBuy: 28, buy: 11, hold: 4, sell: 1, strongSell: 0 },
+    { period: '-1m', strongBuy: 26, buy: 12, hold: 5, sell: 1, strongSell: 0 },
+  ] },
+}] } };
+
+// Finnhub `stock/earnings`, crudo: `period`, `actual`, `estimate`.
+const EARNINGS_CRUDO = [
+  { period: '2026-07-30', quarter: 2, year: 2026, actual: 1.26, estimate: 1.20 },
+  { period: '2026-04-30', quarter: 1, year: 2026, actual: 1.10, estimate: 1.15 },
+  { period: '2026-01-29', quarter: 4, year: 2025, actual: 1.40, estimate: 1.33 },
+  // Sin estimado: la sorpresa de ESE trimestre no se puede calcular, y se dice.
+  { period: '2025-10-29', quarter: 3, year: 2025, actual: 0.98, estimate: null },
+  // El trimestre que TODAVÍA NO REPORTA: Finnhub lo manda con `actual` en
+  // null y su estimado puesto. Es otra causa distinta de "no hay estimado", y
+  // la ficha tiene que distinguirlas.
+  { period: '2026-11-05', quarter: 3, year: 2026, actual: null, estimate: 1.31 },
+];
+const CALENDARIO_CRUDO = { earningsCalendar: [
+  { symbol: 'NVDA', date: '2026-11-05', hour: 'amc', epsEstimate: 1.31, quarter: 3, year: 2026 },
+] };
+const INSIDER_CRUDO = { data: [
+  { name: 'Huang Jensen', change: -120000, transactionPrice: 180, transactionCode: 'S',
+    transactionDate: '2026-10-02', filingDate: '2026-10-03' },
+  { name: 'Kress Colette', change: -30000, transactionPrice: 180, transactionCode: 'S',
+    transactionDate: '2026-09-28', filingDate: '2026-09-29' },
+  { name: 'Dabiri John', change: 11000, transactionPrice: 181.8, transactionCode: 'P',
+    transactionDate: '2026-09-10', filingDate: '2026-09-11' },
+] };
+
+const FIX_CRUDO = { bmx: { series: [{ idSerie: 'SF43718', titulo: 'FIX',
+  datos: FIX.map((p) => {
+    const [a, m, d] = p.date.split('-');
+    return { fecha: `${d}/${m}/${a}`, dato: p.value.toFixed(4) };
+  }) }] } };
+
+// Qué hace Yahoo con `quoteSummary` en esta corrida: 'ok', '429' (dos veces
+// y después bien, para ver el reintento) o 'siempre429' (para ver el relevo).
+let modoYahoo = 'ok';
+let veces429 = 0;
+let pedidosYahooQS = 0;
+
+const fetchOriginal = globalThis.fetch;
+globalThis.fetch = async (recurso, opciones) => {
+  const u = String((recurso && recurso.url) || recurso || '');
+  const json = (o, status = 200, headers = {}) => new Response(JSON.stringify(o), {
+    status, headers: { 'content-type': 'application/json', ...headers },
+  });
+
+  if (u.includes('/v10/finance/quoteSummary/')) {
+    pedidosYahooQS++;
+    if (modoYahoo === 'siempre429') return json({ error: 'rate' }, 429, { 'retry-after': '1' });
+    if (modoYahoo === '429' && veces429 < 2) { veces429++; return json({ error: 'rate' }, 429); }
+    return json(QUOTE_SUMMARY);
+  }
+  if (u.includes('/v8/finance/chart/')) {
+    const esBench = /%5EGSPC|\^GSPC/.test(u);
+    return json(yahooChart(esBench ? BENCH : VELAS));
+  }
+  if (u.includes('sec.gov/files/company_tickers.json')) {
+    return json({ 0: { cik_str: CIK_NVDA, ticker: 'NVDA', title: 'NVIDIA CORP' },
+                  1: { cik_str: 320193, ticker: 'AAPL', title: 'Apple Inc.' } });
+  }
+  if (u.includes('/api/xbrl/companyfacts/')) {
+    // El CIK va con diez dígitos en la URL: si el endpoint resolvió mal, esto
+    // devuelve 404 y el bloque sale vacío, que es lo que se quiere ver.
+    return u.includes(String(CIK_NVDA).padStart(10, '0')) ? json(FACTS) : json({ error: 'no' }, 404);
+  }
+  if (u.includes('finnhub.io/api/v1/stock/earnings')) return json(EARNINGS_CRUDO);
+  if (u.includes('finnhub.io/api/v1/calendar/earnings')) return json(CALENDARIO_CRUDO);
+  if (u.includes('finnhub.io/api/v1/stock/financials-reported')) return json({ data: [] });
+  if (u.includes('finnhub.io/api/v1/stock/insider-transactions')) return json(INSIDER_CRUDO);
+  if (u.includes('finnhub.io/api/v1/stock/metric')) {
+    return json({ metric: { marketCapitalization: 4_400_000, peTTM: 47.9, psTTM: 27.4,
+      pbQuarterly: 41.8, roeTTM: 90.5, netProfitMarginTTM: 55.2,
+      dividendYieldIndicatedAnnual: 0.03, enterpriseValue: 4_380_000 } });
+  }
+  if (u.includes('banxico.org.mx')) return json(FIX_CRUDO);
+  throw new Error('la corrida intentó salir a la red: ' + u);
 };
+
+const { default: analizaHandler } = await import(join(ROOT, 'api/analiza.js'));
+
+async function fichaDeVerdad(query) {
+  let code = 200; let body = null;
+  const res = {
+    setHeader() {}, getHeader() {}, status(c) { code = c; return this; },
+    json(o) { body = o; return this; }, send(o) { body = o; return this; }, end() { return this; },
+  };
+  await analizaHandler({ method: 'GET', query, headers: {}, url: '/' }, res);
+  return { code, body };
+}
 
 let caido = false;
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css' };
@@ -140,6 +219,17 @@ let llamadasIa = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/__romper') { caido = url.searchParams.get('v') === '1'; res.writeHead(200); return res.end('ok'); }
+  if (url.pathname === '/__yahoo') {
+    modoYahoo = url.searchParams.get('m') || 'ok';
+    veces429 = 0; pedidosYahooQS = 0;
+    // La caché del endpoint es por instancia y por ticker: para ver el
+    // reintento y el relevo hay que preguntar por OTRO ticker, no por NVDA.
+    res.writeHead(200); return res.end('ok');
+  }
+  if (url.pathname === '/__qs') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ pedidos: pedidosYahooQS }));
+  }
   // Cualquier llamada a un endpoint de IA se CUENTA: la regla 6 dice que no
   // puede haber ninguna al abrir la ficha.
   if (/^\/api\/(agents|claude|memo|ai-)/.test(url.pathname)) { llamadasIa++; res.writeHead(200); return res.end('{}'); }
@@ -147,7 +237,11 @@ const server = createServer(async (req, res) => {
     pedidos++;
     res.writeHead(200, { 'content-type': 'application/json' });
     if (caido) return res.end(JSON.stringify({ ticker: 'NVDA', error: 'Neon: connection refused' }));
-    return res.end(JSON.stringify(CUERPO()));
+    const { body } = await fichaDeVerdad({
+      ticker: url.searchParams.get('ticker') || 'NVDA',
+      ...(url.searchParams.get('cik') ? { cik: url.searchParams.get('cik') } : {}),
+    });
+    return res.end(JSON.stringify(body));
   }
   let p = url.pathname;
   if (/^\/analiza\//.test(p)) p = '/analiza.html';
@@ -253,6 +347,11 @@ try {
       })),
     };
   });
+  // LO QUE SE VIO EN PRODUCCIÓN: este bloque decía "sin trimestres" para NVDA.
+  // La página pedía `earnings` y el endpoint devuelve `history`.
+  chequeo('el bloque de UPA TRAE trimestres (no "sin trimestres")',
+    upa.filas.length >= 4 && !/sin trimestres/.test(upa.titulo),
+    `${upa.filas.length} filas · ${upa.titulo.slice(0, 50)}`);
   chequeo('la UPA dice en cuántos trimestres MEDIDOS le ganó al consenso',
     /2 de 3 trimestres medidos/.test(upa.titulo), upa.titulo.slice(0, 80));
   const sinEst = upa.filas.find((f) => f.celdas[0] === '2025 T3');
@@ -279,6 +378,12 @@ try {
       })),
     };
   });
+  // EL CIK, RESUELTO SOLO. En producción `/analiza/NVDA` decía "EDGAR no
+  // devolvió conceptos us-gaap" y con `&cik=1045810` traía todo: el único
+  // motivo del hueco era que nadie había escrito el número a mano. Esta
+  // corrida pide la ficha SIN `cik` en la URL.
+  chequeo('hay trimestres de EDGAR sin pasarle el CIK en la URL',
+    fin.filas.length >= 3, `${fin.filas.length} filas`);
   chequeo('el título dice que cada barra cita su 10-Q', /cita su 10-Q/.test(fin.titulo), fin.titulo);
   chequeo('hay una barra por trimestre', fin.barras >= 3, String(fin.barras));
   chequeo('cada fila enlaza a EDGAR con el accn de SU filing',
@@ -299,7 +404,10 @@ try {
     borde: getComputedStyle(d).borderStyle,
   })));
   chequeo('el precio objetivo ausente va punteado con su causa, no con un número',
-    pago.some((x) => /Precio objetivo/.test(x.b) && /Fase 0\.8/.test(x.p) && x.borde === 'dashed'),
+    // La causa tiene que estar, DICHA para quien lee: antes nombraba un
+    // documento interno ("el NO-GO de la Fase 0.8") y el protocolo de Yahoo.
+    pago.some((x) => /Precio objetivo/.test(x.b)
+      && /credencial que sólo le da a un navegador/.test(x.p) && x.borde === 'dashed'),
     JSON.stringify(pago.map((x) => x.b)));
   chequeo('la calificación con nombre de casa va SIEMPRE punteada y lo dice',
     pago.some((x) => /no lo mostramos, es dato de pago/.test(x.b)),
@@ -356,11 +464,118 @@ try {
   await p.locator('#tabs button[data-tab="historia"]').tap();
   await p.waitForFunction(() => /Historia/.test(document.getElementById('col-a').textContent), null, { timeout: 2000 });
   const histo = await p.textContent('#col-a');
+  // En esta corrida no hay Postgres, así que lo que se exige es que la causa
+  // se diga Y que se diga SIN jerga: el motivo crudo nombra una variable de
+  // entorno nuestra, que a quien mira una ficha de NVIDIA no le dice nada.
   chequeo('Historia sin hitos lo DICE en vez de quedarse en blanco',
-    /sin hitos registrados/.test(histo), histo.trim().slice(0, 70));
+    /sin hitos registrados|no se pudo leer nuestra base de datos/.test(histo),
+    histo.trim().slice(0, 70));
+  chequeo('y lo dice sin nombrar una variable de entorno',
+    !/DATABASE_URL|connection string/.test(histo), histo.trim().slice(0, 70));
 
   await p.locator('#tabs button[data-tab="resumen"]').tap();
   await p.waitForSelector('#col-a table');
+
+  // ── LO QUE SE VE EN PANTALLA VA SIN JERGA ───────────────────────────
+  // La misma comprobación que en la ficha de índice y en insiders. Acá
+  // atrapó "es el caso NO-GO de la Fase 0.8: Yahoo quoteSummary pide crumb
+  // desde el servidor", que nombra un documento interno nuestro y un detalle
+  // del protocolo de Yahoo a quien está mirando una ficha de NVIDIA.
+  const jerga = await p.evaluate(() => {
+    const malas = [];
+    const PROHIBIDO = [
+      [/`/, 'comillas de código'],
+      [/\.(js|json|mjs)\b/, 'nombre de archivo'],
+      [/api\/_lib|DATABASE_URL|FINNHUB_API_KEY/, 'nombre interno del repo o del entorno'],
+      [/getcurrent|metric=all|cik_str|crumb|NO-GO|Fase 0\.\d/i,
+       'nombre interno de un endpoint, un campo o un documento nuestro'],
+      [/quoteSummary|companyfacts/i, 'nombre de un endpoint suelto en la prosa'],
+    ];
+    // LAS FUENTES DECLARADAS NO SON JERGA, SON LA REGLA 3.
+    // `yahoo:quoteSummary`, `edgar:companyfacts`, `banxico:SF43718` y
+    // `finnhub:metric` son la procedencia de cada número, y el encargo pide
+    // que se vean. Se quitan antes de buscar: lo que se persigue es el
+    // nombre interno SUELTO dentro de una frase, que es lo que no se
+    // entiende.
+    const sinFuentes = (t) => t.replace(/[a-z_]+:[A-Za-z0-9_\-/.]+/g, ' ');
+    const paseo = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = paseo.nextNode())) {
+      const crudo = (n.textContent || '').trim();
+      if (!crudo) continue;
+      const padre = n.parentElement;
+      if (padre && (padre.tagName === 'SCRIPT' || padre.tagName === 'STYLE')) continue;
+      const t = sinFuentes(crudo);
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push(por + ': ' + crudo.slice(0, 70));
+    }
+    for (const el of document.querySelectorAll('[title]')) {
+      const crudo = el.getAttribute('title') || '';
+      const t = sinFuentes(crudo);
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push('en un title · ' + por + ': ' + crudo.slice(0, 70));
+    }
+    return malas;
+  });
+  chequeo('nada de lo que se ve en pantalla trae jerga de código',
+    jerga.length === 0, JSON.stringify(jerga.slice(0, 3)));
+
+  // ── EL 429 DE YAHOO: REINTENTO, CACHÉ Y RELEVO ──────────────────────
+  // Lety, 2026-10-20: *"Yahoo `quoteSummary` da 429: agrega caché y reintento
+  // con espera; si sigue fallando, que la valuación salga de Finnhub."*
+  //
+  // Cada caso se pide con un ticker distinto a propósito: la caché del
+  // endpoint es por ticker, y reusar NVDA mediría la caché en vez del camino
+  // que se quiere ver.
+  await p.goto(`${BASE}/__yahoo?m=429`);
+  await p.goto(`${BASE}/analiza/AMD`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#col-b table, #col-a table');
+  const trasReintento = await p.evaluate(() => {
+    const h = [...document.querySelectorAll('h2')].find((x) => /Valuación/.test(x.textContent));
+    const cont = h.parentElement;
+    return {
+      fuentes: [...cont.querySelectorAll('table tbody tr td:last-child')].map((td) => td.textContent.trim()),
+      aviso: (cont.querySelector('.aviso') || {}).textContent || null,
+    };
+  });
+  // Con `fetchOriginal`: el `fetch` global está fingido para que NADA salga a
+  // la red, y el propio servidor de la corrida cuenta como red.
+  const pedidosQS = (await (await fetchOriginal(`${BASE}/__qs`)).json()).pedidos;
+  chequeo('con dos 429 seguidos, el endpoint REINTENTA y termina con el dato de Yahoo',
+    pedidosQS === 3 && trasReintento.fuentes.some((f) => /yahoo/.test(f)),
+    `${pedidosQS} peticiones · ${trasReintento.fuentes.filter((f) => /yahoo/.test(f)).length} filas de Yahoo`);
+  chequeo('y sin aviso: el dato es fresco, no hay nada que advertir',
+    !trasReintento.aviso, String(trasReintento.aviso).slice(0, 60));
+
+  // Ahora Yahoo no cede nunca: la valuación tiene que venir de Finnhub, y la
+  // pantalla tiene que DECIR que cambió de proveedor.
+  await p.goto(`${BASE}/__yahoo?m=siempre429`);
+  await p.goto(`${BASE}/analiza/INTC`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#col-b table, #col-a table');
+  const conRelevo = await p.evaluate(() => {
+    const h = [...document.querySelectorAll('h2')].find((x) => /Valuación/.test(x.textContent));
+    const cont = h.parentElement;
+    const filas = [...cont.querySelectorAll('table tbody tr')].map((tr) => ({
+      k: tr.children[0].textContent.trim(),
+      v: tr.children[1].textContent.trim(),
+      f: tr.children[2].textContent.trim(),
+    }));
+    return { filas, aviso: (cont.querySelector('.aviso') || {}).textContent || null };
+  });
+  chequeo('con Yahoo caído, la valuación llega igual: viene de Finnhub',
+    conRelevo.filas.some((f) => /finnhub/.test(f.f)),
+    JSON.stringify(conRelevo.filas.slice(0, 2)));
+  chequeo('y la pantalla DICE que cambió de proveedor, arriba de la tabla',
+    /Finnhub/.test(conRelevo.aviso || '') && /429/.test(conRelevo.aviso || ''),
+    String(conRelevo.aviso).slice(0, 80));
+  // LAS UNIDADES. Finnhub da la capitalización en MILLONES y el ROE en POR
+  // CIENTO; Yahoo las da en unidades y en fracción. Sin convertir, una cap de
+  // 4.4 billones se pintaría como 4.4 millones y un ROE de 90.5% como 9050%.
+  const cap = conRelevo.filas.find((f) => /Capitalización/.test(f.k));
+  const roe = conRelevo.filas.find((f) => /ROE/.test(f.k));
+  chequeo('la capitalización de Finnhub se convierte de millones',
+    cap && /bill|B\b|mil M/i.test(cap.v) && !/^\$?4\.4[0-9]* ?M$/.test(cap.v), cap ? cap.v : 'no está');
+  chequeo('y el ROE de Finnhub no se multiplica dos veces',
+    roe && /^9[01]\.\d%$/.test(roe.v), roe ? roe.v : 'no está');
+  await p.goto(`${BASE}/__yahoo?m=ok`);
 
   // ── LA FICHA CAÍDA ──────────────────────────────────────────────────
   await p.goto(`${BASE}/__romper?v=1`);
