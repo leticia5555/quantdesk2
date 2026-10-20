@@ -88,7 +88,7 @@ import { checkAdminAuth } from './_lib/arena-admin.js';
 import {
   getAccount, getPositions, getOrders, cancelAllOrders, closeAllPositions, getClock,
 } from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_SEASON, TEMPORADA_DIAS_CONTAMINADOS } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_SEASON, TEMPORADA_DIAS_CONTAMINADOS, finDeTemporada } from './_lib/arena-registry.js';
 import { rejillaDeEnfoques } from './_lib/arena-herding.js';
 import {
   RESET_BASELINE_USD, setBaseline, pauseWatch, resumeWatch, startingDrawdown, marcarInicioTemporada,
@@ -387,7 +387,7 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
   const lineaEnfoques = (() => {
     try {
       const inicio = (now instanceof Date ? now : new Date()).toISOString().slice(0, 10);
-      const g = rejillaDeEnfoques(inicio, ARENA_SEASON.end, rows.map((r) => r.agent));
+      const g = rejillaDeEnfoques(inicio, finDeTemporada(inicio), rows.map((r) => r.agent));
       const conteos = Object.entries(g.conteo)
         .map(([a, c]) => `${a}: ` + Object.entries(c).map(([e, n]) => `${e} ${n}`).join('/'))
         .join(' · ');
@@ -402,19 +402,24 @@ export function resetAnnouncement({ resetId, baselineUsd, baselineModo = 'real',
   })();
 
   // ── LA VENTANA REAL, NO LA PLANEADA (2026-10-20) ────────────────────
-  // ARENA_SEASON dice 2026-10-01 → 2026-10-30, "22 sesiones". Si el reset corre
-  // después del inicio planeado, la temporada tiene MENOS sesiones, y el
-  // anuncio es justo el lugar donde eso no puede quedar callado.
+  // La temporada dura `ARENA_SEASON.sesiones` sesiones contadas DESDE ESTE
+  // RESET, no hasta el `end` de la constante. Con el `end` fijo, abrir el
+  // 20-oct dejaba 9 sesiones y el anuncio publicaba "→ 2026-10-30". El cierre
+  // sale de `finDeTemporada`, la MISMA función con la que `marcarInicioTemporada`
+  // lo escribe en arena_flags: lo que dice el anuncio es lo que queda escrito.
   const lineaVentana = (() => {
     const hoy = (now instanceof Date ? now : new Date()).toISOString().slice(0, 10);
     try {
-      const g = rejillaDeEnfoques(hoy, ARENA_SEASON.end, rows.map((r) => r.agent).slice(0, 1));
+      const fin = finDeTemporada(hoy);
+      const g = rejillaDeEnfoques(hoy, fin, rows.map((r) => r.agent).slice(0, 1));
       const corrida = hoy > ARENA_SEASON.start
-        ? ` La ventana PLANEADA era ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas); este corte la acorta: las sesiones que cuentan son las de arriba, no las planeadas.`
+        // Sin el `end` planeado: publicar la fecha de cierre vieja al lado de
+        // la nueva invita a leer la equivocada.
+        ? ` El inicio PLANEADO era ${ARENA_SEASON.start}; la temporada abre tarde pero NO se acorta: las ${ARENA_SEASON.sesiones} sesiones se cuentan desde hoy y el cierre se corre con ellas.`
         : '';
-      return `VENTANA DE LA TEMPORADA: ${hoy} → ${ARENA_SEASON.end}, ${g.sesiones} sesiones hábiles. El último día se declara al ganador por retorno contra el baseline propio.${corrida}`;
+      return `VENTANA DE LA TEMPORADA: ${hoy} → ${fin}, ${g.sesiones} sesiones hábiles (${ARENA_SEASON.weeks} semanas de mercado). El último día, ${fin}, se declara al ganador por retorno contra el baseline propio.${corrida}`;
     } catch (e) {
-      return `VENTANA DE LA TEMPORADA: ${hoy} → ${ARENA_SEASON.end} (no se pudieron contar las sesiones: ${String((e && e.message) || e)}).`;
+      return `VENTANA DE LA TEMPORADA: desde ${hoy}, ${ARENA_SEASON.sesiones} sesiones hábiles (no se pudo calcular la fecha de cierre: ${String((e && e.message) || e)}).`;
     }
   })();
 
@@ -491,7 +496,13 @@ export default async function handler(req, res) {
     baseline_nota: baselineModo === 'real'
       ? 'BASELINE = EQUITY REAL por cuenta después de aplanar: los siete arrancan en 0.00% y el piso del pico del breaker es su propio equity de arranque. Es también el DENOMINADOR del retorno en /liga. Con `&baseline=100000` se fuerza el número declarado para todas.'
       : `BASELINE FIJO de $${Number(baselineUsd).toLocaleString('en-US')} para las ${agents.length} cuentas. OJO: si el equity real tras aplanar queda por debajo, esa cuenta arranca con drawdown y con retorno negativo el primer día, por el residuo de su propio aplanado y no por una pérdida.`,
-    season: { id: ARENA_SEASON.id, start: ARENA_SEASON.start, end: ARENA_SEASON.end },
+    // La ventana que ESTE reset abre (la que va a quedar escrita), con la
+    // planeada al lado para que el corrimiento se vea.
+    season: (() => {
+      const hoy = now.toISOString().slice(0, 10);
+      return { id: ARENA_SEASON.id, start: hoy, end: finDeTemporada(hoy), sesiones: ARENA_SEASON.sesiones,
+        start_planeado: ARENA_SEASON.start, end_planeado: ARENA_SEASON.end };
+    })(),
     agents: agents.map((a) => a.id),
     accounts: [],
     warnings: [],

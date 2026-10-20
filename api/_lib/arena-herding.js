@@ -38,6 +38,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { createHash } from 'node:crypto';
+import { esSesionHabil } from './arena-registry.js';
 
 export const ENFOQUES = [
   { id: 'momentum', prompt: 'Today, look first through MOMENTUM: what is already moving, and whether the move has support (volume, breadth, a reason) or is just a gap that will close.' },
@@ -110,15 +111,15 @@ export function comparteEnfoqueCon(agentId) {
 // eso no se "arregla" anclando al día 1 —sería un cambio que parece arreglo y
 // no lo es— y en cambio se cuantifica y se publica.
 //
-// Solo días hábiles: un sábado no tiene corrida, y contarlo inflaría el
-// reparto con días que no existen.
+// Solo sesiones: un sábado o un feriado de la NYSE no tiene corrida, y
+// contarlo inflaría el reparto con días que no existen. Es el MISMO criterio
+// que `finDeTemporada`, así que la rejilla y el cierre cuentan igual.
 export function rejillaDeEnfoques(start, end, agentes) {
   const dias = [];
   for (let t = Date.parse(start + 'T12:00:00Z'); t <= Date.parse(end + 'T12:00:00Z'); t += 86400000) {
-    const d = new Date(t);
-    const dow = d.getUTCDay();
-    if (dow === 0 || dow === 6) continue;
-    dias.push(d.toISOString().slice(0, 10));
+    const dia = new Date(t).toISOString().slice(0, 10);
+    if (!esSesionHabil(dia)) continue;
+    dias.push(dia);
   }
   const porDia = dias.map((dia) => ({
     dia,

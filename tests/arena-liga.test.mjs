@@ -157,6 +157,11 @@ global.fetch = async (url, opts = {}) => {
     const body = JSON.parse(opts.body);
     const q = body.query || '';
     if (q.includes('arena_screener')) return jsonReply({ fields: [], rows: [] });
+    // El inicio que escribió el reset (la T3 abrió el 20-oct): la corrida tiene
+    // que reportar la temporada EFECTIVA, con su cierre a 22 sesiones.
+    if (q.includes('from arena_flags') && body.params && body.params[0] === 'season_start:' + ARENA_SEASON.id) {
+      return jsonReply({ fields: [{ name: 'value', dataTypeID: 3802 }], rows: [[JSON.stringify({ start: '2026-10-20', end: '2026-11-18' })]] });
+    }
     if (q.includes('from arena_state')) return jsonReply({
       fields: [{ name: 'halted', dataTypeID: 16 }, { name: 'halted_at', dataTypeID: 1184 }, { name: 'halted_reason', dataTypeID: 25 }, { name: 'resumed_at', dataTypeID: 1184 }],
       rows: [['f', null, null, null]] });
@@ -246,6 +251,8 @@ const res = await runArenaLeague({ baseUrl: BASE_URL });
   const byId = Object.fromEntries((res.agents || []).map((a) => [a.id, a]));
   ok(res.agents.length === 7 && SIETE.every((id) => byId[id]), 'corren los 7 agentes de la Temporada 2', JSON.stringify(res.league));
   ok(SIETE.every((id) => byId[id].status === 'ok'), 'los 7 deciden ok (1 orden c/u)', JSON.stringify(res.agents.map((a) => [a.id, a.status])));
+  ok(res.season && res.season.start === '2026-10-20' && res.season.end === '2026-11-18' && res.season.abierta === true,
+    'la corrida reporta la temporada EFECTIVA (inicio del reset, cierre a 22 sesiones), no la constante', JSON.stringify(res.season));
 
   // Proveedor correcto por agente: claude+control → Anthropic (directo); los
   // otros CINCO → OpenRouter con la MISMA key y su propio slug.
@@ -385,8 +392,10 @@ console.log('liga: apertura de temporada — una fila de LIGA, automática e ide
   ok(new RegExp(ARENA_SEASON.name.toUpperCase() + ' — ARRANCA LA LIGA COMPLETA').test(fila[3])
     && /Grok/.test(fila[3]) && /Qwen/.test(fila[3]),
     'el plan anuncia la temporada en curso y nombra a los siete', fila[3].slice(0, 90));
-  ok(new RegExp(ARENA_SEASON.start + ' → ' + ARENA_SEASON.end).test(fila[3]),
-    'y publica la ventana de la temporada', ARENA_SEASON.start + ' → ' + ARENA_SEASON.end);
+  // La ventana EFECTIVA (el mock tiene escrito el reset del 20-oct), no la
+  // constante: un anuncio con el cierre planeado mentiría la duración.
+  ok(/2026-10-20 → 2026-11-18 \(22 sesiones/.test(fila[3]),
+    'y publica la ventana de la temporada efectiva', fila[3].match(/Ventana[^\n]*/)?.[0]);
   ok(/piso de ruido/.test(fila[3]), 'explica qué es el control (sin eso, ningún delta entre modelos significa nada)');
   const ctx = JSON.parse(fila[4]);
   ok(ctx.season.id === ARENA_SEASON.id && ctx.agents.length === 7 && ctx.opened_on === ARENA_SEASON.start,

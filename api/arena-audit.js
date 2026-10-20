@@ -46,7 +46,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON, ARENA_MAX_TOKENS } from './_lib/arena-registry.js';
+import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON, ARENA_MAX_TOKENS, temporadaEfectiva } from './_lib/arena-registry.js';
+import { leerInicioTemporada } from './_lib/arena-baseline.js';
 import { RESERVA_CIERRE_MS } from './_lib/arena-tool-loop.js';
 import { buildInfo } from './_lib/build-info.js';
 import { checkLecturaAuth } from './_lib/arena-admin.js';
@@ -106,12 +107,22 @@ export default async function handler(req, res) {
   // quiere saber después de tocar una env var en Vercel: no si el panel dice
   // que se guardó, sino si el código desplegado la está viendo.
   if (String(q.compuertas || q.gates || '') === '1') {
+    // La temporada que el runtime VE: después del reset, `end` es inicio + N
+    // sesiones (2026-10-20 → 2026-11-18), no la constante.
+    let temporada;
+    try {
+      const t = temporadaEfectiva(await leerInicioTemporada(ARENA_SEASON.id));
+      temporada = { id: t.id, start: t.start, end: t.end, sesiones: t.sesiones, abierta: t.abierta };
+    } catch (e) {
+      temporada = { id: ARENA_SEASON.id, start: ARENA_SEASON.start, end: ARENA_SEASON.end, abierta: null,
+        error: `no se pudo leer el inicio real (${String((e && e.message) || e)}): esta es la ventana PLANEADA` };
+    }
     return res.status(200).json({
       // El SHA, para confirmar que el deploy que contesta es el que se subió.
       build: buildInfo(),
       ahora: new Date().toISOString(),
       compuertas: estadoDeCompuertas(),
-      temporada: { id: ARENA_SEASON.id, start: ARENA_SEASON.start, end: ARENA_SEASON.end },
+      temporada,
     });
   }
 
