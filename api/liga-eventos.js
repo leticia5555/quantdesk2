@@ -43,8 +43,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay } from './_lib/arena-registry.js';
-import { readBaselines } from './_lib/arena-baseline.js';
+import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay, temporadaEfectiva } from './_lib/arena-registry.js';
+import { readBaselines, leerInicioTemporada } from './_lib/arena-baseline.js';
 
 export const TIPOS = ['compra', 'venta', 'rechazo', 'cambio_lider', 'disparador'];
 
@@ -282,12 +282,21 @@ export default async function handler(req, res) {
   const conteos = {};
   for (const t of TIPOS) conteos[t] = eventos.filter((e) => e.tipo === t).length;
 
+  // La temporada EFECTIVA (la que abrió el reset). Si no se puede leer, la
+  // planeada, y la respuesta lo dice.
+  let temporada = temporadaEfectiva(null);
+  let temporadaError = null;
+  try { temporada = temporadaEfectiva(await leerInicioTemporada(ARENA_SEASON.id)); }
+  catch (e) { temporadaError = String((e && e.message) || e); }
+
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
   return res.status(200).json({
     temporada: {
-      id: ARENA_SEASON.id, nombre: ARENA_SEASON.name,
-      start: ARENA_SEASON.start, end: ARENA_SEASON.end,
-      estado: seasonStatus(), dia: seasonDay(),
+      id: temporada.id, nombre: temporada.name,
+      start: temporada.start, end: temporada.end, sesiones: temporada.sesiones,
+      abierta: temporada.abierta,
+      estado: seasonStatus(new Date(), temporada), dia: seasonDay(new Date(), temporada),
+      ...(temporadaError ? { error: `no se pudo leer el inicio real (${temporadaError}): esta es la ventana PLANEADA` } : {}),
     },
     ventana: { dias, desde, corridas: rows.length },
     filtros: { agente, tipos: [...tipos] },

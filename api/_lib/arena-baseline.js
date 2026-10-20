@@ -39,6 +39,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './db.js';
+import { ARENA_SEASON, finDeTemporada } from './arena-registry.js';
 
 // Piso declarado de equity de una temporada. Las cuentas paper arrancan en
 // $100k; env-overridable para poder corregirlo sin deploy si alguna cuenta se
@@ -73,10 +74,18 @@ export const claveInicioTemporada = (seasonId) => `season_start:${seasonId}`;
 export async function marcarInicioTemporada(seasonId, now = new Date()) {
   const clave = claveInicioTemporada(seasonId);
   const ya = await readFlag(clave);
-  if (ya && ya.value && ya.value.start) return { start: ya.value.start, ya_estaba: true, at: ya.value.at || null };
+  if (ya && ya.value && ya.value.start) {
+    const v = ya.value;
+    return { start: v.start, end: v.end || finDeTemporada(v.start, v.sesiones || ARENA_SEASON.sesiones), sesiones: v.sesiones || ARENA_SEASON.sesiones, ya_estaba: true, at: v.at || null };
+  }
   const start = now.toISOString().slice(0, 10);
-  await setFlag(clave, { start, at: now.toISOString() }, `inicio real de la temporada ${seasonId}: el día en que corrió el reset`);
-  return { start, ya_estaba: false, at: now.toISOString() };
+  // El CIERRE se escribe junto al inicio: start + N sesiones hábiles. Con el
+  // inicio solo, la temporada heredaba el `end` de la constante y un reset
+  // tardío la acortaba sin que nadie lo decidiera (20-oct → 30-oct = 9 sesiones).
+  const sesiones = ARENA_SEASON.sesiones;
+  const end = finDeTemporada(start, sesiones);
+  await setFlag(clave, { start, end, sesiones, at: now.toISOString() }, `inicio real de la temporada ${seasonId}: el día en que corrió el reset; cierre = inicio + ${sesiones} sesiones`);
+  return { start, end, sesiones, ya_estaba: false, at: now.toISOString() };
 }
 
 // El inicio EFECTIVO. Devuelve `null` si el reset no corrió todavía — y ese
@@ -87,7 +96,7 @@ export async function marcarInicioTemporada(seasonId, now = new Date()) {
 export async function leerInicioTemporada(seasonId) {
   const row = await readFlag(claveInicioTemporada(seasonId));
   const v = row && row.value;
-  return v && v.start ? { start: String(v.start), at: v.at || null } : null;
+  return v && v.start ? { start: String(v.start), end: v.end ? String(v.end) : null, at: v.at || null } : null;
 }
 
 // ── PURO (testeable sin DB) ──────────────────────────────────────────

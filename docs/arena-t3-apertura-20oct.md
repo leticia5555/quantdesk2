@@ -2,7 +2,8 @@
 
 Verificado contra el código, no de memoria: `api/arena-reset.js`,
 `api/_lib/arena-baseline.js` (`setBaseline`, `marcarInicioTemporada`),
-`api/_lib/arena-benchmark.js` y `api/_lib/arena-registry.js`.
+`api/_lib/arena-benchmark.js` y `api/_lib/arena-registry.js`
+(`finDeTemporada`, `temporadaEfectiva`).
 
 ```bash
 BASE=https://<tu-dominio>          # producción
@@ -10,9 +11,25 @@ BASE=https://<tu-dominio>          # producción
 H="x-admin-key: $ARENA_ADMIN_KEY"
 ```
 
-**Requisito:** este PR mergeado y desplegado ANTES del reset. Es el que hace
-que el anuncio traiga la ventana real, los días fuera de la serie y el ámbar.
-Sin él, el reset funciona igual pero el anuncio sale sin esas tres líneas.
+**Requisito:** el PR del cierre derivado mergeado y desplegado ANTES del
+reset. Es el que hace que el reset escriba `end = inicio + 22 sesiones` y que
+el anuncio publique **2026-10-20 → 2026-11-18**. Sin él, el anuncio diría
+"→ 2026-10-30, 9 sesiones" y el ganador se declararía el 30-oct. **Si
+`?compuertas=1` no muestra `temporada.sesiones`, ese PR no está desplegado:
+no se aprieta.**
+
+## LA APERTURA SON TRES PASOS DE LETY, EN ESTE ORDEN
+
+| # | paso | dónde | §  |
+|---|---|---|---|
+| 1 | **Reset**: dry run → leer el anuncio → `confirm=1` | curl | §1 |
+| 2 | **`ARENA_ENABLED=1` → redeploy sin caché** | panel de Vercel | §2 |
+| 3 | **Verificar** con `?compuertas=1` que `liga_habilitada: true` | curl | §3 |
+
+No son dos: el reset NO abre la liga (sólo aplana, re-basa y escribe la
+temporada), y la env var NO llega al runtime sin el redeploy. Cada paso tiene
+su verificación antes del siguiente. La ventana que queda escrita es
+**2026-10-20 → 2026-11-18, 22 sesiones**; el ganador se declara el 18-nov.
 
 ---
 
@@ -41,7 +58,7 @@ select id, run_date, left(plan, 120) as plan from arena_journal
 
 ---
 
-## 1 · EL RESET — dry run primero
+## 1 · PASO 1 DE 3 — EL RESET: dry run, leer el anuncio, confirm
 
 Con Qwen en ámbar (si la puerta lo deja ahí). Sin ámbar, sacá los dos
 parámetros `ambar` y `ambar_motivo`.
@@ -65,6 +82,7 @@ curl -s "$BASE/api/arena-reset?ambar=qwen&ambar_motivo=su%20proveedor%20ignora%2
 | `verdict` | `DRY RUN — se cancelarían N órdenes y se venderían M posiciones en 7 cuentas. Nada se tocó.` |
 | `warnings` | `[]` |
 | `ambar` | `[{agent: "qwen", motivo: "su proveedor ignora…"}]` (o `[]` sin ámbar) |
+| `season` | `{start: "2026-10-20", end: "2026-11-18", sesiones: 22, start_planeado: "2026-10-01", …}` |
 | `benchmark` | `would_open: true`, `ya_estaba` ausente, `precio` = SPY de hoy |
 | `cuentas` | **7**, todas `ok: true`, ninguna con `failure` |
 | `anuncio` | las líneas de abajo |
@@ -72,15 +90,19 @@ curl -s "$BASE/api/arena-reset?ambar=qwen&ambar_motivo=su%20proveedor%20ignora%2
 **Las líneas del anuncio, en este orden:**
 
 1. `RESET DE LIBROS — arena-t3-2026-10-20. …`
-2. `VENTANA DE LA TEMPORADA: 2026-10-20 → 2026-10-30, 9 sesiones hábiles. … La ventana PLANEADA era 2026-10-01 → 2026-10-30 (4.4 semanas); este corte la acorta…`
+2. `VENTANA DE LA TEMPORADA: 2026-10-20 → 2026-11-18, 22 sesiones hábiles (4.4 semanas de mercado). El último día, 2026-11-18, se declara al ganador… El inicio PLANEADO era 2026-10-01; la temporada abre tarde pero NO se acorta…`
 3. `BASELINE de la temporada: el EQUITY REAL de cada cuenta…` (siete montos)
 4. `CAPITAL DE ARRANQUE, que NO es igual entre los siete: claude $… (posición mínima $…) · …`
-5. `ENFOQUE DEL DÍA — LA REJILLA COMPLETA … 9 sesiones … Reparto por agente — …`
+5. `ENFOQUE DEL DÍA — LA REJILLA COMPLETA … 22 sesiones … Reparto por agente — …`
 6. `DÍAS FUERA DE LA SERIE de la T3 … 2026-09-29 [corrio_contaminado] — … · 2026-09-30 [detenida_a_proposito] — …`
 7. `EN ÁMBAR AL ABRIR: qwen — …` (sólo si se pidió)
 8. `CORTE DE MEMORIA…` · `BENCHMARK PASIVO…` · `Las métricas de ANTES y DESPUÉS…`
 
-**Cualquier `failure`, `warnings` no vacío o `is_open: false`: NO se aprieta.**
+**Leé el anuncio entero antes de seguir.** En ningún lado puede decir
+`2026-10-30` (hay un test que lo prohíbe; si aparece, el deploy es viejo).
+
+**Cualquier `failure`, `warnings` no vacío, `is_open: false` o un `season.end`
+distinto de `2026-11-18`: NO se aprieta.**
 
 ### El reset de verdad — mismo comando + `&confirm=1`
 
@@ -96,7 +118,7 @@ curl -s "$BASE/api/arena-reset?confirm=1&ambar=qwen&ambar_motivo=<el mismo de ar
 | `mode` | `"applied"` |
 | `verdict` | `VERDE: las 7 cuentas quedaron planas y re-basadas a SU equity real (las siete arrancan en 0.00%). Vigilante reactivado. Corte journaleado como arena-t3-2026-10-20.` |
 | `warnings` | `[]` |
-| `inicio_temporada` | `{start: "2026-10-20", ya_estaba: false}` |
+| `inicio_temporada` | `{start: "2026-10-20", end: "2026-11-18", sesiones: 22, ya_estaba: false}` |
 | `journaled` | `true` |
 | `benchmark` | `abierto: true, temporada: "T3"`, `entry` = SPY de hoy |
 | `cuentas` | 7 × `flat: true, baseline_written: true, starting_drawdown_pct: 0` |
@@ -104,9 +126,12 @@ curl -s "$BASE/api/arena-reset?confirm=1&ambar=qwen&ambar_motivo=<el mismo de ar
 `PARCIAL:` en el verdict → no se abre. El reset es idempotente: se puede
 volver a correr con el mercado abierto.
 
+**El reset NO abre la liga.** Después de esto los siete están planos y sin
+halt, pero `ARENA_ENABLED` sigue apagado: nada corre hasta el paso 2.
+
 ---
 
-## ENTRE LOS DOS · arranque limpio (SQL — siete líneas)
+## ENTRE EL PASO 1 Y EL 2 · arranque limpio (SQL — siete líneas)
 
 ```sql
 select s.agent_id,
@@ -130,14 +155,17 @@ contra el libro nuevo antes de abrir.
 Y las tres que cierran el corte:
 
 ```sql
-select value->>'start' as inicio from arena_flags where key = 'season_start:T3';   -- 2026-10-20
+select value->>'start' as inicio, value->>'end' as cierre, value->>'sesiones' as sesiones
+  from arena_flags where key = 'season_start:T3';   -- 2026-10-20 · 2026-11-18 · 22
 select entry, shares, opened_at::date from arena_benchmark where key = 'benchmark:spy:T3';  -- 1 fila, hoy
 select id, status, context->'ambar' as ambar from arena_journal where id = 'arena-t3-2026-10-20';  -- rules_changed
 ```
 
 ---
 
-## 2 · QUITAR EL HALT — que en código son DOS cosas distintas
+## 2 · PASO 2 DE 3 — `ARENA_ENABLED=1` Y REDEPLOY
+
+"Quitar el halt" en código son DOS cosas distintas, y el reset ya hizo una:
 
 **(a) El halt de `arena_state` ya NO existe después del reset.** `setBaseline`
 escribe `halted = false, halted_at = null, halted_reason = null` por agente
@@ -146,21 +174,37 @@ prueba. No hay curl que correr para esto, y no hace falta el
 `update arena_state set halted = false` del runbook del 30-sep.
 
 **(b) Lo que de verdad mantiene la liga cerrada es `ARENA_ENABLED`.** Es una
-env var, no un curl: Vercel → `ARENA_ENABLED=1` → **redeploy sin caché**.
-Después, la verificación (la del 0-bis: el juez es el runtime, no el panel):
+env var, no un curl:
+
+1. Vercel → Settings → Environment Variables → `ARENA_ENABLED` = `1` (Production).
+2. Deployments → el último → **Redeploy, SIN "use existing build cache"**.
+
+Sin el redeploy la variable queda guardada en el panel y el runtime sigue
+viendo la vieja: es exactamente lo que pasó el 29-sep con `ARENA_ENABLED=0`.
+
+---
+
+## 3 · PASO 3 DE 3 — VERIFICAR QUE EL RUNTIME LA VE
+
+El juez es el runtime, no el panel:
 
 ```bash
-curl -s "$BASE/api/arena-audit?compuertas=1" -H "$H" | jq '{build, compuertas: (.compuertas | {liga_habilitada, ARENA_ENABLED, ARENA_MAX_TOKENS, techo_de_salida, presupuesto_razonamiento, lectura})}'
+curl -s "$BASE/api/arena-audit?compuertas=1" -H "$H" | jq '{build, temporada, compuertas: (.compuertas | {liga_habilitada, ARENA_ENABLED, ARENA_MAX_TOKENS, techo_de_salida, presupuesto_razonamiento, lectura})}'
 ```
 
 | campo | esperado |
 |---|---|
-| `build` | el SHA del deploy nuevo |
-| `liga_habilitada` | `true` |
+| `build` | el SHA del deploy nuevo (el del paso 2) |
+| `liga_habilitada` | **`true`** |
 | `ARENA_ENABLED` | `"1"` |
+| `temporada` | `{id: "T3", start: "2026-10-20", end: "2026-11-18", sesiones: 22, abierta: true}` |
 | `ARENA_MAX_TOKENS` | `"12000"` |
 | `techo_de_salida.efectivo` | `12000`, sin `aviso` |
 | `presupuesto_razonamiento.qwen` / `.deepseek` | `{crudo: null, efectivo: null}` |
 | `lectura` | `LA LIGA CORRE: arena-run decide y arena-watch dispara.` |
+
+`liga_habilitada: false` con `ARENA_ENABLED: "1"` en el panel = el redeploy
+no se hizo o usó la caché: repetir el paso 2. **Hasta que esto diga `true`, la
+liga no está abierta**, aunque el reset haya salido VERDE.
 
 La primera ronda fija después de eso es la apertura.

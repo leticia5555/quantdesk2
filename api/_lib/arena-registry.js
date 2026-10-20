@@ -627,6 +627,12 @@ export const ARENA_SEASON = {
   // temporada que dice "4 semanas" y corre 22 sesiones miente en la primera
   // línea que alguien lee.
   weeks: 4.4,
+  // ── LA TEMPORADA SE MIDE EN SESIONES, NO EN FECHAS (2026-10-20) ────
+  // `end` arriba es el cierre de la ventana PLANEADA (start + 22 sesiones). El
+  // cierre REAL se deriva del inicio que escribe el reset: abrir el 20-oct
+  // contra un `end` fijo del 30-oct dejaba una temporada de 9 sesiones que se
+  // seguía llamando "4.4 semanas". Ver `finDeTemporada` y `temporadaEfectiva`.
+  sesiones: 22,
   // Qué se mide para declarar al ganador. Equity, igual que el leaderboard:
   // `claude` arrastra días de ventaja de la T1, así que el return vs. baseline
   // viaja al lado — el caveat de ranking del scope sigue vigente y se publica.
@@ -638,6 +644,38 @@ export const ARENA_SEASON = {
 // registry → arena-run → registry.
 function easternToday(now) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+// ── FERIADOS DE LA NYSE (mercado cerrado todo el día) ───────────────
+// Sólo los que pueden caer dentro de una temporada que abra de acá a fin de
+// 2027. Una fecha fuera de la lista cuenta como sesión si es L-V: el error
+// posible es un cierre UN día antes, nunca una sesión inventada en sábado.
+export const FERIADOS_NYSE = [
+  /* date-lint-ok: calendario NYSE publicado */ '2026-11-26', '2026-12-25',
+  /* date-lint-ok: calendario NYSE publicado */ '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31',
+  /* date-lint-ok: calendario NYSE publicado */ '2027-06-18', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24',
+];
+
+export function esSesionHabil(fecha) {
+  const d = new Date(String(fecha).slice(0, 10) + 'T12:00:00Z');
+  const dow = d.getUTCDay();
+  return Number.isFinite(d.getTime()) && dow !== 0 && dow !== 6 && !FERIADOS_NYSE.includes(String(fecha).slice(0, 10));
+}
+
+// ── EL CIERRE = INICIO + N SESIONES HÁBILES ──────────────────────────
+// La sesión del inicio cuenta como la 1. Abriendo el 2026-10-20 con 22
+// sesiones: 20-24 oct, 27-31 oct, 3-7 nov, 10-14 nov, 17-18 nov → 2026-11-18.
+// Si el inicio cae en un día sin mercado, la 1 es la siguiente sesión.
+export function finDeTemporada(start, sesiones = ARENA_SEASON.sesiones) {
+  const n = Number(sesiones);
+  let t = Date.parse(String(start).slice(0, 10) + 'T12:00:00Z');
+  if (!Number.isFinite(t) || !(n >= 1)) throw new Error(`finDeTemporada: inicio "${start}" o sesiones "${sesiones}" inválidos`);
+  let cuenta = 0;
+  for (;;) {
+    const dia = new Date(t).toISOString().slice(0, 10);
+    if (esSesionHabil(dia) && ++cuenta === n) return dia;
+    t += 86400000;
+  }
 }
 
 // 'pending' (aún no arranca) · 'running' · 'ended' (ya pasó el cierre).
@@ -684,16 +722,24 @@ export const esDiaContaminado = (fecha, season = ARENA_SEASON.id) =>
 //
 // `abierta: false` cuando el reset no corrió: la temporada está DECLARADA y
 // no ABIERTA, que son cosas distintas y hasta hoy se veían iguales.
+//
+// El `end` también es efectivo: el que escribió el reset si lo escribió, y si
+// no, inicio + `sesiones`. NUNCA el `end` planeado con un inicio corrido: eso
+// acortaba la temporada en silencio y declaraba al ganador el día equivocado.
 export function temporadaEfectiva(inicioReal = null, season = ARENA_SEASON) {
   const start = inicioReal && inicioReal.start ? String(inicioReal.start) : null;
+  const end = start
+    ? (inicioReal.end ? String(inicioReal.end) : finDeTemporada(start, season.sesiones))
+    : season.end;
   return {
     ...season,
     start: start || season.start,
     start_planeado: season.start,
+    end,
+    end_planeado: season.end,
     abierta: !!start,
-    // Si el reset corrió DESPUÉS de la fecha planeada, la ventana se corrió y
-    // la temporada tiene menos sesiones de las que `weeks` declara. Se dice,
-    // no se recalcula en silencio.
+    // Si el reset corrió DESPUÉS de la fecha planeada, la ventana entera se
+    // corrió (inicio Y cierre: las sesiones no se pierden). Se dice cuánto.
     corrida_dias: start && start > season.start
       ? Math.round((Date.parse(start) - Date.parse(season.start)) / 86400000)
       : 0,

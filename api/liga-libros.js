@@ -48,7 +48,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay, PROBE_IDS } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay, temporadaEfectiva, PROBE_IDS } from './_lib/arena-registry.js';
 import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
 import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes, resumenDeslizamiento, ordenesDeActions } from './_lib/arena-fills.js';
 // `effectiveCutoff` ya es "la más reciente de dos fechas, tolerando null" — la
@@ -853,6 +853,8 @@ export default async function handler(req, res) {
     avisos.push('No se pudo leer el arranque real de la temporada (' + String((e && e.message) || e) + '): la ventana se acotó con el arranque DECLARADO.');
   }
   const pisoTemporada = (inicioReal && inicioReal.start) || ARENA_SEASON.start;
+  // La temporada EFECTIVA: inicio del reset y cierre = inicio + N sesiones.
+  const temporada = temporadaEfectiva(inicioReal);
   const desde = effectiveCutoff(pisoTemporada, desdePedido);
 
   if (fuente === FUENTE_VIVA || fuente === 'ambas') {
@@ -988,9 +990,10 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
   return res.status(200).json({
     temporada: {
-      id: ARENA_SEASON.id, nombre: ARENA_SEASON.name,
-      start: ARENA_SEASON.start, end: ARENA_SEASON.end,
-      estado: seasonStatus(), dia: seasonDay(),
+      id: temporada.id, nombre: temporada.name,
+      start: temporada.start, end: temporada.end, sesiones: temporada.sesiones,
+      abierta: temporada.abierta,
+      estado: seasonStatus(new Date(), temporada), dia: seasonDay(new Date(), temporada),
     },
     // LA VENTANA, CON SU PISO A LA VISTA. Una ventana acotada en silencio y
     // una temporada sin corridas se ven idénticas desde la pantalla: las dos

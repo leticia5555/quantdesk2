@@ -56,7 +56,7 @@ console.log('\n── idempotente, como el benchmark ──');
 {
   const baseline = leer('api/_lib/arena-baseline.js');
   const fn = baseline.slice(baseline.indexOf('export async function marcarInicioTemporada'));
-  ok(/const ya = await readFlag\(clave\);\s*\n\s*if \(ya && ya\.value && ya\.value\.start\) return/.test(fn.slice(0, 700)),
+  ok(/const ya = await readFlag\(clave\);\s*\n\s*if \(ya && ya\.value && ya\.value\.start\) (return|\{)/.test(fn.slice(0, 700)),
     'lee ANTES de escribir: un segundo reset no mueve el día 1');
   ok(/ya_estaba: true/.test(fn.slice(0, 700)),
     'y lo dice, para que el reset pueda reportarlo en vez de callarlo');

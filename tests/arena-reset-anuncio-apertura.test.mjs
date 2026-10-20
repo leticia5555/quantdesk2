@@ -3,8 +3,8 @@
 // la ventana REAL, los días fuera de la serie y el ámbar con su causa.
 //
 // 2026-10-20: la T3 abre tarde. ARENA_SEASON planeaba 2026-10-01 → 10-30 (22
-// sesiones); abriendo el 20 quedan 9. El anuncio del reset es el de apertura,
-// y no puede publicar la ventana planeada como si fuera la real.
+// sesiones). La temporada NO se acorta: el cierre es inicio + 22 sesiones
+// (→ 2026-11-18), y el anuncio publica ESA ventana, no la planeada.
 // ═══════════════════════════════════════════════════════════════════
 
 import test from 'node:test';
@@ -18,16 +18,16 @@ const rows = ['claude', 'control', 'openai', 'grok', 'gemini', 'deepseek', 'qwen
 const HOY = new Date('2026-10-20T14:30:00Z');
 const MOTIVO = 'su proveedor ignora el presupuesto de razonamiento (reasoning.max_tokens); corre con ARENA_MAX_TOKENS=12000 y se arregla fijando proveedor cuando view=cierres diga cuál lo respeta';
 
-test('la ventana es la REAL (desde hoy) y dice que la planeada se acortó', () => {
+test('la ventana es la REAL: desde hoy, 22 sesiones, y dice que el inicio se corrió', () => {
   const a = resetAnnouncement({ resetId: 'arena-t3-2026-10-20', baselineUsd: 100000, rows, now: HOY });
-  assert.match(a, /VENTANA DE LA TEMPORADA: 2026-10-20 → 2026-10-30, 9 sesiones hábiles/);
-  assert.match(a, /La ventana PLANEADA era 2026-10-01 → 2026-10-30/);
+  assert.match(a, /VENTANA DE LA TEMPORADA: 2026-10-20 → 2026-11-18, 22 sesiones hábiles/);
+  assert.match(a, /El inicio PLANEADO era 2026-10-01; la temporada abre tarde pero NO se acorta/);
 });
 
 test('capital de arranque con posición mínima, y la rejilla de enfoques', () => {
   const a = resetAnnouncement({ resetId: 'x', baselineUsd: 100000, rows, now: HOY });
   assert.match(a, /CAPITAL DE ARRANQUE.*qwen \$94000 \(posición mínima \$1880\)/);
-  assert.match(a, /ENFOQUE DEL DÍA — LA REJILLA COMPLETA.*9 sesiones/);
+  assert.match(a, /ENFOQUE DEL DÍA — LA REJILLA COMPLETA.*22 sesiones/);
 });
 
 test('los días fuera de la serie salen de la lista oficial, con su motivo', () => {

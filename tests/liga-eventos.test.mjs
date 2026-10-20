@@ -171,6 +171,7 @@ ok(cambiosDeLider({}, {}).length === 0, 'sin serie, sin eventos');
 // ═══ handler de punta a punta ══════════════════════════════════════
 console.log('eventos: handler /api/liga/eventos (solo lectura)');
 const neonQueries = [];
+let flagT3 = null; // el inicio que escribió el reset, cuando lo hay
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
   if (!u.includes('neon.tech')) throw new Error('el endpoint NO debe llamar a nada que no sea el journal: ' + u);
@@ -180,6 +181,9 @@ global.fetch = async (url, opts = {}) => {
     ok: true, status: 200, headers: { get: () => 'application/json' },
     json: async () => ({ fields, rows }), text: async () => '',
   });
+  if (/from arena_flags/.test(body.query)) {
+    return reply([{ name: 'value', dataTypeID: 3802 }], flagT3 ? [[JSON.stringify(flagT3)]] : []);
+  }
   // CADENCIA: los DISPARADORES viven en su propia tabla (son muchos más que las
   // corridas y la mayoría de las lecturas no los pide) → su propia consulta.
   if (/from arena_watch\b/.test(body.query)) {
@@ -222,7 +226,9 @@ ok(res.code === 200 && Array.isArray(res.body.eventos), 'responde 200 con el fee
 ok(neonQueries.length >= 2 && neonQueries.every((q) => /^\s*select/i.test(q.trim())),
   'TODAS las consultas son SELECT: cero writes, como la auditoría',
   JSON.stringify(neonQueries.length));
-ok(!neonQueries.some((q) => /ensure|create table|alter table|insert|update/i.test(q)),
+// `\bupdate\b` y no `update`: el SELECT de arena_flags (la temporada efectiva)
+// lee la columna `updated_at`, y eso no es un write.
+ok(!neonQueries.some((q) => /ensure|create table|alter table|\binsert\b|\bupdate\b/i.test(q)),
   'ninguna consulta crea, migra ni escribe nada');
 ok(/context->'headline'/.test(neonQueries[0]) && !/context\s*,/.test(neonQueries[0]),
   'del context se proyecta SOLO el titular (el resto son los prompts completos: megabytes)', neonQueries[0].slice(0, 120));
@@ -250,6 +256,17 @@ ok(disparos.every((d) => d.titular === undefined),
   'un disparador NO lleva titular: es anterior a la decisión, y a esa altura todavía no hay voz que narre nada');
 ok(res.body.temporada.id === ARENA_SEASON.id && res.body.temporada.start === ARENA_SEASON.start,
   'el feed viene con la temporada EN CURSO, sea cual sea (era T2 clavado)', JSON.stringify(res.body.temporada));
+ok(res.body.temporada.abierta === false && res.body.temporada.end === ARENA_SEASON.end,
+  'sin reset, la ventana PLANEADA y dice que no está abierta', JSON.stringify(res.body.temporada));
+{
+  // Con el reset del 20-oct escrito: la temporada que publica es la efectiva.
+  flagT3 = { start: '2026-10-20', end: '2026-11-18', sesiones: 22 };
+  const r2 = mkRes();
+  await handler({ method: 'GET', query: {} }, r2);
+  flagT3 = null;
+  ok(r2.body.temporada.start === '2026-10-20' && r2.body.temporada.end === '2026-11-18' && r2.body.temporada.abierta === true,
+    'con el reset escrito, publica 2026-10-20 → 2026-11-18 (no el cierre planeado)', JSON.stringify(r2.body.temporada));
+}
 ok(res.body.conteos && TIPOS.every((t) => t in res.body.conteos), 'con conteos por tipo', JSON.stringify(res.body.conteos));
 ok(/s-maxage/.test(res.headers['Cache-Control'] || ''), 'cacheado en el edge como el leaderboard', res.headers['Cache-Control']);
 
