@@ -1107,6 +1107,13 @@ export function resumenDeCierres(rows = [], { techoActual, reservaMs } = {}) {
       reasoning_tokens: l.reasoning_tokens ?? null, techo_usado: l.techo_usado ?? null,
       truncado: l.truncado ?? null, truncado_por: l.truncado_por || null,
       ms: l.ms ?? null, tokens_por_s: l.tokens_por_s ?? null,
+      // El presupuesto de razonamiento que se PIDIÓ y quién atendió (desde el
+      // 2026-10-20). `razonamiento_excedido` es la prueba que la sonda no
+      // puede dar: este cierre, por el camino real, pensó más de lo pedido.
+      presupuesto_razonamiento: l.presupuesto_razonamiento ?? null,
+      proveedor: l.proveedor || null,
+      razonamiento_excedido: l.presupuesto_razonamiento != null && l.reasoning_tokens != null
+        ? l.reasoning_tokens > l.presupuesto_razonamiento * 1.1 : null,
       reintento: rj ? { concedido: !!rj.concedido, resuelto: rj.resuelto ?? null, causa: rj.causa || null } : null,
       cola: l.cola || null,
     });
@@ -1114,8 +1121,15 @@ export function resumenDeCierres(rows = [], { techoActual, reservaMs } = {}) {
 
   const por = new Map();
   for (const c of cierres) {
-    const a = por.get(c.agente) || { agente: c.agente, cierres: 0, cortados: 0, rescatados: 0, limpios: [], razonamiento_en_cortes: [], velocidades: [] };
+    const a = por.get(c.agente) || { agente: c.agente, cierres: 0, cortados: 0, rescatados: 0, limpios: [], razonamiento_en_cortes: [], velocidades: [], excedidos: 0, con_presupuesto: 0, proveedores: {} };
     a.cierres++;
+    if (c.presupuesto_razonamiento != null) a.con_presupuesto++;
+    if (c.razonamiento_excedido) a.excedidos++;
+    if (c.proveedor) {
+      const pv = a.proveedores[c.proveedor] || (a.proveedores[c.proveedor] = { cierres: 0, excedidos: 0 });
+      pv.cierres++;
+      if (c.razonamiento_excedido) pv.excedidos++;
+    }
     if (c.truncado === true) {
       a.cortados++;
       if (c.reintento && c.reintento.resuelto) a.rescatados++;
@@ -1132,6 +1146,9 @@ export function resumenDeCierres(rows = [], { techoActual, reservaMs } = {}) {
     solo_cota_inferior: a.cortados > 0 && !a.limpios.length,
     razonamiento_en_cortes: a.razonamiento_en_cortes,
     tokens_por_s_mediana: mediana(a.velocidades),
+    // Cuántos cierres con presupuesto lo PASARON, y por proveedor: si uno
+    // respeta y otro no, el arreglo es fijar proveedor, no subir el techo.
+    presupuesto_razonamiento: a.con_presupuesto ? { cierres_con_presupuesto: a.con_presupuesto, excedidos: a.excedidos, por_proveedor: a.proveedores } : null,
   })).sort((x, y) => y.cortados - x.cortados);
 
   // ── LAS DOS COTAS ──
@@ -1148,6 +1165,13 @@ export function resumenDeCierres(rows = [], { techoActual, reservaMs } = {}) {
   const masLento = velocidades.length ? Math.min(...velocidades) : null;
   const techoPorReloj = masLento != null && Number.isFinite(reservaMs) ? Math.floor((masLento * reservaMs) / 1000 / 1000) * 1000 : null;
 
+  // El presupuesto de razonamiento, medido en el camino REAL. Va antes que la
+  // recomendación del techo: si el presupuesto no se respeta, el piso que
+  // piden los cortes se calcula sobre un pensamiento sin tope.
+  const ignoran = agentes.filter((a) => a.presupuesto_razonamiento && a.presupuesto_razonamiento.excedidos > 0);
+  const razonamiento = ignoran.length
+    ? `PRESUPUESTO DE RAZONAMIENTO IGNORADO en el camino real: ${ignoran.map((a) => `${a.agente} ${a.presupuesto_razonamiento.excedidos}/${a.presupuesto_razonamiento.cierres_con_presupuesto}${Object.keys(a.presupuesto_razonamiento.por_proveedor).length ? ` (${Object.entries(a.presupuesto_razonamiento.por_proveedor).map(([p, v]) => `${p} ${v.excedidos}/${v.cierres}`).join(', ')})` : ''}`).join(' · ')}. Una sonda con "respetado" no lo contradice: no se puso a prueba.`
+    : null;
   const lectura = !cierres.length ? 'No hay cierres con `lectura_cierre` en la ventana.'
     : !huboCortes ? `Ningún cierre cortó: ${techoActual} alcanza en la ventana.`
       : techoPorReloj == null
@@ -1156,5 +1180,5 @@ export function resumenDeCierres(rows = [], { techoActual, reservaMs } = {}) {
           ? `Subir a ${piso}: es el piso que piden los cortes y cabe en el reloj (el más lento escribe ~${techoPorReloj} tokens en ${Math.round(reservaMs / 1000)}s).`
           : `CONFLICTO: los cortes piden ≥ ${piso} y el más lento sólo escribe ~${techoPorReloj} en la reserva de ${Math.round(reservaMs / 1000)}s. Subir el techo cambiaría cortes por timeouts: hay que subir la reserva del cierre o bajar el effort, no sólo el techo.`;
 
-  return { techo_actual: techoActual ?? null, reserva_cierre_ms: reservaMs ?? null, piso, techo_por_reloj: techoPorReloj, lectura, agentes, cierres };
+  return { techo_actual: techoActual ?? null, reserva_cierre_ms: reservaMs ?? null, piso, techo_por_reloj: techoPorReloj, lectura, ...(razonamiento ? { razonamiento } : {}), agentes, cierres };
 }
