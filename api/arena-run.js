@@ -91,7 +91,7 @@ import { cachedDayFetch } from './_lib/arena-buffet-cache.js';
 // movers + most-actives + máx/mín de 52 semanas, deduplicado con banderas).
 import { buildBuffetV15, BUFFET_V15_TARGET } from './_lib/arena-buffet.js';
 // B1: el universo del día (~600), precomputado por su cron pre-apertura.
-import { loadUniverse } from './_lib/arena-universe.js';
+import { loadUniverse, abrirPuertaEnVivo, fusionarPuerta, resumenPuerta, PUERTA_VIVO_ENABLED, PUERTA_VIVO_MS } from './_lib/arena-universe.js';
 // B6: los rieles, para que el prompt del contrato nuevo diga los MISMOS números
 // que el validador hace cumplir. Dos fuentes para el mismo tope es cómo el
 // prompt termina prometiendo algo que el harness rechaza.
@@ -121,7 +121,7 @@ import { callArenaLLM, providerKey, effectiveParams, sameParams, withDeadline, c
 // arquetipo NUNCA entra al prompt que decide — ver el candado del control en el
 // encabezado de _lib/arena-voice.js.
 import { generateHeadline } from './_lib/arena-voice.js';
-import { ARENA_AGENTS, competidores, ligaApagada, PROMPT_VERSION, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, competidores, ligaApagada, PROMPT_VERSION, ARENA_SEASON, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, ARENA_AGENT_DEADLINE_MS, ANTHROPIC_CACHE_MIN_TOKENS, activeAgents, agentById, agentAlpacaCreds, isSeasonFinalDay, seasonDay, seasonStatus, temporadaEfectiva, modelSlugResolved, FLAGSHIP_AGENT_ID } from './_lib/arena-registry.js';
 // CADENCIA POR EVENTO: el corte de fecha y las constantes del vigilante.
 // El runner solo necesita saber CUÁNDO deja de correr el cron nocturno y qué
 // dice el reglamento nuevo; la lógica de disparadores vive en su módulo.
@@ -129,7 +129,7 @@ import { WATCH_RULES, watchCadenceActive, watchStartDate } from './_lib/arena-wa
 // EL CORTE: baseline por agente (reset) + el piso del pico del breaker.
 // Ver _lib/arena-baseline.js — SEASON_CUTOFF sigue siendo el suelo, el baseline
 // solo lo puede mover hacia ADELANTE.
-import { effectiveCutoff, breakerPeak, RESET_BASELINE_USD, readBaselines, leerEstadoAgente } from './_lib/arena-baseline.js';
+import { effectiveCutoff, breakerPeak, RESET_BASELINE_USD, readBaselines, leerEstadoAgente, leerInicioTemporada } from './_lib/arena-baseline.js';
 
 // Re-export: la detección de leveraged/inverse vive en el guard (hogar de las
 // reglas de universo); el buffet (trimMovers) la reusa y los tests de
@@ -873,6 +873,19 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   try { universeBase = await loadUniverse({ now }); }
   catch (e) { fetch_errors.universe_load = String((e && e.message) || e); }
 
+  // ── LA PUERTA EN VIVO ─────────────────────────────────────────────
+  // Lo del día del universo es de las 13:00 UTC, o sea los movers de AYER.
+  // Acá entran los de AHORA, con los mismos pisos (ver abrirPuertaEnVivo). Se
+  // lanza ya y se espera antes del tablero, en paralelo con el buffet v1.5.
+  // Techo propio: el buffet corre dentro del deadline de cada agente.
+  const puertaPromise = !PUERTA_VIVO_ENABLED
+    ? Promise.resolve({ abierta: false, motivo: 'apagada (ARENA_PUERTA_VIVO=0)', entraron: 0, simbolos: [] })
+    : Promise.race([
+      abrirPuertaEnVivo(universeBase, { creds: alpacaCreds(), now })
+        .catch((e) => ({ abierta: false, motivo: 'error', error: String((e && e.message) || e), entraron: 0, simbolos: [] })),
+      new Promise((r) => setTimeout(() => r({ abierta: false, motivo: `timeout (${Math.round(PUERTA_VIVO_MS / 1000)}s)`, entraron: 0, simbolos: [] }), PUERTA_VIVO_MS).unref?.()),
+    ]);
+
   let universe = null;
   if (BUFFET_V15_ENABLED) {
     try {
@@ -946,6 +959,9 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   // ANTES del índice de atribución porque sus nombres también cuentan como
   // procedencia. Solo agrega lo INTRADÍA: el universo y el rango de 52 semanas
   // ya vienen precomputados del cron pre-apertura.
+  const puerta_en_vivo = await puertaPromise;
+  universeBase = fusionarPuerta(universeBase, puerta_en_vivo);
+
   let board = null;
   let boardRender = null;
   if (BOARD_ENABLED) {
@@ -1021,6 +1037,10 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
       ...boardRender, text: undefined,
       universe_size: board.universe_size, covered: board.covered, coverage_pct: board.coverage_pct,
       errors: board.errors,
+      // Lo que el tablero no pudo armar, dicho (hoy: sin RVOL). Viaja al
+      // journal y a la respuesta de la sombra, no sólo al texto del prompt.
+      avisos: board.avisos && board.avisos.length ? board.avisos : null,
+      sin_rvol: board.sin_rvol || null,
     } : null,
     movers, earnings_this_week,
     // BUFFET v1.5 — SOLO la parte que ve el PM. El diagnóstico (unavailable,
@@ -1046,6 +1066,7 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
         size: (universeBase.symbols || []).length,
         from_index: (universeBase.from_index || []).length,
         from_day: (universeBase.from_day || []).length,
+        from_live: (universeBase.from_vivo || []).length,
         ...(universeBase.note ? { note: universeBase.note } : {}),
       } : null,
     } : null,
@@ -1059,6 +1080,9 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
         caveat: universeBase.caveat,
       } : { loaded: false, note: 'El cron pre-apertura no dejó universo. El buffet corre solo con los nombres del día.' },
     } : null,
+    // Cuántos y cuáles entraron por la puerta en vivo EN ESTA CORRIDA. NO viaja
+    // al prompt; se journalea en la fila de cada agente.
+    puerta_en_vivo: resumenPuerta(puerta_en_vivo),
     // Rechazados por admisión, con su motivo y su canal. NO viaja al prompt
     // (el PM no necesita la lista de lo que no vio) — se journalea, y es cómo
     // se audita si el filtro está tirando micro-caps (lo que debe) o nombres
@@ -2079,6 +2103,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     context.unavailable = buffet.unavailable;
     context.fetch_errors = buffet.fetch_errors;
     context.admission = buffet.admission;
+    context.puerta_en_vivo = buffet.puerta_en_vivo || null;
     context.scan = { prompt: { system: scanSystem, shared: scanShared, user: scanUser }, hash: scanHash, model: agent.model };
     context.scan.cache_prefix = cachePrefixReport(agent, [scanSystem, scanShared]);
 
@@ -2292,6 +2317,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     executor = createToolExecutor({
       budget: toolBudget,
       board: boardForTools, universe: universeForTools, creds, now,
+      posiciones: positions || [], equity: Number(account && account.equity),
       deps: { sectorOf: (sym) => sectorPorSimbolo[sym] || null },
     });
     const loop = await runToolLoop({
@@ -3097,6 +3123,15 @@ export async function announceModelChange(now = new Date()) {
 // quedaría sellado el día equivocado para siempre.
 export const SEASON_OPEN_ID = 'arena-temporada-' + ARENA_SEASON.id + '-apertura';
 
+// ── LA TEMPORADA VIGENTE: la que escribió el reset, no la constante ───
+// `{ temporada, error }`. Si la lectura falla, `temporada` es la PLANEADA y
+// `error` lo dice: quien declare algo irreversible (el ganador) tiene que
+// mirar `error` y no declarar; quien solo informa puede usar la planeada.
+export async function temporadaVigente() {
+  try { return { temporada: temporadaEfectiva(await leerInicioTemporada(ARENA_SEASON.id)), error: null }; }
+  catch (e) { return { temporada: temporadaEfectiva(null), error: String((e && e.message) || e) }; }
+}
+
 export async function announceSeasonOpen(now = new Date()) {
   const agents = activeAgents();
   // El padrón es `competidores()`, no `ARENA_AGENTS`. El 2026-09-25 entraron al
@@ -3108,12 +3143,13 @@ export async function announceSeasonOpen(now = new Date()) {
   if (agents.length < padron.length) {
     return { announced: false, reason: 'liga incompleta', active: agents.length, total: padron.length };
   }
+  const { temporada } = await temporadaVigente();
   const casa = { us: '🇺🇸', china: '🇨🇳', control: 'control' };
   const roster = agents.map((a) => `${a.name} (${a.model_label}, ${casa[a.house] || a.house})`).join(' · ');
   const plan = [
     `${ARENA_SEASON.name.toUpperCase()} — ARRANCA LA LIGA COMPLETA. Los ${agents.length} agentes corren desde hoy el MISMO harness, la MISMA temperatura y el MISMO reglamento (vigente desde ${T2_RULES_VERSION}), cada uno sobre su propio libro Alpaca paper.`,
     `En pista: ${roster}.`,
-    `Ventana de la temporada: ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas de mercado). El último día se declara al ganador por equity.`,
+    `Ventana de la temporada: ${temporada.start} → ${temporada.end} (${temporada.sesiones} sesiones, ${temporada.weeks} semanas de mercado). El último día se declara al ganador por equity.`,
     'El CONTROL (Haiku-B) comparte modelo, prompt y temperatura con Claude y solo cambia de cuenta: es el piso de ruido. Sin él, cualquier diferencia entre modelos podría ser el orden de los fills y nada más.',
     'Experimento sin validación estadística, paper trading, no es asesoría.',
   ].join('\n');
@@ -3123,7 +3159,7 @@ export async function announceSeasonOpen(now = new Date()) {
        values ($1,$2,'decide','season_started',$3,$4,$5,'league') on conflict (id) do nothing`,
       [SEASON_OPEN_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
        JSON.stringify({
-         season: ARENA_SEASON, rules_version: T2_RULES_VERSION, opened_on: now.toISOString().slice(0, 10),
+         season: temporada, rules_version: T2_RULES_VERSION, opened_on: now.toISOString().slice(0, 10),
          agents: agents.map((a) => ({ id: a.id, name: a.name, model: a.model, house: a.house, control: !!a.control })),
        })],
     );
@@ -3190,8 +3226,17 @@ export function rankSeasonStandings(results = [], baseline = BASELINE_EQUITY) {
 
 // Journalea el cierre. Idempotente por id: si el último día corren decide y la
 // matutina, o el cron se repite, la fila entra UNA vez y no cambia de ganador.
-export async function declareSeasonWinner(results, now = new Date()) {
-  if (!isSeasonFinalDay(now)) return { declared: false, reason: 'no es el último día de la temporada' };
+//
+// El último día es el de la temporada EFECTIVA (inicio del reset + N
+// sesiones), no el `end` de la constante: con la constante, una T3 abierta el
+// 20-oct coronaba al ganador el 30-oct, a 9 sesiones, y el id idempotente
+// bloqueaba después la declaración del día correcto. Si no se puede leer el
+// inicio, NO se declara: un ganador sellado el día equivocado no se corrige.
+export async function declareSeasonWinner(results, now = new Date(), vigente = null) {
+  const { temporada, error } = vigente || await temporadaVigente();
+  if (error) return { declared: false, reason: `no se pudo leer el inicio de la temporada (${error}): no se declara contra la fecha planeada` };
+  if (!temporada.abierta) return { declared: false, reason: 'la temporada no está abierta (el reset no corrió): no hay ganador que declarar' };
+  if (!isSeasonFinalDay(now, temporada)) return { declared: false, reason: `no es el último día de la temporada (${temporada.end})` };
   // Baselines reales por agente. Best-effort: si la DB no contesta, cae al
   // global — un cierre de temporada no se cancela porque falte un denominador,
   // pero el denominador correcto es el que escribió el reset.
@@ -3211,7 +3256,7 @@ export async function declareSeasonWinner(results, now = new Date()) {
     `${ARENA_SEASON.name.toUpperCase()} — CIERRE. Gana ${winner.name} con ${winner.return_pct >= 0 ? '+' : ''}${winner.return_pct}% (equity ${winner.equity} sobre un baseline de ${winner.baseline_equity}).`,
     `Podio: ${podio}.`,
     sin_equity.length ? `Sin equity reportado (no rankean): ${sin_equity.map((r) => r.name || r.id).join(', ')}.` : null,
-    `Ventana: ${ARENA_SEASON.start} → ${ARENA_SEASON.end} (${ARENA_SEASON.weeks} semanas de mercado).`,
+    `Ventana: ${temporada.start} → ${temporada.end} (${temporada.sesiones} sesiones, ${temporada.weeks} semanas de mercado).`,
     'CAVEATS, los de siempre: paper trading, una sola temporada, sin validación estadística, y el agente insignia arrastra días de ventaja de la Temporada 1. Se gana por RETORNO contra el baseline propio, no por equity bruto: las siete cuentas no arrancaron del mismo capital y coronar al que arrancó con más plata no mediría nada. Esto no es asesoría.',
   ].filter(Boolean).join('\n');
   try {
@@ -3219,7 +3264,7 @@ export async function declareSeasonWinner(results, now = new Date()) {
       `insert into arena_journal (id, run_date, phase, status, prompt_version, plan, context, agent_id)
        values ($1,$2,'decide','season_winner',$3,$4,$5,'league') on conflict (id) do nothing`,
       [SEASON_WINNER_ID, now.toISOString().slice(0, 10), PROMPT_VERSION, plan,
-       JSON.stringify({ season: ARENA_SEASON, metric: ARENA_SEASON.metric, baseline: baselines, winner, standings, sin_equity })],
+       JSON.stringify({ season: temporada, metric: ARENA_SEASON.metric, baseline: baselines, winner, standings, sin_equity })],
     );
     return { declared: true, winner };
   } catch (e) { return { declared: false, reason: String((e && e.message) || e) }; }
@@ -3478,8 +3523,10 @@ export async function runArenaLeague({ baseUrl, now = new Date() } = {}) {
 
   // Cierre de temporada: solo el ÚLTIMO día, con el equity que cada agente
   // acaba de reportar (cero llamadas extra a Alpaca).
-  const season = { id: ARENA_SEASON.id, status: seasonStatus(now), day: seasonDay(now), start: ARENA_SEASON.start, end: ARENA_SEASON.end };
-  const closing = await declareSeasonWinner(results, now);
+  const vigente = await temporadaVigente();
+  const t = vigente.temporada;
+  const season = { id: t.id, status: seasonStatus(now, t), day: seasonDay(now, t), start: t.start, end: t.end, abierta: t.abierta, ...(vigente.error ? { error: vigente.error } : {}) };
+  const closing = await declareSeasonWinner(results, now, vigente);
   return {
     agents: results, league: results.map((r) => r.id), season,
     budget: {

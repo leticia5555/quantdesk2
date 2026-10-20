@@ -489,6 +489,11 @@ console.log('\n── el ciclo se cierra solo: bajar → guardar → leer → re
   // La "base de datos": un objeto que sobrevive entre llamadas, como Neon.
   const neon = {};
   let llamadasAFmp = 0;
+  // `sinRed` cierra TODAS las puertas, no sólo las dos de arriba: incluye
+  // `fetchDesdeEtf` y `fetchNasdaq100` —que es lo que main inyectaba a mano
+  // acá— y las trece restantes. Sin ellas, este bloque bajaba el CSV real de
+  // IVV y la tabla pública del Nasdaq-100 en CI, que sí tiene red, y "la
+  // primera corrida baja de FMP" salía `etf`.
   const deps = sinRed({
     fetchConstituents: async (index) => {
       llamadasAFmp++;
@@ -716,6 +721,7 @@ console.log('\n── el filtro de instrumento corre ANTES del tope ──');
     deps: sinRed({
       cargarCatalogo: async () => catalogo,
       fetchConstituents: async () => null,
+      fetchNasdaq100: async () => null,   // sin red: ver depsBase
       fetchDesdeEtf: async () => null,
       fetchNasdaq100: async () => null,   // sin esto, en CI entran los 104 de la tabla viva
       readStored: async () => null,
@@ -849,6 +855,7 @@ console.log('\n── el Nasdaq 100 ausente no degrada ni ensucia ──');
     fetchDesdeEtf: async (i) => (i === 'sp500'
       ? { index: i, source: 'etf', etf: 'IVV', built_at: HOY.toISOString(), symbols: sp500 }
       : null),
+    fetchNasdaq100: async () => null,   // "ausente" tiene que serlo de verdad, también con red
     fetchConstituents: async () => null,
     readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
     getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),

@@ -122,6 +122,12 @@ section{padding:18px 0 4px;}
 .steprows{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;margin-top:3px;}
 .steprows .zero{color:var(--amber);}
 .step.ref .steptool{color:var(--red);}
+.steprows .fallo,.cadena .fallo{color:var(--red);font-weight:700;}
+/* la cadena, a la vista sin abrir la tarjeta */
+.cadena{font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.7;margin-top:10px;word-break:break-word;}
+.cadena .flecha{color:var(--text3);}
+.cadena .zero{color:var(--amber);}
+.cadena .rech{color:var(--text3);font-style:italic;}
 
 /* tesis / órdenes */
 .tesis{font-size:12px;color:var(--text2);line-height:1.55;padding:7px 0;border-bottom:1px solid var(--border);}
@@ -267,18 +273,32 @@ function seqHtml(inv){
   return inv.pasos.map(s=>{
     const args=argsStr(s.argumentos);
     // 0 filas se marca: un filtro que vacía el embudo es el dato, no un hueco.
-    const filas = s.filas==null ? '' :
-      '<span class="'+(s.filas===0?'zero':'')+'">'+s.filas+' fila'+(s.filas===1?'':'s')+'</span>';
+    // Y una FALLA no es 0 filas: la herramienta no devolvió nada, se dice.
+    const filas = s.rechazada ? '' :
+      s.falló ? '<span class="fallo">✕ '+esc(s.resultado||'falló')+'</span>' :
+      s.filas==null ? '' :
+      '<span class="'+(s.filas===0?'zero':'')+'">'+esc(s.resultado||(s.filas+' filas'))+'</span>';
     const extra=[filas, s.truncado?'truncado':'', s.ms!=null?Math.round(s.ms)+' ms':'']
       .filter(Boolean).join(' · ');
     return '<div class="step'+(s.rechazada?' ref':'')+'">'+
-      '<div class="stepn">'+esc(s.n)+'</div><div class="stepb">'+
+      '<div class="stepn">'+esc(s.n!=null?s.n:'·')+'</div><div class="stepb">'+
       '<div class="steptool">'+esc(s.herramienta||'—')+(s.rechazada?' · rechazada':'')+'</div>'+
       (args?'<div class="stepargs">'+esc(args)+'</div>':'')+
       (extra?'<div class="steprows">'+extra+'</div>':'')+
-      (s.rechazada?'<div class="steprows">'+esc(s.rechazada)+'</div>':'')+
+      (s.rechazada?'<div class="steprows">'+esc(s.resultado||s.rechazada)+'</div>':'')+
       '</div></div>';
   }).join('');
+}
+
+// "ficha MU → 9 líneas · noticias NVDA → 5 titulares · screener() → ✕ falló".
+// La etiqueta y el resultado los arma el servidor (los mismos en /liga).
+function cadenaHtml(inv){
+  if(!inv||!inv.pasos||!inv.pasos.length) return '';
+  return '<div class="cadena">'+inv.pasos.map(s=>{
+    const cls = s.rechazada ? 'rech' : s.falló ? 'fallo' : (s.filas===0?'zero':'');
+    return esc(s.etiqueta||s.herramienta||'—')+' <span class="flecha">→</span> '+
+      '<span class="'+cls+'">'+(s.falló?'✕ ':'')+esc(s.resultado||'')+'</span>';
+  }).join(' <span class="flecha">·</span> ')+'</div>';
 }
 
 function pesosHtml(p){
@@ -452,6 +472,7 @@ function cardHtml(l,i){
       (l.plan?'<div class="plan">'+esc(l.plan)+'</div>'
         :(l.fallo?'':'<div class="plan">'+esc(l.error||'Sin plan publicado.')+'</div>'))+
       pesosHtml(l.portafolio)+
+      cadenaHtml(inv)+
       '<span class="toggle" data-card="'+i+'" data-resumen="'+esc(invResumen)+'">ver la investigación ('+esc(invResumen)+') ↓</span>'+
       '<div class="detalle">'+
         '<div class="blk"><h4>La investigación<em>'+esc(invResumen)+'</em></h4>'+seqHtml(inv)+'</div>'+
@@ -577,7 +598,10 @@ function render(){
 }
 
 async function load(){
-  DATA=await getJSON('/api/liga/libros?dias=7');
+  // `?agente=<id>` llega desde la fila de cada agente en /liga.
+  let agente=null;
+  try{ agente=new URLSearchParams(location.search).get('agente'); }catch(e){}
+  DATA=await getJSON('/api/liga/libros?dias=7'+(agente?'&agente='+encodeURIComponent(agente):''));
   if(!DATA||!Array.isArray(DATA.libros)){
     $('cards').innerHTML='<div class="card"><div class="cbody"><div class="plan" style="border:0">Los libros no están disponibles ahora mismo. Volvé en un momento.</div></div></div>';
     return;

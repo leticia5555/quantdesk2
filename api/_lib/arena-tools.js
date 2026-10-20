@@ -294,6 +294,20 @@ export async function runScreener(args, ctx) {
   const conNoticia = ctx.newsSymbols || new Set();
   let r = filas;
 
+  // ── SIN RVOL HOY: SE DICE, NO SE DEVUELVE UNA LISTA VACÍA ───────────
+  // Si el tablero no tiene RVOL para ningún nombre (falló el promedio de 20
+  // sesiones), `rvol_top` y `min_rvol` vacían el embudo por construcción. Eso
+  // no es "ningún nombre cumple": es "no tenemos el dato". Se contesta ANTES
+  // de filtrar, con el motivo, y se marca como dato faltante.
+  const pideRvol = args.rvol_top === true || args.min_rvol != null;
+  const sinRvol = (ctx.board && ctx.board.sin_rvol) || (!filas.some((f) => f.rvol != null) ? { motivo: 'ningún nombre del tablero tiene RVOL' } : null);
+  if (pideRvol && sinRvol) {
+    return {
+      text: `Screener sin RVOL hoy: ${sinRvol.motivo}. El filtro \`${args.rvol_top ? 'rvol_top' : 'min_rvol'}\` no se puede aplicar — NO significa que no haya volumen inusual, significa que hoy no lo pudimos medir. Probá el mismo pedido sin filtrar por RVOL.`,
+      rows: 0, datos_faltantes: ['rvol'],
+    };
+  }
+
   // ── EL EMBUDO: QUÉ FILTRO SE LLEVÓ LAS FILAS ───────────────────────
   // "0 filas" es la respuesta menos accionable posible: no distingue un
   // criterio exigente de un campo que no existe en los datos. Con seis filtros
@@ -501,10 +515,19 @@ export async function runFicha(args, ctx) {
 
   const enTablero = filasDelTablero(ctx).find((f) => f.symbol === tk) || null;
   const w = (ctx.universe && ctx.universe.fifty_two_week && ctx.universe.fifty_two_week[tk]) || null;
+  // ── LO QUE EL AGENTE TIENE, CON SU PRECIO (2026-10-20) ──────────────
+  // 11 de 15 fichas decían "precio: no está entre los nombres que el tablero
+  // cubre hoy": las posiciones propias casi nunca están en un extremo. Decirle
+  // "no tengo precio" de lo que él mismo tiene es confuso — el precio está en
+  // su libro de Alpaca, que la corrida ya leyó. Se usa ése, ROTULADO como de
+  // su posición para que no se mezcle con el reloj del tablero.
+  const mia = (ctx.tenencias && ctx.tenencias[tk]) || null;
 
   const lineas = [`FICHA ${tk}`];
   if (enTablero) lineas.push(`precio ${n2(enTablero.price)} · 1d ${sg(enTablero.change_pct)}% · RVOL ${enTablero.rvol ?? '—'}`);
+  else if (mia && Number.isFinite(mia.price)) lineas.push(`precio ${n2(mia.price)} (de TU posición en Alpaca — no está en ningún extremo del tablero) · 1d ${sg(mia.change_today_pct)}%`);
   else lineas.push('precio: no está entre los nombres que el tablero cubre hoy (no es que no cotice — es que no está en ningún extremo del tablero).');
+  if (mia) lineas.push(`TU POSICIÓN: peso ${n2(mia.weight_pct)}% · entrada ${n2(mia.avg_entry)} · desde tu entrada ${sg(mia.pnl_since_entry_pct)}%`);
   if (w) lineas.push(`52 semanas: máx ${n2(w.high_52w)} (${sg(w.pct_from_high)}%) · mín ${n2(w.low_52w)} (+${n2(w.pct_from_low)}%)`);
   if (dive && dive.profile) lineas.push(`${dive.profile.name || ''} · ${dive.profile.industry || 'sector s/d'} · mcap ${dive.profile.marketCapM != null ? '$' + (dive.profile.marketCapM / 1000).toFixed(1) + 'B' : '—'}`);
   if (dive && dive.fundamentals) {
@@ -545,6 +568,35 @@ export async function runSector(args, ctx) {
 export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector };
 
 // ── EL EJECUTOR, con presupuesto y caché ─────────────────────────────
+// Posiciones de Alpaca → { SYM: {price, change_today_pct, weight_pct, avg_entry, pnl_since_entry_pct} }.
+// Fracciones de Alpaca (0.012) a porcentaje (1.2), igual que el resto de la ficha.
+export function tenenciasDe(posiciones = [], equity = null) {
+  const eq = Number(equity);
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const out = {};
+  for (const p of posiciones || []) {
+    const sym = String((p && p.symbol) || '').trim().toUpperCase();
+    if (!sym) continue;
+    const mv = num(p.market_value);
+    const ct = num(p.change_today);
+    const pl = num(p.unrealized_plpc);
+    out[sym] = {
+      price: num(p.current_price),
+      change_today_pct: ct == null ? null : ct * 100,
+      weight_pct: mv != null && eq > 0 ? (mv / eq) * 100 : null,
+      avg_entry: num(p.avg_entry_price),
+      pnl_since_entry_pct: pl == null ? null : pl * 100,
+    };
+  }
+  return out;
+}
+
+// Un resultado de herramienta usable: texto para el modelo y un conteo. Lo que
+// no cumple esto es una falla, venga del runner o de la caché del día.
+function resultadoValido(out) {
+  return !!out && typeof out.text === 'string' && Number.isFinite(out.rows);
+}
+
 // Crea un ejecutor con estado PARA UNA CORRIDA DE UN AGENTE: lleva la cuenta
 // de llamadas, la secuencia journaleada y la caché.
 //
@@ -553,6 +605,9 @@ export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: ru
 export function createToolExecutor({
   budget = TOOL_BUDGET.fixed_round, board = null, universe = null, creds = null,
   finnhubKey = process.env.FINNHUB_API_KEY, now = new Date(), deps = {}, cache = true,
+  // Las posiciones del agente, como las devuelve Alpaca, y su equity. Sólo
+  // las usa `ficha`, para dar el precio de lo que el agente ya tiene.
+  posiciones = [], equity = null,
 } = {}) {
   const sectorOf = deps.sectorOf || (() => null);
   const newsSymbols = new Set();
@@ -570,7 +625,8 @@ export function createToolExecutor({
   // Para ellos el market cap es una COTA INFERIOR, no una medición.
   const asumidos = new Set(((universe && universe.market_caps_asumidos) || []).map((x) => String(x || '').toUpperCase()));
   const capEsAsumido = deps.capEsAsumido || ((sym) => asumidos.has(String(sym || '').toUpperCase()));
-  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf };
+  const tenencias = tenenciasDe(posiciones, equity);
+  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf, tenencias };
   const sequence = [];
   // DOS CONTADORES, Y LA DIFERENCIA ES LA MITAD DEL BUG REPORTADO.
   //   `used`     = llamadas EJECUTADAS. Nunca puede pasar del techo.
@@ -645,7 +701,7 @@ export function createToolExecutor({
 
       let out;
       let source = 'cache';
-      if (hit && hit.payload && hit.payload.text) {
+      if (resultadoValido(hit && hit.payload)) {
         out = hit.payload;
       } else {
         source = 'run';
@@ -653,6 +709,18 @@ export function createToolExecutor({
           out = await runner(args, ctx);
         } catch (e) {
           out = { text: `La herramienta falló: ${String((e && e.message) || e)}. No hay resultado para esta consulta.`, rows: 0, error: true };
+        }
+        // ── NULL NO ES CERO FILAS (2026-10-20) ─────────────────────────
+        // Grok: screener()→null, ficha(MU)→null, ficha(WDC)→null. Un resultado
+        // sin texto o sin conteo NO es "no hay nada": es la herramienta
+        // fallando sin decirlo. El agente tiene que recibirlo como falla, con
+        // palabras, y el journal tiene que marcarlo `error` — si no, se publica
+        // igual que un filtro que legítimamente dejó cero nombres.
+        if (!resultadoValido(out)) {
+          out = {
+            text: `La herramienta falló: no devolvió un resultado (${out == null ? 'null' : 'sin ' + [typeof out.text !== 'string' ? 'texto' : null, !Number.isFinite(out.rows) ? 'conteo de filas' : null].filter(Boolean).join(' ni ')}). No hay datos para esta consulta — no significa que no haya nombres que cumplan.`,
+            rows: 0, error: true, sin_resultado: true,
+          };
         }
         if (cache && !out.error) await writeDayCache(key, out, now).catch(() => {});
       }
@@ -663,6 +731,8 @@ export function createToolExecutor({
       sequence.push({
         n, intento: intentos, tool: name, args, ms: Date.now() - t0, source,
         rows: out.rows ?? null, truncated: !!out.truncated, error: !!out.error,
+        ...(out.sin_resultado ? { sin_resultado: true } : {}),
+        ...(Array.isArray(out.datos_faltantes) && out.datos_faltantes.length ? { datos_faltantes: out.datos_faltantes } : {}),
         // El resultado COMPLETO, no el resumen: sin esto el replay no puede
         // reproducir la corrida — el modelo decidió mirando algo que no
         // guardamos. Ver el encabezado.
@@ -682,6 +752,8 @@ export function createToolExecutor({
         rows: s.rows, truncated: s.truncated,
         ...(s.refused ? { refused: s.refused } : {}),
         ...(s.error ? { error: true } : {}),
+        ...(s.sin_resultado ? { sin_resultado: true } : {}),
+        ...(s.datos_faltantes ? { datos_faltantes: s.datos_faltantes } : {}),
       }));
     },
   };

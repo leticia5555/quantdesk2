@@ -25,7 +25,7 @@
 
 import { dateDirective, staleProspectiveDates } from './ai-guard.js';
 import { recordAiCall } from './usage.js';
-import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ANTHROPIC_CACHE_MIN_TOKENS, modelSlugResolved } from './arena-registry.js';
+import { ARENA_TEMPERATURE, ARENA_EFFORT, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ANTHROPIC_CACHE_MIN_TOKENS, modelSlugResolved, presupuestoRazonamiento } from './arena-registry.js';
 import { ANTHROPIC_PRICES } from './model.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -266,6 +266,16 @@ export function diagnosticoDeCorte(data, { maxTokens = ARENA_MAX_TOKENS, texto =
   return diag;
 }
 
+// ¿Respetó el presupuesto de razonamiento? Tres estados, porque una llamada
+// que razonó POCO no prueba nada: `false` (lo pasó: lo ignora), `true` (llegó
+// a ≥90% y se quedó abajo: respetado bajo carga), `null` (no se puso a prueba).
+export function respetoDelPresupuesto(presupuesto, usado) {
+  if (presupuesto == null || !Number.isFinite(Number(usado))) return null;
+  const u = Number(usado);
+  if (u > presupuesto * 1.1) return false;
+  return u >= presupuesto * 0.9 ? true : null;
+}
+
 // Cuerpo de OpenRouter, EXPORTADO para que /api/arena-smoke mande exactamente
 // el mismo payload que la corrida real (un smoke que manda otra cosa no prueba
 // nada). `reasoning.effort` es el parámetro unificado de OpenRouter; un modelo
@@ -306,7 +316,7 @@ export function providerPolicy(agent, { ignore = [], order = null } = {}) {
   };
 }
 
-export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null, effort = ARENA_EFFORT, provider = undefined }) {
+export function buildOpenRouterBody({ agent, model, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), tools = null, toolChoice = null, effort = ARENA_EFFORT, provider = undefined, reasoningMaxTokens = undefined }) {
   const caps = (agent && agent.caps) || {};
   const body = {
     model: model || (agent && agent.model),
@@ -318,7 +328,17 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
     messages: [{ role: 'system', content: systemSegments(system).join('\n\n') + dateDirective(now) }, ...messages],
   };
   if (caps.sampling !== false) body.temperature = ARENA_TEMPERATURE;
-  if (caps.effort === 'openrouter') body.reasoning = { effort: effort || ARENA_EFFORT };
+  if (caps.effort === 'openrouter') {
+    // Presupuesto de razonamiento SEPARADO cuando hay uno (env por agente, o el
+    // que pide quien llama — el reintento solo-JSON pide uno chico). OpenRouter
+    // acepta `effort` O `max_tokens`, no los dos. Ver presupuestoRazonamiento.
+    const presu = reasoningMaxTokens !== undefined
+      ? reasoningMaxTokens
+      : presupuestoRazonamiento(agent && agent.id, { techo: maxTokens }).efectivo;
+    body.reasoning = Number.isFinite(presu) && presu > 0
+      ? { max_tokens: Math.min(presu, Math.max(256, maxTokens - 256)) }
+      : { effort: effort || ARENA_EFFORT };
+  }
   if (tools && tools.length) {
     body.tools = tools;
     if (toolChoice) body.tool_choice = toolChoice;
@@ -334,8 +354,8 @@ export function buildOpenRouterBody({ agent, model, system, messages, maxTokens 
   return body;
 }
 
-async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined }) {
-  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort, provider });
+async function openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined, reasoningMaxTokens = undefined }) {
+  const body = buildOpenRouterBody({ agent, model, system, messages, maxTokens, now, tools, toolChoice, effort, provider, reasoningMaxTokens });
   const t0 = Date.now();
   const r = await fetch(OPENROUTER_URL, {
     method: 'POST',
@@ -507,11 +527,11 @@ export function esTransitorio(err, raw) {
 
 // Guard-equivalente al de Anthropic, para OpenRouter: inyecta fecha, escanea
 // fechas prospectivas rotas, reintenta UNA vez, y si reincide devuelve stale.
-async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined, origenTecho = null }) {
+async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined, origenTecho = null, reasoningMaxTokens = undefined }) {
   // `effort` NO se estaba pasando: la firma lo aceptaba y las dos llamadas lo
   // dejaban afuera, así que el escalón 1 del breaker bajaba el effort en
   // Anthropic y NO en OpenRouter — cinco de los siete seguían caros.
-  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider }), timeoutMs, trace, fase, origenTecho);
+  const first = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider, reasoningMaxTokens }), timeoutMs, trace, fase, origenTecho);
 
   // ── HTTP 200 CON EL CUERPO VACÍO ─────────────────────────────────────
   // ESTO ERA "HTTP 200 y todo lo demás en null". Durante cuatro sombras el
@@ -623,7 +643,7 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
 
   // Retry único con recordatorio, mismo formato requerido.
   const retryMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: retryReminder(hits, now) }];
-  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase: (fase || '') + ':retry_fechas', provider }), timeoutMs, trace, fase, origenTecho);
+  const second = await timedFetch(() => openRouterFetch({ apiKey, agent, model, system, messages: retryMessages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase: (fase || '') + ':retry_fechas', provider, reasoningMaxTokens }), timeoutMs, trace, fase, origenTecho);
   if (second.status < 200 || second.status >= 300 || !second.raw) {
     // El retry falló en red: mejor la primera respuesta (con su nota de fechas)
     // que un corte — el downstream ya valida el JSON de todos modos.
@@ -894,6 +914,10 @@ export function effectiveParams(agent, maxTokens = ARENA_MAX_TOKENS, effort = AR
     effort: caps.effort ? (effort || ARENA_EFFORT) : null,
     effort_channel: caps.effort || null,   // 'anthropic' | 'openrouter' | null
     max_tokens: maxTokens,
+    // El presupuesto de razonamiento SEPARADO, si este agente tiene uno: con él
+    // OpenRouter recibe reasoning.max_tokens en vez de effort. Viaja en cada
+    // fila del journal, que es lo que hace auditable un cambio de env var.
+    reasoning_max_tokens: caps.effort === 'openrouter' ? presupuestoRazonamiento(agent && agent.id, { techo: maxTokens }).efectivo : null,
     prompt_cache: caps.cache || null,      // 'anthropic' | 'auto' | null
     slug_verified: !!(agent && agent.slug_verified),
   };
@@ -963,7 +987,7 @@ export function __resetPriceCache() { priceCache = { at: 0, map: null }; }
 // `trace` es un sink opcional (ver _lib/arena-trace.js). null en el camino
 // normal: sin él no se construye ni se recorre nada, así que una corrida de
 // producción no paga el trace que solo se mira cuando algo falla.
-export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined, origenTecho = null }) {
+export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_MAX_TOKENS, now = new Date(), timeoutMs = ARENA_LLM_TIMEOUT_MS, tools = null, toolChoice = null, effort = ARENA_EFFORT, trace = null, fase = null, provider = undefined, origenTecho = null, reasoningMaxTokens = undefined }) {
   // CANDADO DE SLUG: un modelo cuyo slug no se verificó contra el catálogo del
   // proveedor y que no tiene override explícito NO se llama. Ver el encabezado
   // del registry: preferimos no correr a pegarle a un slug inventado.
@@ -977,7 +1001,7 @@ export async function callArenaLLM({ agent, system, messages, maxTokens = ARENA_
     return guardedAnthropicCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, origenTecho });
   }
   if (agent.provider === 'openrouter') {
-    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider, origenTecho });
+    return guardedOpenRouterCall({ apiKey, agent, model: agent.model, system, messages, maxTokens, now, timeoutMs, tools, toolChoice, effort, trace, fase, provider, origenTecho, reasoningMaxTokens });
   }
   return { status: 0, data: null, error: 'proveedor desconocido: ' + (agent && agent.provider) };
 }

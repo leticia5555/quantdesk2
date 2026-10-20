@@ -17,6 +17,14 @@
 //   GET /api/arena-audit?agent=todos          → todas las filas, sin filtro
 //   GET /api/arena-audit?desde=2026-08-01&limit=200
 //   GET /api/arena-audit?deploy=<ISO>         → re-corta el antes/después
+//   GET /api/arena-audit?fuente=prueba        → sólo arena_shadow_journal
+//   GET /api/arena-audit?view=shadow          → lo mismo (atajo)
+//   GET /api/arena-audit?view=resumen&fuente=prueba → el resumen de la puerta
+//   GET /api/arena-audit?view=cierres&agent=todos&fuente=prueba&dia=…
+//        → cada cierre con sus tokens, y a cuánto subir ARENA_MAX_TOKENS
+//
+// Las corridas leen las DOS tablas por defecto (cada fila con su sello); el
+// resumen, sólo EN VIVO salvo `fuente=prueba` (no mezcla poblaciones).
 //
 // ── SOLO LECTURA, en serio ────────────────────────────────────────────
 // Cero writes a cualquier tabla: puros SELECT. En particular NO llama a
@@ -38,11 +46,13 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON } from './_lib/arena-registry.js';
+import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON, ARENA_MAX_TOKENS, temporadaEfectiva } from './_lib/arena-registry.js';
+import { leerInicioTemporada } from './_lib/arena-baseline.js';
+import { RESERVA_CIERRE_MS } from './_lib/arena-tool-loop.js';
 import { buildInfo } from './_lib/build-info.js';
 import { checkLecturaAuth } from './_lib/arena-admin.js';
 import {
-  auditaFila, agrupaCorridas, construyeResumen,
+  auditaFila, agrupaCorridas, construyeResumen, resolverFuente, resumenDeCierres,
   renderCorridasMarkdown, renderResumenMarkdown, BUFFET_QUALITY_DEPLOY,
   cadenciaPorAgente, renderCadenciaMarkdown,
 } from './_lib/arena-audit.js';
@@ -97,12 +107,22 @@ export default async function handler(req, res) {
   // quiere saber después de tocar una env var en Vercel: no si el panel dice
   // que se guardó, sino si el código desplegado la está viendo.
   if (String(q.compuertas || q.gates || '') === '1') {
+    // La temporada que el runtime VE: después del reset, `end` es inicio + N
+    // sesiones (2026-10-20 → 2026-11-18), no la constante.
+    let temporada;
+    try {
+      const t = temporadaEfectiva(await leerInicioTemporada(ARENA_SEASON.id));
+      temporada = { id: t.id, start: t.start, end: t.end, sesiones: t.sesiones, abierta: t.abierta };
+    } catch (e) {
+      temporada = { id: ARENA_SEASON.id, start: ARENA_SEASON.start, end: ARENA_SEASON.end, abierta: null,
+        error: `no se pudo leer el inicio real (${String((e && e.message) || e)}): esta es la ventana PLANEADA` };
+    }
     return res.status(200).json({
       // El SHA, para confirmar que el deploy que contesta es el que se subió.
       build: buildInfo(),
       ahora: new Date().toISOString(),
       compuertas: estadoDeCompuertas(),
-      temporada: { id: ARENA_SEASON.id, start: ARENA_SEASON.start, end: ARENA_SEASON.end },
+      temporada,
     });
   }
 
@@ -130,10 +150,12 @@ export default async function handler(req, res) {
   const desde = esFecha(q.desde) ? String(q.desde) : diaParam;
 
   // Qué llegó y no se entendió. `key` va aparte porque es una de las llaves.
-  const CONOCIDOS = new Set(['agent', 'agente', 'format', 'view', 'resumen', 'deploy', 'desde', 'dia', 'limit', 'key']);
+  const CONOCIDOS = new Set(['agent', 'agente', 'format', 'view', 'resumen', 'deploy', 'desde', 'dia', 'limit', 'key', 'fuente']);
   const ignorados = Object.keys(q).filter((k) => !CONOCIDOS.has(k));
   const avisos = [];
-  if (ignorados.length) avisos.push(`Parámetros no reconocidos (se IGNORARON): ${ignorados.join(', ')}. Los válidos son: agent, view=resumen, dia, desde, format, limit.`);
+  if (ignorados.length) avisos.push(`Parámetros no reconocidos (se IGNORARON): ${ignorados.join(', ')}. Los válidos son: agent, view=resumen|shadow|cierres, fuente=en_vivo|prueba|ambas, dia, desde, format, limit.`);
+  const { fuente, avisos: avisosFuente } = resolverFuente({ fuente: q.fuente, view, esResumen });
+  avisos.push(...avisosFuente);
   if (q.dia && !diaParam) avisos.push(`\`dia=${q.dia}\` no es una fecha AAAA-MM-DD y se ignoró.`);
   if (q.desde && !esFecha(q.desde)) avisos.push(`\`desde=${q.desde}\` no es una fecha AAAA-MM-DD y se ignoró.`);
   // Interpolado, no parametrizado: Neon tipa mal un $n en LIMIT. Seguro
@@ -144,12 +166,51 @@ export default async function handler(req, res) {
     // Filas del agente. La rama `agent_id is null` cubre el historial legado
     // del insignia por si la migración de agent_id no ha corrido en esta DB
     // (arena-run la aplica, pero esta ruta no escribe ni para arreglarlo).
-    const rows = await sql(
-      `select ${COLUMNS} from arena_journal
-        where ($1::text = 'todos' or agent_id = $1 or (agent_id is null and $1 = 'claude'))
-          and ($2::date is null or run_date >= $2::date)
-        order by created_at asc limit ${limit}`,
-      [todos ? 'todos' : agentParam, desde]);
+    const params = [todos ? 'todos' : agentParam, desde];
+    let rows = [];
+    if (fuente === 'en_vivo' || fuente === 'ambas') {
+      const viva = await sql(
+        `select ${COLUMNS} from arena_journal
+          where ($1::text = 'todos' or agent_id = $1 or (agent_id is null and $1 = 'claude'))
+            and ($2::date is null or run_date >= $2::date)
+          order by created_at asc limit ${limit}`, params);
+      rows.push(...viva.map((r) => ({ ...r, fuente: 'en_vivo' })));
+    }
+    if (fuente === 'prueba' || fuente === 'ambas') {
+      // La sombra no tiene `actions` (no manda órdenes) y guarda el objetivo y
+      // el rebalanceo en COLUMNAS, no en context. Se meten en context para que
+      // `objetivoDeFila` los lea igual que en la tabla viva.
+      try {
+        const sombra = await sql(
+          `select id, run_date, phase, status, prompt_version, prompt_hash, model, plan,
+                  null::jsonb as actions, account, error, created_at, agent_id,
+                  coalesce(context, '{}'::jsonb)
+                    || jsonb_strip_nulls(jsonb_build_object('target', target, 'rebalance', rebalance)) as context
+             from arena_shadow_journal
+            where ($1::text = 'todos' or agent_id = $1)
+              and ($2::date is null or run_date >= $2::date)
+            order by created_at asc limit ${limit}`, params);
+        rows.push(...sombra.map((r) => ({ ...r, fuente: 'prueba' })));
+      } catch (e) {
+        // Se DICE: una tabla que no se pudo leer y una tabla vacía se ven igual.
+        avisos.push('No se pudo leer arena_shadow_journal (las corridas de PRUEBA): ' + String((e && e.message) || e));
+      }
+    }
+    // Un solo orden cronológico y un solo tope: con las dos tablas, el `limit`
+    // es del total, no de cada una.
+    rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    const truncadoPorTabla = rows.length > limit;
+    const antes = { en_vivo: 0, prueba: 0 };
+    for (const r of rows) antes[r.fuente]++;
+    rows = rows.slice(0, limit);
+    if (truncadoPorTabla) {
+      const despues = { en_vivo: 0, prueba: 0 };
+      for (const r of rows) despues[r.fuente]++;
+      const perdidas = Object.keys(antes).filter((k) => despues[k] < antes[k])
+        .map((k) => `${antes[k] - despues[k]} de ${k === 'prueba' ? 'PRUEBA' : 'EN VIVO'}`);
+      // El orden es cronológico ascendente: lo que se corta es lo MÁS NUEVO.
+      avisos.push(`El límite (${limit}) cortó ${perdidas.join(' y ')} — las más recientes. Acotá con \`desde\`/\`dia\` o pedí una sola \`fuente\`.`);
+    }
 
     // Estado de HALT (el breaker −20% detiene al agente). Lectura pura.
     let halt = [];
@@ -157,6 +218,16 @@ export default async function handler(req, res) {
       halt = await sql('select agent_id, halted, halted_at, halted_reason, resumed_at from arena_state order by agent_id');
       if (!todos) halt = halt.filter((h) => (h.agent_id || FLAGSHIP_AGENT_ID) === agentParam);
     } catch (e) { halt = []; }
+
+    // ── ?view=cierres: el techo de salida, con dato ──
+    if (view === 'cierres') {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({
+        pedido: { agent: agentParam, view: 'cierres', fuente, dia: diaParam, desde, limit },
+        ...(avisos.length ? { avisos } : {}),
+        ...resumenDeCierres(rows, { techoActual: ARENA_MAX_TOKENS, reservaMs: RESERVA_CIERRE_MS }),
+      });
+    }
 
     const filas = rows.map(auditaFila);
     const fechas = [...new Set(filas.map((f) => String(f.fecha)))].sort();
@@ -166,11 +237,17 @@ export default async function handler(req, res) {
       solo_lectura: true,
       total_filas: filas.length,
       limite: limit,
-      truncado: filas.length === limit,   // honesto: hay más journal del que cupo
+      truncado: filas.length === limit || truncadoPorTabla,   // honesto: hay más journal del que cupo
       desde: desde,
       // Lo que el endpoint ENTENDIÓ de la consulta. Va siempre, no solo cuando
       // hay avisos: así se ve de un vistazo si contestó lo que se le pidió.
-      pedido: { agent: agentParam, view: esResumen ? 'resumen' : 'corridas', dia: diaParam, desde, format, limit },
+      pedido: { agent: agentParam, view: esResumen ? 'resumen' : 'corridas', fuente, dia: diaParam, desde, format, limit },
+      // Cuántas filas de cada tabla. Una puerta de 21 corridas que no aparece
+      // acá es una puerta que no se leyó.
+      por_fuente: {
+        en_vivo: filas.filter((f) => f.fuente === 'en_vivo').length,
+        prueba: filas.filter((f) => f.fuente === 'prueba').length,
+      },
       ...(avisos.length ? { avisos } : {}),
       rango: { desde: fechas[0] || null, hasta: fechas[fechas.length - 1] || null },
       halt,
