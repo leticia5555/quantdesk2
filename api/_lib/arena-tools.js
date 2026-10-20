@@ -45,6 +45,7 @@ import { SECTOR_ETFS } from './arena-board.js';
 import { readDayCache, writeDayCache, marketDay } from './arena-buffet-cache.js';
 import { sql } from './db.js';
 import { tickersDeFila } from './noticias.js';
+import { runEventos, DIAS_DEFAULT as EVENTOS_DIAS_DEFAULT, DIAS_MAX as EVENTOS_DIAS_MAX } from './arena-tools-eventos.js';
 
 // Tope DURO de llamadas por corrida. Las rondas fijas tienen 8; una corrida por
 // disparador tiene 3 (está acotada a un nombre — no necesita explorar).
@@ -163,6 +164,37 @@ export const TOOL_DEFS = [
   },
 ];
 
+// ── LAS HERRAMIENTAS NUEVAS, APAGADAS HASTA QUE SE DECIDA (2026-10-20) ──
+// `eventos` (8-K de EDGAR) existe, está probada y NO se le ofrece a ningún
+// agente por defecto. Ofrecerla cambia el esquema que viaja en cada llamada
+// —o sea, el experimento— y eso se decide con Lety, no en un merge. Se
+// enciende sin deploy con `ARENA_TOOLS_EXTRA=eventos`.
+//
+// Mientras esté apagada, `TOOL_DEFS` (las cuatro de siempre) es exactamente lo
+// que ven los siete, y una llamada a `eventos` se responde como herramienta
+// inexistente: un agente no puede usar algo que no se le ofreció.
+export const TOOL_DEFS_OPCIONALES = [
+  {
+    name: 'eventos',
+    description: 'Recent SEC 8-K filings for ONE name, from EDGAR: one line per filing with its date and item codes (2.02 results, 1.01 material agreement, 5.02 officer/director change, 8.01 other events…). Never the filing text. Use it to check whether something material was filed before you size a position.',
+    params: {
+      ticker: { type: 'string', desc: 'The ticker.', required: true },
+      days: { type: 'number', desc: `How many days back (1-${EVENTOS_DIAS_MAX}, default ${EVENTOS_DIAS_DEFAULT}).` },
+    },
+  },
+];
+
+export function herramientasActivas(env = process.env) {
+  const pedidas = String((env && env.ARENA_TOOLS_EXTRA) || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const extra = TOOL_DEFS_OPCIONALES.filter((d) => pedidas.includes(d.name)).map((d) => d.name);
+  return [...TOOL_DEFS.map((d) => d.name), ...extra];
+}
+
+export function definicionesActivas(env = process.env) {
+  const activas = herramientasActivas(env);
+  return [...TOOL_DEFS, ...TOOL_DEFS_OPCIONALES].filter((d) => activas.includes(d.name));
+}
+
 // ── TRADUCCIÓN POR PROVEEDOR ─────────────────────────────────────────
 // Anthropic: {name, description, input_schema}. OpenAI/OpenRouter:
 // {type:'function', function:{name, description, parameters}}. El schema JSON
@@ -177,8 +209,9 @@ function jsonSchema(params) {
   return { type: 'object', properties, ...(required.length ? { required } : {}) };
 }
 
-export function toolsForProvider(provider, names = null) {
-  const defs = names ? TOOL_DEFS.filter((d) => names.includes(d.name)) : TOOL_DEFS;
+export function toolsForProvider(provider, names = null, env = process.env) {
+  const activas = definicionesActivas(env);
+  const defs = names ? activas.filter((d) => names.includes(d.name)) : activas;
   if (provider === 'anthropic') {
     return defs.map((d) => ({ name: d.name, description: d.description, input_schema: jsonSchema(d.params) }));
   }
@@ -233,6 +266,9 @@ export function clampArgs(name, raw) {
     up('ticker');
   } else if (name === 'sector') {
     up('etf');
+  } else if (name === 'eventos') {
+    up('ticker');
+    num('days', 1, EVENTOS_DIAS_MAX, EVENTOS_DIAS_DEFAULT);
   }
   return { args: a, notes };
 }
@@ -768,7 +804,7 @@ export async function runSector(args, ctx) {
   return { text: t.text, rows: t.shown, truncated: t.truncated };
 }
 
-export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector };
+export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector, eventos: runEventos };
 
 // ── EL EJECUTOR, con presupuesto y caché ─────────────────────────────
 // Posiciones de Alpaca → { SYM: {price, change_today_pct, weight_pct, avg_entry, pnl_since_entry_pct} }.
@@ -811,6 +847,7 @@ export function createToolExecutor({
   // Las posiciones del agente, como las devuelve Alpaca, y su equity. Sólo
   // las usa `ficha`, para dar el precio de lo que el agente ya tiene.
   posiciones = [], equity = null,
+  herramientas = herramientasActivas(),
 } = {}) {
   const sectorOf = deps.sectorOf || (() => null);
   const newsSymbols = new Set();
@@ -884,9 +921,11 @@ export function createToolExecutor({
       // ahora ve el número correcto.
       const n = ++used;
 
-      const runner = RUNNERS[name];
+      // Solo las OFRECIDAS: una herramienta que existe en el código pero no
+      // se le ofreció a este agente es, para él, una herramienta inexistente.
+      const runner = herramientas.includes(name) ? RUNNERS[name] : null;
       if (!runner) {
-        const text = `No existe una herramienta llamada "${name}". Las disponibles son: ${Object.keys(RUNNERS).join(', ')}.`;
+        const text = `No existe una herramienta llamada "${name}". Las disponibles son: ${herramientas.join(', ')}.`;
         sequence.push({ n, intento: intentos, tool: name, args: rawArgs, refused: 'unknown_tool', ms: 0 });
         return { text, unknown_tool: true };
       }
@@ -964,6 +1003,10 @@ export function createToolExecutor({
       return sequence.map((s) => ({
         n: s.n, tool: s.tool, args: s.args, ms: s.ms,
         rows: s.rows, truncated: s.truncated,
+        // LOS TOKENS QUE AGREGÓ ESTA LLAMADA a la conversación (estimados,
+        // 4 caracteres ≈ 1 token — la misma cuenta del techo de contexto). Es
+        // lo que una herramienta nueva le cuesta a la corrida, por llamada.
+        ...(s.tokens_est != null ? { tokens: s.tokens_est } : {}),
         ...(s.refused ? { refused: s.refused } : {}),
         ...(s.error ? { error: true } : {}),
         ...(s.sin_resultado ? { sin_resultado: true } : {}),
