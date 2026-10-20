@@ -136,6 +136,38 @@ function enPesos({ pctLocal, moneda, usdMxnPct, usdPorUnidadPct, fix = null } = 
   };
 }
 
+/**
+ * EL CAMINO DE VUELTA: un rendimiento en PESOS, leído en dólares.
+ *
+ * Lo pide la ficha del IPC (R4). Las dos columnas del artboard son "la moneda
+ * del índice" y "la otra": para el S&P 500 la otra es el peso, y para el IPC
+ * —que ya está en pesos— la otra son los dólares. Sin esto, la segunda
+ * columna del IPC sería idéntica a la primera y no diría nada.
+ *
+ * Es la MISMA composición multiplicativa de `rendimientoEnPesos`, dividida en
+ * vez de multiplicada: si el índice no se movió y el dólar subió 10% contra el
+ * peso, en dólares el índice CAYÓ 9.09%, no 10%. Restar los porcentajes daría
+ * −10% y sería un número mal.
+ *
+ * `usdMxnPct` es el rendimiento de PESOS POR DÓLAR en el mismo periodo.
+ */
+function rendimientoEnDolares(pctLocal, usdMxnPct) {
+  const l = numPesos(pctLocal);
+  const fx = numPesos(usdMxnPct);
+  if (l == null || fx == null) {
+    return { pct: null, local_pct: l, motivo: l == null ? 'el índice no trae rendimiento del periodo' : 'no hay tipo de cambio del periodo' };
+  }
+  // Un dólar que vale 0 pesos no es un dato: es una división por cero.
+  if (1 + fx / 100 === 0) return { pct: null, local_pct: l, motivo: 'el tipo de cambio del periodo anula el divisor' };
+  return {
+    pct: (((1 + l / 100) / (1 + fx / 100)) - 1) * 100,
+    local_pct: l,
+    fx_pct: fx,
+    etiqueta: 'rendimiento en dólares',
+    motivo: null,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { ETIQUETA_PESOS, rendimientoEnPesos, cruceContraPeso, enPesos };
+  module.exports = { ETIQUETA_PESOS, rendimientoEnPesos, cruceContraPeso, enPesos, rendimientoEnDolares };
 }

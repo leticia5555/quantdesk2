@@ -174,7 +174,12 @@ console.log('handler: fallo honesto — jamás velas inventadas');
   global.fetch = async () => ({ ok: false, status: 429 });
   const res = mockRes();
   await handler({ method: 'GET', query: { symbol: 'MELI' } }, res);
-  ok(res.code === 502 && /No candle data/.test(res.body.error), 'Yahoo 429 → 502 con error', JSON.stringify(res.body));
+  // El 502 dice QUÉ contestó la fuente, no sólo que no hubo velas. Antes era
+  // "No candle data for MELI (yahoo)", y dos capas más arriba la ficha de
+  // índice lo pintaba como "el handler respondió 502": ni una palabra del
+  // hecho (Lety, 2026-10-20). El 429 es el dato que dice si hay que esperar.
+  ok(res.code === 502 && /429/.test(res.body.error) && /Yahoo/.test(res.body.error),
+    'Yahoo 429 → 502 diciendo que fue un 429 de Yahoo', JSON.stringify(res.body));
   ok(res.headers['Cache-Control'] === undefined, 'el fallo NO se cachea en CDN', res.headers['Cache-Control']);
 
   global.fetch = async () => { throw new Error('DNS down'); };

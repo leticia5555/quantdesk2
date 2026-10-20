@@ -47,6 +47,16 @@ const QD_PERIODS = {
   '1D': { label: '1D', tradingDays: 1 },
   '1S': { label: '1S', tradingDays: 5 },
   '1M': { label: '1M', tradingDays: 21 },
+  // ── R4: LOS PERIODOS LARGOS DE LA FICHA DE ÍNDICE ──────────────────
+  // El artboard 6 pide una tabla de 1D a 5A. Se agregan ACÁ y no en la
+  // pantalla por la regla 1: el día que el % de 3M se calcule en un HTML,
+  // habrá dos definiciones de "tres meses" y van a discrepar.
+  // Las sesiones son las del año bursátil: 252 al año, 21 al mes.
+  '3M': { label: '3M', tradingDays: 63 },
+  '6M': { label: '6M', tradingDays: 126 },
+  '1A': { label: '1A', tradingDays: 252 },
+  '3A': { label: '3A', tradingDays: 756 },
+  '5A': { label: '5A', tradingDays: 1260 },
   'YTD': { label: 'YTD', ancla: 'ytd' },
 };
 
@@ -88,7 +98,21 @@ function qdPeriodChange(series, periodKey, ahora) {
     if (a.refIdx == null) { out.motivo = a.motivo; out.window = pts; return out; }
     refIdx = a.refIdx;
   } else {
-    refIdx = Math.max(0, n - 1 - per.tradingDays);
+    // ── LA SERIE TIENE QUE CUBRIR EL PERIODO ─────────────────────────
+    // Esto era `Math.max(0, n - 1 - tradingDays)`, y ese `max(0, …)` es un
+    // NÚMERO MAL esperando a que alguien pida un periodo largo: con 180
+    // sesiones y un pedido de 5A, el ancla caía en el primer punto y el
+    // resultado salía etiquetado "5A" siendo el cambio de ocho meses.
+    // Nadie lo había visto porque hasta R4 los únicos periodos eran 1D, 1S y
+    // 1M, que casi siempre caben.
+    //
+    // Un % con la etiqueta equivocada es peor que un "—": el "—" se nota.
+    const ref = n - 1 - per.tradingDays;
+    if (ref < 0) {
+      out.motivo = `la serie trae ${n} sesiones y ${per.label} necesita ${per.tradingDays + 1}`;
+      return out;
+    }
+    refIdx = ref;
   }
 
   out.refIdx = refIdx;

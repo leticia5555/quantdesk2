@@ -109,6 +109,10 @@
       "destination": "/noticias.html"
     },
     {
+      "source": "/mercado/indice/:idx",
+      "destination": "/indice.html"
+    },
+    {
       "source": "/hoy",
       "destination": "/hoy.html"
     },
