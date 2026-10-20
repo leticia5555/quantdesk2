@@ -838,6 +838,191 @@ export async function buildUniverse({
   };
 }
 
+// ── LA PUERTA EN VIVO ────────────────────────────────────────────────
+// EL PROBLEMA (2026-10-20): los nombres "del día" del universo se arman a las
+// 13:00 UTC, ANTES de la apertura, así que son los movers de AYER. Un nombre
+// que se dispara a las 11:00 no estaba en el universo de ninguna corrida de
+// ese día: no salía en el tablero, el screener no lo podía devolver y el
+// objetivo lo rechazaba por estar fuera del universo. Para un agente de
+// momentum o de catalizador eso es elegir del pasado.
+//
+// EL ARREGLO: en cada corrida, ANTES de armar el tablero, se le piden a Alpaca
+// los movers y most-actives EN VIVO, y lo que el universo no tenía pasa por la
+// MISMA admisión que el cron: mismo filtro de instrumento, mismas reglas
+// ajustadas al feed (`reglasParaFeed`), mismo `isAdmissible`, mismo tope
+// (`MOVERS_MAX`) gastado en los más líquidos. No es un universo aparte: los
+// admitidos se SUMAN al de la corrida, y la corrida es una sola para los siete
+// (gatherContext corre una vez y los demás reusan la promesa), así que la
+// ronda sigue siendo comparable.
+//
+// LO QUE NO HACE: no reconstruye el universo. Sin universo base no abre — un
+// universo hecho sólo de movers en vivo sería otro experimento, y el cron ya
+// tiene su propio camino degradado (`movers_only`).
+//
+// EL RELOJ. El buffet corre DENTRO del deadline de cada agente, y la cuenta de
+// relojes (loop + cierre + margen = deadline) no le reserva tiempo. Por eso la
+// puerta tiene techo propio (`ARENA_PUERTA_VIVO_MS`, 10s): si no termina, se
+// cierra para esta corrida y se journalea `timeout`. Una puerta lenta no puede
+// comerse la investigación de siete agentes.
+export const PUERTA_VIVO_MS = (() => {
+  const n = Number(process.env.ARENA_PUERTA_VIVO_MS);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 10000;
+})();
+// Llamadas a Finnhub (market cap) que la puerta puede gastar por corrida. La
+// corrida comparte el tier gratis (60/min) con el deep dive y la admisión de
+// los canales; la caché persistida de market cap resuelve los repetidos sin
+// gastar. Lo que no alcanza se journalea `rate_budget`, no "sin datos".
+export const PUERTA_FINNHUB_MAX = (() => {
+  const n = Number(process.env.ARENA_PUERTA_FINNHUB_MAX);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 20;
+})();
+// `ARENA_PUERTA_VIVO=0` la apaga sin deploy.
+export const PUERTA_VIVO_ENABLED = process.env.ARENA_PUERTA_VIVO !== '0';
+
+export async function abrirPuertaEnVivo(base, {
+  creds, finnhubKey = process.env.FINNHUB_API_KEY, now = new Date(),
+  moversMax = MOVERS_MAX, rules = ADMISSION, maxFinnhub = PUERTA_FINNHUB_MAX, deps = {},
+} = {}) {
+  const t0 = Date.now();
+  const errors = {};
+  const cerrada = (motivo) => ({ abierta: false, motivo, at: now.toISOString(), ms: Date.now() - t0, entraron: 0, simbolos: [], errors });
+  if (!base || !Array.isArray(base.symbols) || !base.symbols.length) return cerrada('sin_universo_base');
+
+  const movers = deps.getMovers || getMovers;
+  const actives = deps.getMostActives || getMostActives;
+  const [mv, ac, acTrades] = await Promise.all([
+    movers({ top: 50, creds }).catch((e) => { errors.movers = String((e && e.message) || e); return null; }),
+    actives({ top: 100, by: 'volume', creds }).catch((e) => { errors.most_actives = String((e && e.message) || e); return null; }),
+    actives({ top: 100, by: 'trades', creds }).catch((e) => { errors.most_actives_trades = String((e && e.message) || e); return null; }),
+  ]);
+  const brutos = [...new Set([
+    ...((mv && mv.gainers) || []).map((m) => m.symbol),
+    ...((mv && mv.losers) || []).map((m) => m.symbol),
+    ...((ac && ac.most_actives) || []).map((m) => m.symbol),
+    ...((acTrades && acTrades.most_actives) || []).map((m) => m.symbol),
+  ].map(clean).filter((x) => x && VALID_TICKER.test(x)))];
+  if (!mv && !ac && !acTrades) return cerrada('alpaca_sin_respuesta');
+
+  const yaEstan = new Set(base.symbols.map(clean));
+  const nuevosBrutos = brutos.filter((x) => !yaEstan.has(x));
+  const counts = { brutos: brutos.length, ya_en_universo: brutos.length - nuevosBrutos.length, nuevos_brutos: nuevosBrutos.length };
+  if (!nuevosBrutos.length) {
+    return { abierta: true, at: now.toISOString(), ms: Date.now() - t0, entraron: 0, simbolos: [], counts, rechazados: [], errors };
+  }
+
+  // Mismo filtro de instrumento que el cron: warrants, rights, unidades y
+  // fondos no son el universo del Arena.
+  let symbolTypes = null;
+  try { symbolTypes = await (deps.getSymbolTypes || getSymbolTypes)(finnhubKey); }
+  catch (e) { errors.symbol_types = String((e && e.message) || e); }
+  const catalogo = await (deps.cargarCatalogo || cargarCatalogo)({ creds, now, deps })
+    .catch((e) => { errors.catalogo = String((e && e.message) || e); return { assets: null }; });
+  const filtro = await (deps.filtrarComunes || filtrarComunes)(nuevosBrutos, { creds, now, deps, catalogo, symbolTypes })
+    .catch((e) => { errors.filtro_instrumento = String((e && e.message) || e); return { comunes: [], rechazados: [] }; });
+  const comunes = (filtro.comunes || []).filter((x) => !yaEstan.has(x));
+  counts.comunes = comunes.length;
+  counts.no_comunes = (filtro.rechazados || []).length;
+
+  let precios = {};
+  let feed = null;
+  if (comunes.length) {
+    try {
+      const r = await (deps.getPriceAndDollarVolume || getPriceAndDollarVolume)(comunes, { creds, now });
+      precios = (r && r.data) || {};
+      feed = (r && r.feed) || null;
+    } catch (e) { errors.prices = String((e && e.message) || e); }
+  }
+  const reglas = reglasParaFeed(feed, rules);
+  const candidatos = [...comunes]
+    .sort((x, y) => ((precios[y] && precios[y].dollarVolume) || 0) - ((precios[x] && precios[x].dollarVolume) || 0)
+      || (x < y ? -1 : 1))
+    .slice(0, moversMax);
+  counts.candidatos = candidatos.length;
+
+  const known = {};
+  for (const sym of candidatos) {
+    const p = precios[sym] || {};
+    known[sym] = {
+      ...(Number.isFinite(p.price) ? { price: p.price } : {}),
+      ...(Number.isFinite(p.dollarVolume) ? { dollarVolume: p.dollarVolume } : {}),
+    };
+  }
+  let admissionData = {};
+  const finnhubDiag = [];
+  if (candidatos.length) {
+    try {
+      admissionData = await (deps.resolveAdmission || resolveAdmission)(candidatos, {
+        finnhubKey, now, known, maxFinnhub, diag: finnhubDiag,
+        mcapCache: deps.mcapCache || cachePersistente({ now, piso: reglas.min_market_cap_usd }),
+      });
+    } catch (e) { errors.admission = String((e && e.message) || e); }
+  }
+  // A diferencia del cron, SIN datos de admisión no entra nadie: la puerta
+  // suma nombres a un universo que ya existe, y "no pudimos medir" no es
+  // motivo para dejar pasar a un nombre sin pisos.
+  const admitidos = [];
+  const rechazados = [];
+  for (const sym of candidatos) {
+    const v = isAdmissible({ symbol: sym, ...(admissionData[sym] || {}) }, reglas);
+    if (v.ok) admitidos.push(sym);
+    else rechazados.push({ symbol: sym, reason: v.reason, ...(v.missing ? { missing: v.missing } : {}) });
+  }
+  admitidos.sort();
+
+  let fiftyTwo = {};
+  if (admitidos.length) {
+    try { fiftyTwo = await (deps.getFiftyTwoWeek || getFiftyTwoWeek)(admitidos, { creds, now }); }
+    catch (e) { errors.fifty_two_week = String((e && e.message) || e); }
+  }
+
+  return {
+    abierta: true,
+    at: now.toISOString(),
+    ms: Date.now() - t0,
+    entraron: admitidos.length,
+    simbolos: admitidos,
+    counts,
+    reglas: { min_price: reglas.min_price, min_market_cap_usd: reglas.min_market_cap_usd, min_dollar_volume: reglas.min_dollar_volume, feed },
+    rechazados: rechazados.slice(0, 50),
+    rechazados_count: rechazados.length,
+    finnhub_rate_budget: finnhubDiag.filter((d) => d && d.reason === 'rate_budget').length,
+    extension: {
+      fifty_two_week: fiftyTwo,
+      retornos: Object.fromEntries(admitidos
+        .map((sym) => [sym, { ret_5d: (precios[sym] || {}).ret_5d ?? null, ret_1m: (precios[sym] || {}).ret_1m ?? null }])
+        .filter(([, v]) => v.ret_5d != null || v.ret_1m != null)),
+      market_caps: Object.fromEntries(admitidos
+        .map((sym) => [sym, (admissionData[sym] || {}).marketCap ?? null])
+        .filter(([, v]) => Number.isFinite(v))),
+    },
+    errors,
+  };
+}
+
+// El universo de ESTA corrida: el del cron + lo que entró por la puerta. No
+// muta el base (viene de Neon y puede reusarse). `from_vivo` dice cuáles
+// entraron así, para que el post-mortem pueda separarlos.
+export function fusionarPuerta(base, puerta) {
+  if (!base || !puerta || !puerta.abierta || !puerta.entraron) return base;
+  const ext = puerta.extension || {};
+  return {
+    ...base,
+    symbols: [...new Set([...(base.symbols || []), ...puerta.simbolos])].sort(),
+    from_vivo: puerta.simbolos.slice(),
+    fifty_two_week: { ...(base.fifty_two_week || {}), ...(ext.fifty_two_week || {}) },
+    retornos: { ...(base.retornos || {}), ...(ext.retornos || {}) },
+    market_caps: { ...(base.market_caps || {}), ...(ext.market_caps || {}) },
+  };
+}
+
+// Para el journal: la puerta sin el payload pesado (las extensiones ya viven
+// en el universo de la corrida).
+export function resumenPuerta(puerta) {
+  if (!puerta) return null;
+  const { extension, ...resto } = puerta;
+  return resto;
+}
+
 // Snapshot del universo del día, para que la corrida no lo reconstruya.
 export async function saveUniverse(snapshot, now = new Date()) {
   try {

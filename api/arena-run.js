@@ -91,7 +91,7 @@ import { cachedDayFetch } from './_lib/arena-buffet-cache.js';
 // movers + most-actives + máx/mín de 52 semanas, deduplicado con banderas).
 import { buildBuffetV15, BUFFET_V15_TARGET } from './_lib/arena-buffet.js';
 // B1: el universo del día (~600), precomputado por su cron pre-apertura.
-import { loadUniverse } from './_lib/arena-universe.js';
+import { loadUniverse, abrirPuertaEnVivo, fusionarPuerta, resumenPuerta, PUERTA_VIVO_ENABLED, PUERTA_VIVO_MS } from './_lib/arena-universe.js';
 // B6: los rieles, para que el prompt del contrato nuevo diga los MISMOS números
 // que el validador hace cumplir. Dos fuentes para el mismo tope es cómo el
 // prompt termina prometiendo algo que el harness rechaza.
@@ -873,6 +873,19 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   try { universeBase = await loadUniverse({ now }); }
   catch (e) { fetch_errors.universe_load = String((e && e.message) || e); }
 
+  // ── LA PUERTA EN VIVO ─────────────────────────────────────────────
+  // Lo del día del universo es de las 13:00 UTC, o sea los movers de AYER.
+  // Acá entran los de AHORA, con los mismos pisos (ver abrirPuertaEnVivo). Se
+  // lanza ya y se espera antes del tablero, en paralelo con el buffet v1.5.
+  // Techo propio: el buffet corre dentro del deadline de cada agente.
+  const puertaPromise = !PUERTA_VIVO_ENABLED
+    ? Promise.resolve({ abierta: false, motivo: 'apagada (ARENA_PUERTA_VIVO=0)', entraron: 0, simbolos: [] })
+    : Promise.race([
+      abrirPuertaEnVivo(universeBase, { creds: alpacaCreds(), now })
+        .catch((e) => ({ abierta: false, motivo: 'error', error: String((e && e.message) || e), entraron: 0, simbolos: [] })),
+      new Promise((r) => setTimeout(() => r({ abierta: false, motivo: `timeout (${Math.round(PUERTA_VIVO_MS / 1000)}s)`, entraron: 0, simbolos: [] }), PUERTA_VIVO_MS).unref?.()),
+    ]);
+
   let universe = null;
   if (BUFFET_V15_ENABLED) {
     try {
@@ -946,6 +959,9 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
   // ANTES del índice de atribución porque sus nombres también cuentan como
   // procedencia. Solo agrega lo INTRADÍA: el universo y el rango de 52 semanas
   // ya vienen precomputados del cron pre-apertura.
+  const puerta_en_vivo = await puertaPromise;
+  universeBase = fusionarPuerta(universeBase, puerta_en_vivo);
+
   let board = null;
   let boardRender = null;
   if (BOARD_ENABLED) {
@@ -1021,6 +1037,10 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
       ...boardRender, text: undefined,
       universe_size: board.universe_size, covered: board.covered, coverage_pct: board.coverage_pct,
       errors: board.errors,
+      // Lo que el tablero no pudo armar, dicho (hoy: sin RVOL). Viaja al
+      // journal y a la respuesta de la sombra, no sólo al texto del prompt.
+      avisos: board.avisos && board.avisos.length ? board.avisos : null,
+      sin_rvol: board.sin_rvol || null,
     } : null,
     movers, earnings_this_week,
     // BUFFET v1.5 — SOLO la parte que ve el PM. El diagnóstico (unavailable,
@@ -1046,6 +1066,7 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
         size: (universeBase.symbols || []).length,
         from_index: (universeBase.from_index || []).length,
         from_day: (universeBase.from_day || []).length,
+        from_live: (universeBase.from_vivo || []).length,
         ...(universeBase.note ? { note: universeBase.note } : {}),
       } : null,
     } : null,
@@ -1059,6 +1080,9 @@ export async function gatherContext({ baseUrl, now = new Date() }) {
         caveat: universeBase.caveat,
       } : { loaded: false, note: 'El cron pre-apertura no dejó universo. El buffet corre solo con los nombres del día.' },
     } : null,
+    // Cuántos y cuáles entraron por la puerta en vivo EN ESTA CORRIDA. NO viaja
+    // al prompt; se journalea en la fila de cada agente.
+    puerta_en_vivo: resumenPuerta(puerta_en_vivo),
     // Rechazados por admisión, con su motivo y su canal. NO viaja al prompt
     // (el PM no necesita la lista de lo que no vio) — se journalea, y es cómo
     // se audita si el filtro está tirando micro-caps (lo que debe) o nombres
@@ -2079,6 +2103,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     context.unavailable = buffet.unavailable;
     context.fetch_errors = buffet.fetch_errors;
     context.admission = buffet.admission;
+    context.puerta_en_vivo = buffet.puerta_en_vivo || null;
     context.scan = { prompt: { system: scanSystem, shared: scanShared, user: scanUser }, hash: scanHash, model: agent.model };
     context.scan.cache_prefix = cachePrefixReport(agent, [scanSystem, scanShared]);
 
@@ -2292,6 +2317,7 @@ export async function runArenaDecide({ baseUrl, now = new Date(), agent = agentB
     executor = createToolExecutor({
       budget: toolBudget,
       board: boardForTools, universe: universeForTools, creds, now,
+      posiciones: positions || [], equity: Number(account && account.equity),
       deps: { sectorOf: (sym) => sectorPorSimbolo[sym] || null },
     });
     const loop = await runToolLoop({

@@ -362,6 +362,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   const executor = createToolExecutor({
     budget: toolsMax, board: buffet.board_raw || null, universe: buffet.universe_raw || null,
     creds, now,
+    posiciones: libro.positions || [], equity,
     // ── `sectorOf` DEVOLVÍA null LITERALMENTE ──────────────────────────
     // Por eso `sector({etf:'XLE'})` daba 0 filas: ningún nombre del tablero
     // podía coincidir con ningún sector, porque la función decía que nadie
@@ -387,6 +388,9 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     cache_prefix: cachePrefixReport(agent, [system, shared]),
     lens: cola.lens, tail_tokens: cola.tokens_est,
     tier: tier ? { tier: tier.tier, tools_max: toolsMax } : null,
+    // Qué entró al universo por la puerta en vivo en esta corrida (igual para
+    // los siete). Es lo que contesta "¿IONQ llegó a estar frente a los agentes?".
+    puerta_en_vivo: (buffet && buffet.puerta_en_vivo) || null,
   };
 
   let loop;
@@ -585,6 +589,16 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   // herramientas) y cuál ganó se deducía de `resuelto_por`. Una derivación
   // frágil para el dato que decide el diagnóstico.
   const corte = diagnosticoDeCorte(llm.data, { maxTokens: ARENA_MAX_TOKENS, texto: text });
+  // ── CUÁNTO TARDÓ EL CIERRE, Y A QUÉ VELOCIDAD (2026-10-20) ─────────
+  // Para subir `ARENA_MAX_TOKENS` no alcanza saber que cortó: hay que saber
+  // si un techo más alto CABE en el reloj del cierre (reserva de 70s). Un
+  // techo de tokens que el modelo no alcanza a escribir antes del reloj sólo
+  // cambia un corte por un timeout. Sin la duración no hay velocidad, y sin
+  // velocidad el número se adivina.
+  if (Number.isFinite(llm.ms)) {
+    corte.ms = llm.ms;
+    corte.tokens_por_s = corte.output_tokens && llm.ms > 0 ? +(corte.output_tokens / (llm.ms / 1000)).toFixed(1) : null;
+  }
   ctx.lectura_cierre = corte;
   let texto = text;
   let parsed = parsePortfolioResponse(texto);
@@ -1025,6 +1039,7 @@ export default async function handler(req, res) {
       cost_usd: +costo.toFixed(4),
       board: buffet.board_meta || null,
       universe: (buffet.universe_diagnostics && buffet.universe_diagnostics.base) || null,
+      puerta_en_vivo: buffet.puerta_en_vivo || null,
       agents: results,
       verdict: verdes.length === results.length
         ? `VERDE: los ${verdes.length} produjeron un objetivo que pasa los rieles. Costo de la sombra: $${costo.toFixed(4)}.`

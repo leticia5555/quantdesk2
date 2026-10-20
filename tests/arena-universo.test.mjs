@@ -415,6 +415,8 @@ console.log('\n── el ciclo se cierra solo: bajar → guardar → leer → re
   const neon = {};
   let llamadasAFmp = 0;
   const deps = {
+    // Los dos escalones de ARRIBA, inyectados: sin esto este bloque bajaba el CSV real de IVV (y la tabla pública del Nasdaq-100) en CI, que tiene red, y "la primera corrida baja de FMP" salía `etf`.
+    fetchDesdeEtf: async () => null, fetchNasdaq100: async () => null,
     fetchConstituents: async (index) => {
       llamadasAFmp++;
       return { index, source: 'fmp', built_at: new Date(AHORA).toISOString(), symbols: listaDe(index) };
@@ -636,6 +638,7 @@ console.log('\n── el filtro de instrumento corre ANTES del tope ──');
     deps: {
       cargarCatalogo: async () => catalogo,
       fetchConstituents: async () => null,
+      fetchNasdaq100: async () => null,   // sin red: ver depsBase
       fetchDesdeEtf: async () => null,
       readStored: async () => null,
       readStatic: async () => null,
@@ -768,6 +771,7 @@ console.log('\n── el Nasdaq 100 ausente no degrada ni ensucia ──');
     fetchDesdeEtf: async (i) => (i === 'sp500'
       ? { index: i, source: 'etf', etf: 'IVV', built_at: HOY.toISOString(), symbols: sp500 }
       : null),
+    fetchNasdaq100: async () => null,   // "ausente" tiene que serlo de verdad, también con red
     fetchConstituents: async () => null,
     readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
     getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),

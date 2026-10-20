@@ -251,6 +251,19 @@ export async function buildBoard({
     .sort((a, b) => (b.rvol - a.rvol) || (a.symbol < b.symbol ? -1 : 1))
     .slice(0, TOP_RVOL);
 
+  // ── SIN RVOL ES UN DATO FALTANTE, NO UN DÍA SIN VOLUMEN (2026-10-20) ──
+  // El 29-sep openai pidió `rvol_top` dos veces y recibió 0 filas. Con el
+  // tablero presente, eso sólo pasa si NINGÚN nombre tuvo RVOL — o sea, si el
+  // promedio de 20 sesiones falló (o volvió vacío sin lanzar). La sección de
+  // volumen inusual desaparecía del tablero sin explicación y el screener
+  // contestaba "ninguno cumple". Se marca acá, una vez, y lo leen el render,
+  // el screener y el journal.
+  const avisos = [];
+  const sinRvol = filas.length > 0 && rvolTop.length === 0
+    ? { motivo: errors.avg_volume || `el promedio de volumen de 20 sesiones no devolvió dato para ninguno de los ${filas.length} nombres` }
+    : null;
+  if (sinRvol) avisos.push(`Tablero sin RVOL hoy: ${sinRvol.motivo}. La sección de volumen inusual no se pudo armar y el screener no puede filtrar por RVOL.`);
+
   const breakouts = {
     high: filas.filter((f) => f.pct_from_high != null && f.pct_from_high >= -NEAR_52W_PCT)
       .sort((a, b) => (b.pct_from_high - a.pct_from_high) || (a.symbol < b.symbol ? -1 : 1)).slice(0, TOP_MOVERS),
@@ -289,6 +302,8 @@ export async function buildBoard({
     // intradía —todos se miden a la misma hora— así que es la forma
     // interpretable de preguntar "¿está operando raro?" antes del cierre.
     rvol_top: rvolTop.map((f) => f.symbol),
+    sin_rvol: sinRvol,
+    avisos,
     earnings: (earnings || []).slice(0, 20),
     headlines,
     errors,
@@ -369,6 +384,12 @@ export function renderBoard(board, { budget = BOARD_TOKEN_HARD_CAP } = {}) {
   push(`== TOP ${TOP_MOVERS} LOSERS ==`, board.losers.map(fila).join('\n'));
   push(`== TOP ${TOP_RVOL} UNUSUAL VOLUME (RVOL = today's volume / 20-session average; INTRADAY THIS IS BIASED LOW — the day is not over, the average is of full sessions) ==`,
     board.rvol.map((f) => `${f.symbol} ${n2(f.price)} ${sg(f.change_pct)}% rv${f.rvol}`).join('\n'));
+  // Sin esto la sección simplemente no aparecía, y una sección ausente se lee
+  // como "no hubo volumen inusual".
+  if (board.sin_rvol) {
+    push('== UNUSUAL VOLUME: NOT AVAILABLE TODAY ==',
+      `RVOL could not be computed today (${board.sin_rvol.motivo}). Every rv column reads — and the screener cannot filter by RVOL. This is MISSING DATA, not an absence of unusual volume.`);
+  }
 
   push('== AT 52-WEEK HIGHS (within 2%; range from CLOSED weekly bars) ==',
     board.breakouts.high.map((f) => `${f.symbol} ${n2(f.price)} ${sg(f.pct_from_high)}% from high`).join('\n'));

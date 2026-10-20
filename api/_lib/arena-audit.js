@@ -358,6 +358,36 @@ const TIPO_POR_STATUS = {
   skipped_superseded_by_watch: 'cadencia_retirada',
 };
 
+// ── LAS DOS TABLAS, CON SU SELLO (2026-10-20) ────────────────────────
+// La puerta de 21 corridas corre en `arena_shadow_journal`, y esta auditoría
+// sólo leía `arena_journal`: la puerta era invisible y hubo que sacarla por
+// SQL. Ahora lee las dos, y cada fila dice de cuál vino — confundir una
+// corrida de PRUEBA con una EN VIVO es exactamente el error que las tablas
+// separadas existen para impedir. Mismos nombres que /api/liga/libros.
+export const FUENTES_AUDIT = { en_vivo: 'EN VIVO', prueba: 'PRUEBA' };
+const ALIAS_FUENTE = { en_vivo: 'en_vivo', viva: 'en_vivo', live: 'en_vivo', prueba: 'prueba', sombra: 'prueba', shadow: 'prueba', ambas: 'ambas', todas: 'ambas', both: 'ambas' };
+
+// Qué tablas leer. `?view=shadow` es atajo de `fuente=prueba`. El RESUMEN no
+// mezcla: sus métricas (calidad del buffet, guard, fabricación) son de UNA
+// población, y sumar la puerta a la liga cambiaría lo que significan sin
+// decirlo. Por eso el resumen por defecto es EN VIVO, y `ambas` se rechaza
+// con aviso en vez de mezclarse.
+export function resolverFuente({ fuente, view, esResumen } = {}) {
+  const avisos = [];
+  const v = String(view || '').toLowerCase();
+  let f = ALIAS_FUENTE[String(fuente || '').trim().toLowerCase()] || null;
+  if (fuente && !f) avisos.push(`\`fuente=${fuente}\` no se reconoce (válidas: en_vivo, prueba, ambas) y se ignoró.`);
+  if (!f && (v === 'shadow' || v === 'sombra' || v === 'prueba')) f = 'prueba';
+  if (esResumen) {
+    if (f === 'ambas') {
+      avisos.push('El resumen no mezcla EN VIVO con PRUEBA: sus métricas son de una sola población. Se calculó sobre EN VIVO; pedí `fuente=prueba` para el de la puerta.');
+      f = 'en_vivo';
+    }
+    return { fuente: f || 'en_vivo', avisos };
+  }
+  return { fuente: f || 'ambas', avisos };
+}
+
 export function auditaFila(row) {
   const ctx = (row && row.context) || {};
   const scan = ctx.scan || {};
@@ -371,6 +401,8 @@ export function auditaFila(row) {
   };
   return {
     id: row.id,
+    // Se pone acá y no lo infiere nadie después: viene de la tabla que se leyó.
+    ...(row.fuente ? { fuente: row.fuente, sello: FUENTES_AUDIT[row.fuente] || row.fuente } : {}),
     fecha: row.run_date,
     created_at: row.created_at,
     agente: row.agent_id || null,
@@ -754,7 +786,7 @@ function mdFila(f) {
   const L = [];
   const titulo = f.tipo === 'red_de_riesgo' ? 'Red de riesgo (determinista)'
     : f.tipo === 'mercado_cerrado' ? 'Mercado cerrado' : 'Decisión del PM';
-  L.push(`### ${titulo} — \`${f.status}\``);
+  L.push(`### ${f.sello ? `[${f.sello}] ` : ''}${titulo} — \`${f.status}\``);
   const meta = [`agente **${val(f.agente)}**`, `modelo \`${val(f.modelo)}\``, `prompt \`${val(f.prompt_version)}\``];
   if (f.cuenta && f.cuenta.equity != null) meta.push(`equity **$${nf(Number(f.cuenta.equity))}** · cash $${nf(Number(f.cuenta.cash))} · ${val(f.cuenta.positions)} posiciones`);
   L.push(meta.join(' · '));
@@ -1034,4 +1066,95 @@ export function renderResumenMarkdown(audit) {
     }
   }
   return L.join('\n') + '\n';
+}
+
+// ── ?view=cierres — CUÁNTO TECHO DE SALIDA HACE FALTA, CON DATO ──────
+// Pregunta (2026-10-20): `ARENA_MAX_TOKENS=6000` cortó 4 de 21 cierres de la
+// puerta (Qwen 3/3, DeepSeek 1/3). ¿A cuánto subirlo?
+//
+// Lo que NO sirve: el `techo_usado` de un cierre cortado. Es 1.0 por
+// definición — dice QUE cortó, no CUÁNTO le faltaba. Lo que sí sirve:
+//   · la salida más larga de los cierres que NO cortaron → cuánto usa un
+//     cierre completo (cota inferior del techo);
+//   · el razonamiento dentro de los cortes → cuánto se comió el pensamiento
+//     antes de llegar al JSON;
+//   · la velocidad (tokens/s) → cuánto techo CABE en la reserva del cierre.
+//     Un techo que el modelo no alcanza a escribir antes del reloj sólo cambia
+//     un corte por un timeout. (La velocidad se journalea desde 2026-10-20.)
+//
+// Recibe filas CRUDAS (con `context` y `fuente`), no auditadas: el dato vive
+// en `context.lectura_cierre`, que la auditoría por corrida no proyecta.
+const mediana = (xs) => {
+  const v = xs.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+};
+const aMil = (n) => Math.ceil(n / 1000) * 1000;
+
+export function resumenDeCierres(rows = [], { techoActual, reservaMs } = {}) {
+  const cierres = [];
+  for (const r of rows || []) {
+    const ctx = (r && r.context) || {};
+    const l = ctx.lectura_cierre;
+    if (!l) continue;
+    const rj = ctx.reintento_json || null;
+    cierres.push({
+      agente: r.agent_id || null,
+      ...(r.fuente ? { fuente: r.fuente, sello: FUENTES_AUDIT[r.fuente] || r.fuente } : {}),
+      created_at: r.created_at, status: r.status,
+      max_tokens: l.max_tokens ?? null, output_tokens: l.output_tokens ?? null,
+      reasoning_tokens: l.reasoning_tokens ?? null, techo_usado: l.techo_usado ?? null,
+      truncado: l.truncado ?? null, truncado_por: l.truncado_por || null,
+      ms: l.ms ?? null, tokens_por_s: l.tokens_por_s ?? null,
+      reintento: rj ? { concedido: !!rj.concedido, resuelto: rj.resuelto ?? null, causa: rj.causa || null } : null,
+      cola: l.cola || null,
+    });
+  }
+
+  const por = new Map();
+  for (const c of cierres) {
+    const a = por.get(c.agente) || { agente: c.agente, cierres: 0, cortados: 0, rescatados: 0, limpios: [], razonamiento_en_cortes: [], velocidades: [] };
+    a.cierres++;
+    if (c.truncado === true) {
+      a.cortados++;
+      if (c.reintento && c.reintento.resuelto) a.rescatados++;
+      if (c.reasoning_tokens != null) a.razonamiento_en_cortes.push(c.reasoning_tokens);
+    } else if (c.truncado === false && c.output_tokens != null) a.limpios.push(c.output_tokens);
+    if (c.tokens_por_s != null) a.velocidades.push(c.tokens_por_s);
+    por.set(c.agente, a);
+  }
+  const agentes = [...por.values()].map((a) => ({
+    agente: a.agente, cierres: a.cierres, cortados: a.cortados, rescatados_por_reintento: a.rescatados,
+    // Sin un solo cierre limpio, de este agente sólo sabemos que necesita MÁS
+    // que el techo actual — no cuánto más.
+    salida_max_sin_corte: a.limpios.length ? Math.max(...a.limpios) : null,
+    solo_cota_inferior: a.cortados > 0 && !a.limpios.length,
+    razonamiento_en_cortes: a.razonamiento_en_cortes,
+    tokens_por_s_mediana: mediana(a.velocidades),
+  })).sort((x, y) => y.cortados - x.cortados);
+
+  // ── LAS DOS COTAS ──
+  // Piso: la salida limpia más larga de la liga con 25% de margen, y nunca por
+  // debajo de techo+1000 si hubo cortes (los cortados necesitan más que eso).
+  const limpias = agentes.map((a) => a.salida_max_sin_corte).filter(Number.isFinite);
+  const huboCortes = agentes.some((a) => a.cortados > 0);
+  let piso = limpias.length ? aMil(Math.max(...limpias) * 1.25) : null;
+  if (huboCortes && Number.isFinite(techoActual)) piso = Math.max(piso || 0, techoActual + 1000);
+  // Techo por reloj: lo que el agente MÁS LENTO alcanza a escribir en la
+  // reserva del cierre. El techo es uno para los siete (es un riel), así que
+  // manda el más lento.
+  const velocidades = agentes.map((a) => a.tokens_por_s_mediana).filter(Number.isFinite);
+  const masLento = velocidades.length ? Math.min(...velocidades) : null;
+  const techoPorReloj = masLento != null && Number.isFinite(reservaMs) ? Math.floor((masLento * reservaMs) / 1000 / 1000) * 1000 : null;
+
+  const lectura = !cierres.length ? 'No hay cierres con `lectura_cierre` en la ventana.'
+    : !huboCortes ? `Ningún cierre cortó: ${techoActual} alcanza en la ventana.`
+      : techoPorReloj == null
+        ? `Hubo cortes. Piso: ${piso} (salida limpia más larga +25%${huboCortes ? `, y > ${techoActual}` : ''}). SIN velocidad journaleada todavía, así que no se sabe si ${piso} cabe en la reserva de ${Math.round(reservaMs / 1000)}s del cierre — la velocidad se guarda desde 2026-10-20.`
+        : piso <= techoPorReloj
+          ? `Subir a ${piso}: es el piso que piden los cortes y cabe en el reloj (el más lento escribe ~${techoPorReloj} tokens en ${Math.round(reservaMs / 1000)}s).`
+          : `CONFLICTO: los cortes piden ≥ ${piso} y el más lento sólo escribe ~${techoPorReloj} en la reserva de ${Math.round(reservaMs / 1000)}s. Subir el techo cambiaría cortes por timeouts: hay que subir la reserva del cierre o bajar el effort, no sólo el techo.`;
+
+  return { techo_actual: techoActual ?? null, reserva_cierre_ms: reservaMs ?? null, piso, techo_por_reloj: techoPorReloj, lectura, agentes, cierres };
 }
