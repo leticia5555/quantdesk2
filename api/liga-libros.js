@@ -220,6 +220,59 @@ export function avisosDeHerramientas(libros = []) {
   return [...por.values()].map((a) => `${a.nombre}: ${a.n} llamada${a.n === 1 ? '' : 's'} a herramientas fallaron en ${a.corridas} corrida${a.corridas === 1 ? '' : 's'} (${a.cuales.join(', ')}${a.n > a.cuales.length ? ', …' : ''}). No es "0 filas": la herramienta no devolvió resultado, y el agente decidió sin ese dato.`);
 }
 
+// ── LA PUERTA, LEÍBLE DESDE AFUERA (2026-10-20) ──────────────────────
+// Dos de los tres criterios físicos de la puerta de apertura son
+// `reloj_pct < 90` y `lectura < 90.000 ms` (docs/arena-t3-apertura.md,
+// scripts/arena-humo.sh). Los dos estaban journaleados —`tools.limites` y
+// `tools.vueltas_medidas`— y solo salían en la respuesta HTTP de la corrida
+// misma: pasada esa respuesta, para leerlos había que ir a la base.
+//
+// Se calculan IGUAL que `resumenDelLoop` de arena-shadow.js (la prueba lo
+// compara), con una diferencia declarada: una vuelta sin `ms` medido no
+// cuenta como 0 ms. Si NINGUNA vuelta trae tiempo, la lectura máxima es null —
+// "no medido" y "cero" mandan a lugares opuestos.
+//
+// Este archivo NO importa arena-shadow (regla del encabezado: el camino de
+// decisión no se toca ni de lectura), por eso la cuenta vive acá también.
+export const PUERTA_RELOJ_PCT = 90;
+export const PUERTA_LECTURA_MS = 90000;
+
+export function puertaDeCorrida(t) {
+  if (!t || (!t.limites && !Array.isArray(t.vueltas_medidas))) return null;
+  const v = Array.isArray(t.vueltas_medidas) ? t.vueltas_medidas : [];
+  const lim = t.limites || {};
+  const ms = v.map((x) => (x && x.ms != null ? Number(x.ms) : NaN)).filter(Number.isFinite);
+  const reloj = (lim.reloj_ms && lim.reloj_ms.pct) ?? null;
+  const lectura = ms.length ? Math.max(...ms) : null;
+  const cortes = v.filter((x) => x && x.reloj_nuestro).length;
+  return {
+    vueltas: t.turns ?? (v.length || null),
+    cortó_por: t.stopped_by || null,
+    reloj_pct: reloj,
+    lectura_max_ms: lectura,
+    vacias: v.filter((x) => x && x.vacio).length,
+    cortes_nuestros: cortes,
+    // El veredicto de ESTA corrida contra cada criterio físico. null = no se
+    // puede juzgar (dato no journaleado), que NO es lo mismo que verde.
+    puertas: {
+      reloj: reloj == null ? null : reloj < PUERTA_RELOJ_PCT,
+      lectura: lectura == null ? null : lectura < PUERTA_LECTURA_MS,
+      cortes_nuestros: v.length ? cortes === 0 : null,
+    },
+  };
+}
+
+export function puertaPorCorrida(libros = []) {
+  return (Array.isArray(libros) ? libros : []).filter((l) => l && l.puerta).map((l) => ({
+    corrida_id: l.corrida_id || null,
+    agente: (l.agente && l.agente.id) || null,
+    fecha: l.fecha || null,
+    fuente: l.fuente || null,
+    estado: l.estado || null,
+    ...l.puerta,
+  }));
+}
+
 // ── LA COHERENCIA ENTRE LAS DOS ETAPAS ───────────────────────────────
 // No se puede DERIVAR una de la otra —miden cosas distintas— pero sí hay
 // combinaciones IMPOSIBLES, y ésas son las que valen una prueba:
@@ -395,6 +448,9 @@ export function libroDeFila(row, fuente) {
   const reb = row.rebalance || null;
   return {
     fuente,                                   // 'en_vivo' | 'prueba' — NUNCA se infiere
+    // El id de la fila en el journal: con él, `puerta_por_corrida` nombra la
+    // corrida exacta que se pasó del reloj.
+    corrida_id: row.id || null,
     // La etiqueta ya armada, con las dos cosas que tiene que decir.
     sello: selloDe(fuente, ctx.ejecucion),
     fecha: row.created_at || row.run_date,
@@ -414,6 +470,9 @@ export function libroDeFila(row, fuente) {
     enfoque_nota: ctx.lens ? 'El enfoque rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ese día.' : null,
     // CÓMO INVESTIGÓ.
     investigacion: secuenciaPublicable(ctx),
+    // reloj_pct, lectura máxima por vuelta y cortes nuestros: los criterios
+    // físicos de la puerta, por corrida. null si la corrida no los journaleó.
+    puerta: puertaDeCorrida(ctx.tools),
     // null cuando no hubo reintento, que es el caso normal: cuatro campos en
     // null se leerían como "hubo y no sabemos".
     reintento: reintentoPublicable(ctx),
@@ -884,7 +943,7 @@ export default async function handler(req, res) {
       // dibujado siete tarjetas vacías el día del encendido. La sombra se veía
       // bien porque allá sí son columnas.
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error,
+        `select id, run_date, created_at, agent_id, status, plan, error,
                 -- actions es la UNICA columna que el reconcile re-escribe:
                 -- sin ella no hay precio de ejecucion ni hora. account es el
                 -- libro de ANTES de operar, que es contra lo que se mide una
@@ -952,7 +1011,7 @@ export default async function handler(req, res) {
   if (fuente === FUENTE_PRUEBA || fuente === 'ambas') {
     try {
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error, target, rebalance,
+        `select id, run_date, created_at, agent_id, status, plan, error, target, rebalance,
                 jsonb_build_object(
                   'lens', context->>'lens',
                   'tools', context->'tools',
@@ -1053,6 +1112,10 @@ export default async function handler(req, res) {
     // Sale de las mismas órdenes que ya se publican, así que no cuesta una
     // consulta más.
     deslizamiento: deslizamientoPorAgente(libros),
+    // ── LA PUERTA, CORRIDA POR CORRIDA ───────────────────────────────
+    // Lo mismo que `libros[].puerta`, aplanado: se lee con un solo `jq`
+    // (`.puerta_por_corrida[] | select(.puertas.reloj == false)`).
+    puerta_por_corrida: puertaPorCorrida(libros),
     avisos: avisos.length ? avisos : null,
     libros,
   });
