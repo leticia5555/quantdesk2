@@ -140,7 +140,32 @@
      Una línea por fila, como pide el encargo: ticker, nombre, número. El
      nombre se recorta con elipsis y el número nunca, porque el número es el
      dato y el nombre es el adorno. */
-  #paneles{padding:0 16px 24px;max-width:900px}
+  #paneles{padding:0 16px 24px;max-width:900px;display:flex;flex-direction:column}
+  /* EL ORDEN DEL CELULAR: las noticias van JUSTO BAJO EL MAPA, antes de las
+     tablas (Lety, 2026-10-22: "noticias como revista, no escondidas"). */
+  #col-der{display:contents}
+  #p-revista{order:1}
+  #p-tablas{order:2}
+  #p-lado{order:3}
+
+  /* ── LA REVISTA ─────────────────────────────────────────────────────
+     Una portada con la foto a todo lo ancho y el titular grande, y debajo
+     cuatro medianas con la foto chica a la izquierda. Sólo entran notas con
+     foto: una revista con huecos no es una revista, y lo que no tiene foto
+     se lee mejor en la lista de abajo. */
+  .rev-portada{display:block;text-decoration:none;color:inherit;
+    border:1px solid var(--linea);border-radius:10px;overflow:hidden;background:var(--panel)}
+  .rev-portada img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#121a22}
+  .rev-portada .cuerpo{padding:10px 12px 12px}
+  .rev-portada .tit{font-size:17px;line-height:1.25;font-weight:600;margin-bottom:5px}
+  .rev-med{display:grid;grid-template-columns:84px minmax(0,1fr);gap:9px;align-items:start;
+    text-decoration:none;color:inherit;padding:9px 0;border-bottom:1px solid var(--linea)}
+  .rev-med:last-of-type{border-bottom:0}
+  .rev-med img{width:84px;aspect-ratio:4/3;object-fit:cover;border-radius:6px;display:block;background:#121a22}
+  .rev-med .tit{font-size:13px;line-height:1.3;font-weight:600}
+  .rev-meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:3px}
+  .rev-meta b{color:var(--tenue);font-weight:600}
+  #p-revista .lista-med{margin-top:8px}
   #paneles h2{margin:18px 0 6px;font:600 13px var(--mono);letter-spacing:.04em;
     color:#9aa5b1;text-transform:uppercase}
   #paneles .nota{margin:0 0 6px;font-size:11px;color:var(--tenue);line-height:1.4}
@@ -404,7 +429,18 @@
     #mas{grid-column:2;grid-row:5;padding:4px 0 0}
     #tiras{grid-column:2;grid-row:6;padding:0 0 6px}
     #p-tablas{grid-column:1;grid-row:4/7;overflow-y:auto;min-height:0;padding-bottom:8px}
-    #p-lado{grid-column:3;grid-row:4/7;overflow-y:auto;min-height:0;padding-bottom:8px}
+    /* LA COLUMNA DERECHA ES LA REVISTA (y debajo, lo demás). El envoltorio
+       es la celda; sus hijos se apilan dentro y la columna se recorre por
+       dentro, como antes. */
+    #col-der{grid-column:3;grid-row:4/7;overflow-y:auto;min-height:0;padding-bottom:8px;
+      display:flex;flex-direction:column}
+    #p-revista,#p-lado{order:0}
+    /* Más compacta que en el celular: la columna mide 336 px. */
+    .rev-portada .tit{font-size:14px}
+    .rev-portada .cuerpo{padding:8px 10px 10px}
+    .rev-med{grid-template-columns:64px minmax(0,1fr);gap:8px;padding:7px 0}
+    .rev-med img{width:64px}
+    .rev-med .tit{font-size:12px}
     #aviso{grid-column:1/-1;grid-row:7}
     footer{grid-column:1/-1;grid-row:7;padding:8px 0 10px;align-self:end}
     #paneles{padding:0;max-width:none}
@@ -497,8 +533,17 @@
      el mapa en medio. Partirlo acá y no con CSS de reordenamiento es lo que
      permite que cada columna se recorra por su cuenta sin mover a la otra. -->
 <section id="paneles" hidden>
+  <!-- LA COLUMNA DERECHA DEL ESCRITORIO, en un envoltorio propio.
+       En el celular `#col-der` es `display:contents`, así que sus dos hijos
+       se mezclan con `#p-tablas` en el flujo de `#paneles` y el `order` los
+       acomoda: revista, tablas, lado. En escritorio el envoltorio SÍ es una
+       celda de la rejilla y apila la revista arriba del resto. Sin él, dos
+       elementos tendrían que compartir la misma celda. -->
+  <div id="col-der">
+    <div id="p-revista"></div>
+    <div id="p-lado"></div>
+  </div>
   <div id="p-tablas"></div>
-  <div id="p-lado"></div>
 </section>
 
 <aside class="hoja" id="hoja" aria-hidden="true">
@@ -1716,13 +1761,81 @@
     } catch(e){ return null; }
   }
 
+  /**
+   * LA REVISTA: portada grande + cuatro medianas + "ver todas".
+   *
+   * La ELECCIÓN la hace el endpoint (`revistaDe`, en `noticias-pagina.js`),
+   * la misma que usa `/mercado/noticias`: si cada pantalla eligiera por su
+   * cuenta, dos pantallas del mismo sitio destacarían notas distintas del
+   * mismo momento.
+   *
+   * Acá sólo se pinta. Y si una foto no carga, la tarjeta SE QUITA —nunca un
+   * bloque de color de relleno (Lety, 2026-10-22)—; si no queda ninguna, la
+   * sección entera desaparece.
+   */
+  function metaDeRevista(n){
+    var hora = horaDeNota(n.publicado_en);
+    return (hora ? esc(hora) + ' · ' : '') + '<b>' + esc(n.fuente_nombre || n.fuente_id) + '</b>';
+  }
+  function bloqueRevista(){
+    if(!noticias || noticias.error) return '';
+    var r = noticias.revista || {};
+    if(!r.portada) return '';
+    var html = '<h2>Noticias</h2><div class="rev">';
+    html += '<a class="rev-portada" href="' + esc(r.portada.url) + '" target="_blank" rel="noopener noreferrer">'
+      + '<img src="' + esc(r.portada.imagen) + '" alt="" decoding="async" referrerpolicy="no-referrer">'
+      + '<div class="cuerpo"><div class="tit">' + esc(r.portada.titular) + '</div>'
+      + '<div class="rev-meta">' + metaDeRevista(r.portada) + '</div></div></a>';
+    var meds = (r.medianas || []).filter(function(n){ return n && n.imagen; });
+    if(meds.length){
+      html += '<div class="lista-med">' + meds.map(function(n){
+        return '<a class="rev-med" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
+          + '<img src="' + esc(n.imagen) + '" alt="" decoding="async" referrerpolicy="no-referrer">'
+          + '<div><div class="tit">' + esc(n.titular) + '</div>'
+          + '<div class="rev-meta">' + metaDeRevista(n) + '</div></div></a>';
+      }).join('') + '</div>';
+    }
+    html += '</div><a class="ver-todas" href="/mercado/noticias">Ver todas las noticias →</a>';
+    return html;
+  }
+
+  /**
+   * LA FOTO QUE NO CARGA SE LLEVA SU TARJETA.
+   *
+   * Tres caminos, porque un hotlink falla de tres formas: contesta un error,
+   * ya falló antes de que este código corriera, o no contesta nunca (por eso
+   * el plazo). Si la revista se queda sin ninguna, la sección desaparece: una
+   * franja vacía no es un hueco que haya que llenar.
+   */
+  function atarFotosDeRevista(){
+    var raiz = document.getElementById('p-revista');
+    if(!raiz) return;
+    [].forEach.call(raiz.querySelectorAll('img'), function(img){
+      if(img.dataset.atado) return;
+      img.dataset.atado = '1';
+      function quitar(){
+        var tarjeta = img.closest('.rev-portada, .rev-med');
+        if(tarjeta && tarjeta.parentNode) tarjeta.remove();
+        if(!raiz.querySelector('.rev-portada, .rev-med')) raiz.innerHTML = '';
+      }
+      img.addEventListener('error', quitar);
+      if(img.complete && img.naturalWidth === 0) return quitar();
+      var plazo = setTimeout(function(){
+        if(!img.complete || img.naturalWidth === 0) quitar();
+      }, 5000);
+      img.addEventListener('load', function(){ clearTimeout(plazo); });
+    });
+  }
+
   function bloqueHoy(){
     var html = '<h2>Lo de hoy</h2>';
     if(!noticias){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
     if(noticias.error){
       return html + '<div class="tabla"><div class="vacio">' + esc('no se pudo leer: ' + noticias.error) + '</div></div>';
     }
-    var ns = noticias.noticias || [];
+    // El RESTO: lo que la revista no se llevó. La resta la hace el endpoint,
+    // así que no hay dos restas que puedan discrepar.
+    var ns = (noticias.revista && noticias.revista.resto) || noticias.noticias || [];
     var caidas = noticias.fuentes_caidas || [];
     if(caidas.length){
       html += '<p class="nota">' + esc(caidas.length + ' de ' + (noticias.fuentes_go || '?')
@@ -1757,7 +1870,12 @@
     // R3b: la página entera de noticias. "Lo de hoy" es el recorte de 12
     // titulares; la página tiene las secciones, los chips de fuente y las
     // destacadas, y lee de la MISMA tabla (una sola fuente de verdad).
-    html += '</div><a class="ver-todas" href="/mercado/noticias">ver todas las noticias →</a>';
+    // El botón va UNA vez por columna. Si la revista se pintó, ya lo puso
+    // arriba; dos enlaces al mismo sitio en la misma columna son ruido.
+    var hayRevista = !!(noticias && noticias.revista && noticias.revista.portada
+      && noticias.revista.portada.imagen);
+    html += '</div>' + (hayRevista ? ''
+      : '<a class="ver-todas" href="/mercado/noticias">ver todas las noticias →</a>');
     return html;
   }
 
@@ -1820,6 +1938,8 @@
     // R8: "Abrir la terminal completa", que el encargo pide en CADA pantalla
     // nueva. Va al final de la columna lateral —donde sobra sitio— y no en la
     // cabecera, que en el celular le quitaría alto al mapa.
+    document.getElementById('p-revista').innerHTML = bloqueRevista();
+    atarFotosDeRevista();
     document.getElementById('p-lado').innerHTML = bloqueHoy() + bloqueSemana() + bloqueArena()
       + '<a class="ver-todas" id="abrir-terminal" href="/app">Abrir la terminal completa · Modo experto →</a>';
     el.hidden = false;

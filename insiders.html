@@ -92,6 +92,10 @@
   .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
     border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
   .panel{border:1px solid var(--linea);border-radius:8px;background:var(--panel);overflow:hidden}
+  /* La cobertura completa NO es un aviso: es una afirmación medida. Verde,
+     sin borde punteado y sin disculpa. */
+  .cobertura-ok{font-family:var(--mono);font-size:11px;color:var(--verde);line-height:1.5;
+    border:1px solid #14362a;border-radius:8px;padding:8px 11px;margin:0 0 10px}
   .aviso{font-family:var(--mono);font-size:11px;color:var(--ambar);line-height:1.5;
     border:1px dashed #3a3222;border-radius:8px;padding:9px 11px;margin:10px 0}
 
@@ -472,14 +476,33 @@
       + ' · Información, no asesoría.';
   }
 
+  /**
+   * LA COBERTURA, CON SUS DOS NÚMEROS.
+   *
+   * Antes decía que lo que no aparece "puede no haberse cosechado todavía":
+   * cierto cuando la fuente era la ventana de lo recién presentado, y una
+   * disculpa permanente que entrena a no creerle a los avisos.
+   *
+   * Ahora el índice diario de EDGAR da el DENOMINADOR, así que se puede
+   * afirmar en vez de pedir disculpas: "100% de los Form 4 del día (1.842 de
+   * 1.842)". Y cuando NO está completa, el aviso dice cuántos faltan — con el
+   * número, que es lo que se puede auditar.
+   */
   function pintarAviso(){
     var viejo = document.getElementById('aviso-cobertura');
     if(viejo) viejo.remove();
     if(!datos || !datos.cobertura) return;
+    var completa = !!datos.cobertura_completa;
     var d = document.createElement('div');
-    d.className = 'aviso'; d.id = 'aviso-cobertura';
-    d.textContent = 'Cobertura: ' + datos.cobertura
-      + '. Lo que no aparece puede no haberse cosechado todavía, no que no haya pasado.';
+    d.id = 'aviso-cobertura';
+    // Completa no es un aviso: es un dato. Va en verde y sin la coletilla.
+    d.className = completa ? 'cobertura-ok' : 'aviso';
+    d.textContent = completa
+      ? datos.cobertura
+      : datos.cobertura + '. Lo que no aparece puede no haberse cosechado todavía, no que no haya pasado.';
+    if(completa && datos.cobertura_ultimo && datos.cobertura_ultimo.fecha){
+      d.title = 'medido contra el índice diario de EDGAR del ' + datos.cobertura_ultimo.fecha;
+    }
     var c = document.querySelector('.col-tabla');
     c.insertBefore(d, c.firstChild);
   }

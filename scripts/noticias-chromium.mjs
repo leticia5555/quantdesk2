@@ -59,7 +59,15 @@ const NOTAS = [
   // destacada, así que es la que tiene que caer al bloque por plazo.
   { url: 'https://valor.test/ibov', titular: 'Ibovespa fecha em alta de 1,2%',
     fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
-    publicado_en: hace(3), imagen: '/foto-lenta.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
+    publicado_en: hace(3), imagen: '/foto-ok.gif', imagen_via: 'og:image', tickers: [], fuente_dato: null },
+  // La foto que TARDA seis segundos: su tarjeta cae por plazo vencido.
+  { url: 'https://infobae.test/lenta', titular: 'El dólar se mueve antes de la Fed',
+    fuente_id: 'infobae', fuente_nombre: 'Infobae', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
+    publicado_en: hace(4), imagen: '/foto-lenta.gif', imagen_via: 'og:image', tickers: [], fuente_dato: null },
+  // La foto que contesta 404: su tarjeta se quita, no se rellena.
+  { url: 'https://reuters.test/rota', titular: 'Reuters: el crudo cede tras el inventario',
+    fuente_id: 'reuters', fuente_nombre: 'Reuters', tipo: 'medio', idioma: 'en', seccion: 'mercado',
+    publicado_en: hace(6), imagen: '/foto-rota.gif', imagen_via: 'og:image', tickers: [], fuente_dato: null },
   { url: 'https://valor.test/petro', titular: 'Petrobras anuncia dividendo extraordinário',
     fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
     publicado_en: hace(5), imagen: '/foto-ok.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
@@ -75,7 +83,7 @@ const NOTAS = [
     tickers: ['NVDA'], fuente_dato: null },
   { url: 'https://medio.test/amd', titular: 'AMD <$100 es compra > 2027, dice la casa',
     fuente_id: 'marketwatch', fuente_nombre: 'MarketWatch', tipo: 'medio', idioma: 'en', seccion: 'mercado',
-    publicado_en: hace(2), imagen: '/foto-rota.gif', imagen_via: 'og:image',
+    publicado_en: hace(2), imagen: null, imagen_via: null,
     tickers: ['AMD'], fuente_dato: null },
   { url: 'https://medio.test/walmex', titular: 'Walmex sube 2% tras el reporte trimestral',
     fuente_id: 'el_financiero', fuente_nombre: 'El Financiero', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
@@ -107,6 +115,8 @@ const NOTAS = [
 
 const GO = [
   { id: 'valor_br', nombre: 'Valor BR', idioma: 'pt', tipo: 'medio', seccion: 'mexico_latam' },
+  { id: 'infobae', nombre: 'Infobae', idioma: 'es', tipo: 'medio', seccion: 'mexico_latam' },
+  { id: 'reuters', nombre: 'Reuters', idioma: 'en', tipo: 'medio', seccion: 'mercado' },
   { id: 'cnbc', nombre: 'CNBC', idioma: 'en', tipo: 'medio', seccion: 'mercado' },
   { id: 'marketwatch', nombre: 'MarketWatch', idioma: 'en', tipo: 'medio', seccion: 'mercado' },
   { id: 'el_financiero', nombre: 'El Financiero', idioma: 'es', tipo: 'medio', seccion: 'mexico_latam' },
@@ -118,6 +128,8 @@ const GO = [
 ];
 const CORRIDAS = [
   { fuente_id: 'valor_br', ok: true, motivo: null, guardadas: 12, ultima_corrida: hace(5) },
+  { fuente_id: 'infobae', ok: true, motivo: null, guardadas: 2, ultima_corrida: hace(5) },
+  { fuente_id: 'reuters', ok: true, motivo: null, guardadas: 3, ultima_corrida: hace(5) },
   { fuente_id: 'cnbc', ok: true, motivo: null, guardadas: 4, ultima_corrida: hace(5) },
   { fuente_id: 'marketwatch', ok: true, motivo: null, guardadas: 6, ultima_corrida: hace(5) },
   { fuente_id: 'el_financiero', ok: true, motivo: null, guardadas: 9, ultima_corrida: hace(5) },
@@ -358,8 +370,43 @@ try {
     dest.every((d) => /^https?:\/\//.test(d.href || '') && d.fuente),
     JSON.stringify(dest.map((d) => ({ h: d.href, f: d.fuente }))));
   const notaDest = await p.textContent('#dest-nota');
+  // La cuenta incluye la PORTADA, que no es una `.dest` sino el bloque
+  // grande de arriba. Es lo que hay en pantalla, que es lo que la nota
+  // promete contar.
+  const hayPortada = await p.evaluate(() => {
+    const el = document.getElementById('portada');
+    return !!el && !el.hidden && !!el.querySelector('img');
+  });
   chequeo('la nota cuenta las que HAY en pantalla, no las que llegaron',
-    new RegExp('· ' + dest.length + ' nota').test(notaDest), `${dest.length} tarjetas · ${notaDest}`);
+    new RegExp('· ' + (dest.length + (hayPortada ? 1 : 0)) + ' nota').test(notaDest),
+    `${dest.length} tarjetas + ${hayPortada ? 1 : 0} portada · ${notaDest}`);
+
+  // ── LA REVISTA DE LA PÁGINA ─────────────────────────────────────────
+  const portada = await p.evaluate(() => {
+    const el = document.getElementById('portada');
+    if (!el || el.hidden) return null;
+    const img = el.querySelector('img');
+    const tit = el.querySelector('.tit');
+    return {
+      href: el.getAttribute('href'),
+      cargada: !!img && img.complete && img.naturalWidth > 0,
+      ancho: img ? Math.round(img.getBoundingClientRect().width) : 0,
+      zona: Math.round(el.getBoundingClientRect().width),
+      tamTitulo: tit ? Math.round(parseFloat(getComputedStyle(tit).fontSize)) : 0,
+      meta: (el.querySelector('.meta') || {}).textContent || '',
+      arribaDeLaRejilla: el.getBoundingClientRect().top
+        < document.getElementById('destacadas').getBoundingClientRect().top,
+    };
+  });
+  chequeo('hay portada grande, con su foto cargada y su enlace a la nota',
+    portada && portada.cargada && /^https?:\/\//.test(portada.href || ''),
+    JSON.stringify(portada));
+  chequeo('el titular de la portada es más grande que el de las tarjetas',
+    portada && portada.tamTitulo >= 16, portada ? String(portada.tamTitulo) : 'no está');
+  chequeo('y va ARRIBA de la rejilla', portada && portada.arribaDeLaRejilla,
+    portada ? String(portada.arribaDeLaRejilla) : 'no está');
+  chequeo('la portada dice su fuente y su hora',
+    portada && /\S/.test(portada.meta), portada ? portada.meta : 'no está');
 
   // ── EL ARREGLO DEL ESPACIO PERDIDO, EN PANTALLA ─────────────────────
   const titulares = await p.evaluate(() =>
@@ -448,10 +495,10 @@ try {
     await p.evaluate(() => location.search));
   // La URL cambia ANTES que la lista (replaceState es inmediato, el fetch no):
   // se espera el repintado o se mide la lista vieja.
-  const DE_LA_REGION = /Walmex|peso|Ibovespa|Petrobras|Real|Vale/;
+  const DE_LA_REGION = /Walmex|peso|Ibovespa|Petrobras|Real|Vale|dólar/;
   await p.waitForFunction(() => {
     const ts = [...document.querySelectorAll('.fila .tit')].map((e) => e.textContent);
-    return ts.length > 0 && ts.every((t) => /Walmex|peso|Ibovespa|Petrobras|Real|Vale/.test(t));
+    return ts.length > 0 && ts.every((t) => /Walmex|peso|Ibovespa|Petrobras|Real|Vale|dólar/.test(t));
   }, null, { timeout: 3000 }).catch(() => {});
   const trasMx = await p.evaluate(() =>
     [...document.querySelectorAll('.fila .tit')].map((e) => e.textContent));
@@ -481,12 +528,12 @@ try {
   await p.locator('#t-idioma button[data-idioma="es"]').tap();
   await p.waitForFunction(() => {
     const fs = [...document.querySelectorAll('.fila .meta b, .dest .meta b')];
-    return fs.length > 0 && fs.every((e) => /Financiero|Banxico/.test(e.textContent));
+    return fs.length > 0 && fs.every((e) => /Financiero|Banxico|Infobae/.test(e.textContent));
   }, null, { timeout: 3000 }).catch(() => {});
   const soloEs = await p.evaluate(() =>
     [...document.querySelectorAll('.fila .meta b, .dest .meta b')].map((e) => e.textContent));
   chequeo('"Solo español" deja solamente fuentes en español',
-    soloEs.length > 0 && soloEs.every((n) => /Financiero|Banxico/.test(n)), JSON.stringify(soloEs));
+    soloEs.length > 0 && soloEs.every((n) => /Financiero|Banxico|Infobae/.test(n)), JSON.stringify(soloEs));
 
   // ── TAP REAL: el chip de ticker filtra ──────────────────────────────
   // Se vuelve a abrir limpia: el filtro de idioma anterior deja fuera las
@@ -679,6 +726,26 @@ try {
 
   await d.goto(`${BASE}/mercado/noticias`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.dest');
+  // ── LA REVISTA NO SE ENCIMA CON LAS COLUMNAS ────────────────────────
+  // Pasó: el aviso de fuentes caídas se insertaba como HERMANO de la zona de
+  // destacadas, o sea una fila más en una rejilla de tres filas declaradas.
+  // La zona se corría de fila, se quedaba con el alto de otra y la rejilla de
+  // tarjetas se pintaba encima de las columnas. Sólo se veía con una fuente
+  // caída —que es el estado normal de producción— y en la captura.
+  const geo = await d.evaluate(() => {
+    const r = (s) => { const e = document.querySelector(s); if (!e || e.hidden) return null;
+      const q = e.getBoundingClientRect();
+      return { t: Math.round(q.top), b: Math.round(q.bottom), h: Math.round(q.height), sh: e.scrollHeight }; };
+    return { zona: r('#zona-destacadas'), dest: r('#destacadas'), portada: r('#portada'),
+      col: r('.col-medios'), lado: r('.col-lado'), pie: r('#pie') };
+  });
+  chequeo('la rejilla de destacadas termina ANTES de las columnas',
+    geo.dest && geo.col && geo.dest.b <= geo.col.t, JSON.stringify({ dest: geo.dest, col: geo.col }));
+  chequeo('y la zona de la revista no desborda su propia fila',
+    geo.zona && geo.zona.sh <= geo.zona.h + 1, JSON.stringify(geo.zona));
+  chequeo('la portada entra entera, sin recortarse',
+    geo.portada && geo.portada.b <= geo.dest.t, JSON.stringify({ portada: geo.portada, dest: geo.dest }));
+
   await d.screenshot({ path: join(OUT, 'noticias-1440.png') });
   console.log(`  → ${join(OUT, 'noticias-1440.png')}`);
   await esc.close();

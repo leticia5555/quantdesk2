@@ -127,6 +127,90 @@ const FUNDS = [
 // queda con las compras destacadas y la pantalla nueva ve todo. Se parsea en
 // la MISMA pasada del escaneo para no pedirle a la SEC dos veces lo mismo.
 import { form4Completo, filasDeForm4 } from './_lib/form4.js';
+import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
+import { crearCliente } from './_lib/edgar.js';
+import {
+  urlIndiceDiario, diasHabiles, parseIndiceEdgar, form4DelIndice, coberturaDeDia,
+} from './_lib/edgar-indice.js';
+
+// ═══════════════════════════════════════════════════════════════════════
+// LOS FORM 4 COMPLETOS, NO LA VENTANA
+//
+// Lety, 2026-10-22: *"Insiders completos, no solo la ventana de
+// `getcurrent`."* Tiene razón y el motivo es aritmético: ese feed son los
+// últimos ~200 filings de TODOS los formularios. En un día de temporada de
+// reportes se presentan más de mil Form 4, así que la ventana cubre menos de
+// una hora: lo que pasó antes de la última corrida del cron no existe para
+// nosotros, y no hay forma de saber cuánto falta.
+//
+// El índice diario de EDGAR sí es la lista completa del día. Con él hay
+// DENOMINADOR, que es lo que convierte "tenemos insiders" en "tenemos 1.842
+// de 1.842". Sin denominador, "cobertura" es una palabra.
+//
+// DOS TRABAJOS SEPARADOS, y es a propósito:
+//   · `job=indice` baja los índices (una petición por día hábil, ~30 en el
+//     relleno inicial). Es barato y deja la lista de lo que DEBERÍA estar;
+//   · `job=form4` baja y parsea los XML que falten, con presupuesto. Son
+//     miles de documentos y no caben en una invocación: el cron los va
+//     alcanzando, y mientras tanto la cobertura DICE cuántos faltan en vez
+//     de fingir que están.
+// ═══════════════════════════════════════════════════════════════════════
+const SCHEMA_FORM4 = [
+  // Lo que el índice dice que existe. El `primary key` es el accession, así
+  // que correr el job dos veces sobre el mismo día no duplica nada.
+  `create table if not exists mercado_form4_indice (
+     accession     text primary key,
+     cik           text not null,
+     empresa       text,
+     fecha_filing  date not null,
+     archivo       text not null,
+     leido_en      timestamptz,
+     leido_ok      boolean,
+     motivo        text,
+     visto_en      timestamptz not null default now()
+   )`,
+  `create index if not exists mercado_form4_indice_fecha_idx
+     on mercado_form4_indice (fecha_filing desc)`,
+  // Los pendientes se piden por este índice en cada corrida del cron: sin él
+  // la consulta escanea la tabla entera, que son decenas de miles de filas.
+  `create index if not exists mercado_form4_indice_pend_idx
+     on mercado_form4_indice (fecha_filing desc) where leido_en is null`,
+  // El DENOMINADOR por día. Vive aparte del detalle porque es una medición
+  // fechada: cuántas líneas de Form 4 traía el índice de ese día cuando lo
+  // leímos. Si mañana EDGAR reescribe el índice, queremos ver el cambio.
+  `create table if not exists mercado_form4_dias (
+     fecha            date primary key,
+     lineas_form4     int,
+     enmiendas        int,
+     indice_leido_en  timestamptz,
+     motivo           text
+   )`,
+  // Las transacciones ya parseadas. En JSONB porque un Form 4 trae de una a
+  // veinte filas y el detalle lo arma `filasDeForm4`, que ya existe.
+  `create table if not exists mercado_form4_tx (
+     accession     text primary key,
+     filing_fecha  date not null,
+     filas         jsonb not null,
+     guardado_en   timestamptz not null default now()
+   )`,
+  `create index if not exists mercado_form4_tx_fecha_idx
+     on mercado_form4_tx (filing_fecha desc)`,
+];
+
+let esquemaListo = false;
+async function ensureSchemaForm4() {
+  if (esquemaListo) return;
+  await ensureBase();
+  await sqlBatch(SCHEMA_FORM4.map((q) => [q, []]));
+  esquemaListo = true;
+}
+
+// Un día hábil "cerrado" es uno cuyo índice ya no va a crecer. EDGAR acepta
+// presentaciones hasta las 22:00 ET, así que el índice del día de HOY está
+// vivo: medir cobertura contra él daría un porcentaje que baja solo.
+const DIAS_RELLENO = 30;
+const XML_POR_CORRIDA = 300;
+const XML_PRESUPUESTO_MS = 40_000;
 
 const SOURCES = {
   edgar_form4_atom: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&company=&dateb=&owner=include&count=100&output=atom',
@@ -364,6 +448,174 @@ export function markClusters(items) {
     byIssuer.get(k).add(it.insiderCik || it.insider);
   }
   return items.map((it) => ({ ...it, cluster: byIssuer.get(it.issuerCik || it.issuer).size >= 2 }));
+}
+
+/**
+ * EL RELLENO Y EL CRON DEL ÍNDICE.
+ *
+ * `dias` hábiles hacia atrás desde hoy. Una petición por día: el relleno
+ * inicial son 30 y el cron diario es 1 (más 2 de margen, por si una corrida
+ * falló y el índice de ayer todavía no se leyó).
+ *
+ * El ritmo y el User-Agent los pone `crearCliente`, que ya recorta al techo
+ * de 10 peticiones por segundo de la SEC y valida que el `SEC_USER_AGENT`
+ * tenga forma de contacto. Reimplementar eso acá habría sido una segunda
+ * opinión sobre cómo se le habla a la SEC.
+ */
+async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
+  await ensureSchemaForm4();
+  const cli = crearCliente({ kind: 'daily-index' });
+  const fechas = diasHabiles(hoy.toISOString().slice(0, 10), dias);
+  const resumen = [];
+
+  for (const fecha of fechas) {
+    const url = urlIndiceDiario(fecha);
+    let texto = null; let motivo = null;
+    try {
+      ({ texto } = await cli.texto(url, { kind: 'daily-index' }));
+    } catch (e) {
+      // UN 404 NO ES UN ERROR: es la respuesta. EDGAR no publica índice los
+      // días que no abre, así que la ausencia del archivo es cómo se detecta
+      // un feriado sin tener un calendario escrito a mano que se pudra solo.
+      motivo = (e && e.status === 404)
+        ? 'EDGAR no publicó índice ese día (feriado o fin de semana)'
+        : String((e && e.message) || e);
+    }
+
+    if (!texto) {
+      await sqlBatch([[
+        `insert into mercado_form4_dias (fecha, lineas_form4, enmiendas, indice_leido_en, motivo)
+         values ($1, null, null, now(), $2)
+         on conflict (fecha) do update set indice_leido_en = now(), motivo = excluded.motivo`,
+        [fecha, motivo],
+      ]]);
+      resumen.push({ fecha, lineas: null, motivo });
+      continue;
+    }
+
+    const { filas } = parseIndiceEdgar(texto);
+    const f4 = form4DelIndice(filas);
+    const lotes = [[
+      `insert into mercado_form4_dias (fecha, lineas_form4, enmiendas, indice_leido_en, motivo)
+       values ($1, $2, $3, now(), null)
+       on conflict (fecha) do update set
+         lineas_form4 = excluded.lineas_form4, enmiendas = excluded.enmiendas,
+         indice_leido_en = now(), motivo = null`,
+      [fecha, f4.total, f4.enmiendas],
+    ]];
+    // En bloques: una sentencia por filing serían 1.800 viajes a Neon.
+    const TAM = 500;
+    for (let i = 0; i < f4.filas.length; i += TAM) {
+      const t = f4.filas.slice(i, i + TAM);
+      lotes.push([
+        `insert into mercado_form4_indice (accession, cik, empresa, fecha_filing, archivo)
+         select * from unnest($1::text[], $2::text[], $3::text[], $4::date[], $5::text[])
+         on conflict (accession) do nothing`,
+        [t.map((x) => x.accession), t.map((x) => x.cik), t.map((x) => x.empresa || null),
+         t.map((x) => x.fecha || fecha), t.map((x) => x.archivo)],
+      ]);
+    }
+    await sqlBatch(lotes);
+    resumen.push({ fecha, lineas: f4.total, enmiendas: f4.enmiendas, motivo: null });
+  }
+
+  return { job: 'indice', dias: fechas.length, fechas: resumen, ua: cli.ua, req_por_segundo: cli.reqPorSegundo };
+}
+
+/**
+ * LOS XML QUE FALTAN, con presupuesto.
+ *
+ * Se piden los más NUEVOS primero: una pantalla que enseña "las últimas
+ * transacciones" se llena de arriba hacia abajo, así que lo primero que se
+ * baja es lo primero que se ve. El relleno de los días viejos va quedando
+ * atrás, y la cobertura dice exactamente cuánto falta de cada día.
+ */
+async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
+  await ensureSchemaForm4();
+  const pendientes = await sql(`
+    select accession, cik, archivo, fecha_filing::text as fecha
+      from mercado_form4_indice
+     where leido_en is null
+     order by fecha_filing desc, accession desc
+     limit $1`, [tope]);
+  if (!pendientes.length) return { job: 'form4', pendientes: 0, leidos: 0, ok: 0, fallidos: 0, ms: Date.now() - t0 };
+
+  const cli = crearCliente({ kind: 'form4-xml' });
+  const resultados = [];
+  for (const p of pendientes) {
+    if (Date.now() - t0 > XML_PRESUPUESTO_MS) break;
+    // El documento principal del filing. El `.txt` del índice es el envío
+    // COMPLETO —con todos sus adjuntos y sus cabeceras— y puede pesar
+    // megabytes; el XML del Form 4 vive al lado y pesa unos kilobytes.
+    const dir = `https://www.sec.gov/Archives/edgar/data/${p.cik}/${String(p.accession).replace(/-/g, '')}`;
+    try {
+      const { json } = await cli.json(dir + '/index.json', { kind: 'form4-index' });
+      const files = (json && json.directory && json.directory.item) || [];
+      const xmlFile = files.find((f) => /\.xml$/i.test(f.name) && !/^primary_doc\.xml$/i.test(f.name))
+        || files.find((f) => /\.xml$/i.test(f.name));
+      if (!xmlFile) { resultados.push({ ...p, ok: false, motivo: 'el filing no trae un XML de Form 4' }); continue; }
+      const { texto } = await cli.texto(dir + '/' + xmlFile.name, { kind: 'form4-xml' });
+      const filas = filasDeForm4(form4Completo(texto), { accession: p.accession, cik: p.cik, fecha: p.fecha });
+      resultados.push({ ...p, ok: true, filas, motivo: null });
+    } catch (e) {
+      resultados.push({ ...p, ok: false, motivo: String((e && e.message) || e) });
+    }
+  }
+
+  const lotes = [];
+  for (const r of resultados) {
+    lotes.push([
+      `update mercado_form4_indice set leido_en = now(), leido_ok = $2, motivo = $3 where accession = $1`,
+      [r.accession, !!r.ok, r.motivo],
+    ]);
+    if (r.ok && (r.filas || []).length) {
+      lotes.push([
+        `insert into mercado_form4_tx (accession, filing_fecha, filas)
+         values ($1, $2, $3::jsonb)
+         on conflict (accession) do update set filas = excluded.filas, guardado_en = now()`,
+        [r.accession, r.fecha, JSON.stringify(r.filas)],
+      ]);
+    }
+  }
+  if (lotes.length) await sqlBatch(lotes);
+
+  return {
+    job: 'form4',
+    pendientes: pendientes.length,
+    leidos: resultados.length,
+    ok: resultados.filter((r) => r.ok).length,
+    fallidos: resultados.filter((r) => !r.ok).length,
+    sin_terminar: pendientes.length - resultados.length,
+    ua: cli.ua,
+    ms: Date.now() - t0,
+  };
+}
+
+/** La cobertura de los últimos días hábiles cerrados, con sus dos números. */
+async function coberturaForm4({ dias = 10, hoy = new Date() } = {}) {
+  await ensureSchemaForm4();
+  const filas = await sql(`
+    select d.fecha::text as fecha, d.lineas_form4, d.motivo,
+           (select count(*) from mercado_form4_indice i
+             where i.fecha_filing = d.fecha and i.leido_en is not null and i.leido_ok) as guardados
+      from mercado_form4_dias d
+     order by d.fecha desc
+     limit $1`, [dias]);
+  // El día de HOY no se mide: EDGAR acepta presentaciones hasta las 22:00 ET,
+  // así que su índice todavía crece y el porcentaje bajaría solo.
+  const hoyIso = hoy.toISOString().slice(0, 10);
+  const cerrados = filas.filter((f) => f.fecha < hoyIso);
+  const dias_ = cerrados.map((f) => coberturaDeDia({
+    fecha: f.fecha, enIndice: f.lineas_form4, guardados: Number(f.guardados), motivo: f.motivo,
+  }));
+  const medibles = dias_.filter((d) => d.en_indice > 0);
+  return {
+    dias: dias_,
+    // El último día cerrado con índice es el que va al chip de la pantalla.
+    ultimo: medibles[0] || null,
+    completa: medibles.length > 0 && medibles.every((d) => d.completa),
+    medidos: medibles.length,
+  };
 }
 
 async function buildInsider() {
@@ -707,14 +959,51 @@ async function runSmoke() {
 // dispara el mismo `buildInsider` —que es el que escanea— y después se lee
 // el acumulador. Nunca hay dos escaneos de la SEC en vuelo por lo mismo.
 async function buildForm4() {
-  if (!form4Accum.size) await buildInsider();
-  const filas = [...form4Accum.values()].flat()
+  // ── DE NEON PRIMERO, DE LA MEMORIA DESPUÉS ─────────────────────────
+  // Lo que guardó el cron del índice vive en la base y sobrevive a que
+  // Vercel recicle la instancia. El acumulador en memoria se queda como
+  // complemento: trae lo que se escaneó hace un minuto y todavía no pasó por
+  // el job. Se mezclan por accession, así que una transacción no sale dos
+  // veces aunque esté en los dos lados.
+  let deNeon = [];
+  let cobertura = null;
+  let errorNeon = null;
+  try {
+    deNeon = await sql(`
+      select accession, filas
+        from mercado_form4_tx
+       order by filing_fecha desc, accession desc
+       limit 600`, []);
+    cobertura = await coberturaForm4({});
+  } catch (e) {
+    // La base caída no deja a la pantalla sin insiders: queda lo de memoria,
+    // y la causa viaja para que el hueco se pueda explicar.
+    errorNeon = String((e && e.message) || e);
+  }
+
+  if (!deNeon.length && !form4Accum.size) await buildInsider();
+
+  const porAccession = new Map();
+  for (const r of deNeon) {
+    const fs = Array.isArray(r.filas) ? r.filas : [];
+    if (fs.length) porAccession.set(r.accession, fs);
+  }
+  for (const [acc, fs] of form4Accum) if (!porAccession.has(acc)) porAccession.set(acc, fs);
+
+  const filas = [...porAccession.values()].flat()
     // Por HORA de aceptación del filing, no por fecha de la operación: es lo
     // que pide el encargo ("orden por hora de filing ↓") y es lo que hace que
     // "lo último" signifique algo.
     .sort((a, b) => String(b.filing_en || '').localeCompare(String(a.filing_en || '')))
     .slice(0, 400);
   const diag = ultimoEscaneo || {};
+
+  // ── LO QUE SE DICE EN PANTALLA ──────────────────────────────────────
+  // Con el índice completo, la frase del arranque en frío SOBRA: ya no es
+  // cierta. Decir "puede faltar lo de antes de la última corrida" cuando
+  // tenemos el día entero medido es pedir disculpas por un problema que ya no
+  // existe, y entrena a no creerle a los avisos.
+  const completa = !!(cobertura && cobertura.completa && cobertura.medidos > 0);
   return {
     cat: 'form4',
     items: filas,
@@ -722,8 +1011,19 @@ async function buildForm4() {
     // (`api/_lib/form4.js`): una sola fuente de verdad por pantalla.
     scan: diag.scan || null,
     sources: diag.sources || {},
-    cobertura: 'los Form 4 que EDGAR publica en su lista de lo recién presentado, más lo que esta instancia ya había acumulado; recién arrancada sólo ve lo último',
+    cobertura_dias: cobertura ? cobertura.dias : [],
+    cobertura_ultimo: cobertura ? cobertura.ultimo : null,
+    cobertura_completa: completa,
+    cobertura: completa
+      ? (cobertura.ultimo ? cobertura.ultimo.texto : 'Cobertura: completa')
+      : (errorNeon
+        ? `no se pudo leer nuestra base de datos: lo que se ve es lo que esta instancia alcanzó a escanear (${errorNeon})`
+        : (cobertura && cobertura.ultimo
+          ? cobertura.ultimo.texto
+          : 'todavía no se ha leído el índice diario de EDGAR: lo que se ve es la ventana de lo recién presentado')),
     lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después de la operación',
+    de_neon: deNeon.length,
+    de_memoria: form4Accum.size,
     stale: false,
     generated_at: new Date().toISOString(),
   };
@@ -744,6 +1044,31 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const q = req.query || {};
+
+  // ── LOS JOBS ────────────────────────────────────────────────────────
+  // Un JOB que falla contesta 5xx. Un 200 con un `error` adentro es una
+  // promesa falsa: el cron lo marca como bueno y nadie se entera.
+  if (q.job) {
+    res.setHeader('Cache-Control', 'no-store');
+    const t0 = Date.now();
+    const job = String(q.job).toLowerCase();
+    try {
+      if (job === 'indice') {
+        const dias = Math.min(Math.max(Number(q.dias) || 3, 1), 90);
+        return res.status(200).json(await jobIndice({ dias }));
+      }
+      if (job === 'form4') {
+        const tope = Math.min(Math.max(Number(q.tope) || XML_POR_CORRIDA, 1), 1000);
+        return res.status(200).json(await jobForm4Xml({ tope, t0 }));
+      }
+      if (job === 'cobertura') {
+        return res.status(200).json(await coberturaForm4({ dias: Math.min(Number(q.dias) || 10, 60) }));
+      }
+      return res.status(400).json({ error: 'job must be indice | form4 | cobertura' });
+    } catch (e) {
+      return res.status(500).json({ job, error: String((e && e.message) || e), ms: Date.now() - t0 });
+    }
+  }
 
   if (q.smoke) {
     // Resultados en vivo siempre — el smoke pierde sentido cacheado.

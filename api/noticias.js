@@ -29,7 +29,7 @@ import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import REGISTRO from './_lib/news-sources.json' with { type: 'json' };
 import { filasDeFuente, dedupe, cambiosDeTasa, tickersDeFila } from './_lib/noticias.js';
 import { armaPagina, chipsDeFuente, seccionesSinFuente, SECCIONES,
-  imagenDeLaPagina, candidatasDeFoto } from './_lib/noticias-pagina.js';
+  imagenDeLaPagina, candidatasDeFoto, revistaDe } from './_lib/noticias-pagina.js';
 import banxicoHandler from './banxico.js';
 import EMISORAS from './_lib/emisoras.json' with { type: 'json' };
 import { beat } from './_lib/heartbeat.js';
@@ -531,12 +531,25 @@ export default async function handler(req, res) {
       // mundo no contestó se lee como "no pasó nada hoy".
       sql(`select fuente_id, motivo from mercado_noticias_fuentes where ok = false`).catch(() => []),
     ]);
+    const notas = filas.map((n) => ({ ...n, tickers: tickersDeFila(n.tickers) }));
+    // LA REVISTA LA ELIGE EL SERVIDOR, para las dos pantallas.
+    // `/mercado` y `/mercado/noticias` enseñan la misma portada: si cada una
+    // eligiera por su cuenta, dos pantallas del mismo sitio destacarían notas
+    // distintas del mismo momento.
+    const revista = revistaDe(notas);
     res.setHeader('Cache-Control', filas.length ? 's-maxage=120, stale-while-revalidate=600' : 'no-store');
     return res.status(200).json({
       // `tickers` sale del driver como el literal de Postgres (`{NVDA,ORCL}`),
       // no como arreglo. Se normaliza ACÁ y no en la pantalla: la API promete
       // un arreglo, y R3b y `/analiza` van a leer de esta misma tabla.
-      noticias: filas.map((n) => ({ ...n, tickers: tickersDeFila(n.tickers) })),
+      noticias: notas,
+      revista: {
+        portada: revista.portada,
+        medianas: revista.medianas,
+        resto: revista.resto,
+        con_foto_total: revista.con_foto_total,
+        motivo_vacio: revista.motivo_vacio,
+      },
       fuentes_caidas: caidas,
       fuentes_go: fuentesGo().length,
       generado_en: new Date().toISOString(),

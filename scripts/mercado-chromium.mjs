@@ -277,6 +277,50 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 let pedidosApi = 0;
 let roto = false;
 let sinAuditar = false;
+// ═══════════════════════════════════════════════════════════════════
+// LAS NOTICIAS DE LA REVISTA
+//
+// Lety, 2026-10-22: *"En `/mercado` (celular), las noticias van justo debajo
+// del mapa, antes de las tablas: 1 nota grande con foto a todo lo ancho…"*
+//
+// Cuatro con foto (de cuatro medios distintos), una de ellas con la foto
+// ROTA —su tarjeta tiene que desaparecer— y dos sin foto, que van a la lista
+// y no a la revista.
+// La elección de la revista la hace el MISMO módulo que en producción: la
+// pantalla sólo pinta, y si mañana cambia la regla, la corrida la ve.
+const { revistaDe } = await import(join(ROOT, 'api/_lib/noticias-pagina.js'));
+
+const PIXEL_FOTO = Buffer.from(
+  'R0lGODlhAQABAIAAACYwOwAAACwAAAAAAQABAAACAkQBADs=', 'base64');
+const NOTAS_FIXTURE = [
+  { url: 'https://reuters.com/z', titular: 'La Fed deja la tasa sin cambios y el mercado respira',
+    fuente_id: 'reuters', fuente_nombre: 'Reuters', tipo: 'medio', idioma: 'en', seccion: 'mercado',
+    publicado_en: '2026-09-21T21:50:00.000Z', imagen: '/foto-ok.gif', tickers: [], fuente_dato: null },
+  // SIN foto a propósito: va a la lista, y es la que lleva los chips de
+  // ticker. La revista no lleva chips —portada, titular, fuente y hora— así
+  // que si esta nota se fuera a la revista, no habría chips que tocar.
+  { url: 'https://cnbc.com/a', titular: 'Nvidia supera estimaciones y sube en el after',
+    fuente_id: 'cnbc', fuente_nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'acciones',
+    publicado_en: '2026-09-21T21:40:00.000Z', imagen: null, tickers: ['NVDA', 'ORCL'], fuente_dato: null },
+  { url: 'https://mw.com/b', titular: 'Wall Street cierra mixto a la espera de la Fed',
+    fuente_id: 'marketwatch', fuente_nombre: 'MarketWatch', tipo: 'medio', idioma: 'en', seccion: 'mercado',
+    publicado_en: '2026-09-21T21:20:00.000Z', imagen: '/foto-ok.gif', tickers: [], fuente_dato: null },
+  // La foto que NO carga: su tarjeta se quita, no se rellena.
+  { url: 'https://fin.com/c', titular: 'El peso cierra en 18.42 por dólar',
+    fuente_id: 'el_financiero', fuente_nombre: 'El Financiero', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
+    publicado_en: '2026-09-21T21:00:00.000Z', imagen: '/foto-rota.gif', tickers: [], fuente_dato: null },
+  { url: 'https://valor.com/d', titular: 'Ibovespa fecha em alta de 1,2%',
+    fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
+    publicado_en: '2026-09-21T20:40:00.000Z', imagen: '/foto-ok.gif', tickers: [], fuente_dato: null },
+  // Sin foto: van a la lista, no a la revista.
+  { url: 'https://banxico.org.mx/anuncios#2026-09-21', titular: 'Banxico baja la tasa objetivo a 7.25% (desde 7.5%)',
+    fuente_id: 'banxico_sie', fuente_nombre: 'Banxico', tipo: 'oficial_derivado', idioma: 'es', seccion: 'oficiales',
+    publicado_en: '2026-09-21T12:00:00.000Z', imagen: null, tickers: [], fuente_dato: 'banxico:SF61745 (tasa objetivo)' },
+  { url: 'https://sec.gov/8k', titular: 'NVDA presenta un 8-K',
+    fuente_id: 'sec_8k', fuente_nombre: 'SEC EDGAR 8-K', tipo: 'oficial', idioma: 'en', seccion: 'oficiales',
+    publicado_en: '2026-09-21T11:00:00.000Z', imagen: null, tickers: ['NVDA'], fuente_dato: null },
+];
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   // EL INTERRUPTOR VIVE EN EL SERVIDOR DE PRUEBA, NO EN LA PÁGINA. Se probó
@@ -334,21 +378,26 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     // Con fuentes CAÍDAS a propósito: una sección corta sin decir que ocho de
     // veintidós no contestaron se lee como "no pasó nada hoy".
+    //
+    // La REVISTA la elige el endpoint con `revistaDe`, igual que en
+    // producción: la pantalla sólo pinta. Una de las fotos da 404 a propósito
+    // —su tarjeta tiene que desaparecer, nunca rellenarse—.
+    const notas = NOTAS_FIXTURE;
+    const rev = revistaDe(notas);
     return res.end(JSON.stringify({
-      noticias: [
-        { url: 'https://cnbc.com/a', titular: 'Nvidia supera estimaciones y sube en el after',
-          fuente_id: 'cnbc', fuente_nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'acciones',
-          publicado_en: '2026-09-21T21:40:00.000Z', imagen: null, tickers: ['NVDA', 'ORCL'], fuente_dato: null },
-        { url: 'https://banxico.org.mx/anuncios#2026-09-21', titular: 'Banxico baja la tasa objetivo a 7.25% (desde 7.5%)',
-          fuente_id: 'banxico_sie', fuente_nombre: 'Banxico', tipo: 'oficial_derivado', idioma: 'es', seccion: 'oficiales',
-          publicado_en: '2026-09-21T12:00:00.000Z', imagen: null, tickers: [], fuente_dato: 'banxico:SF61745 (tasa objetivo)' },
-      ],
+      noticias: notas,
+      revista: { portada: rev.portada, medianas: rev.medianas, resto: rev.resto,
+                 con_foto_total: rev.con_foto_total, motivo_vacio: rev.motivo_vacio },
       fuentes_caidas: [{ fuente_id: 'zerohedge', motivo: 'HTTP 403 (bloqueo de datacenter)' }],
       fuentes_go: 22,
       generado_en: '2026-09-21T22:00:00.000Z',
-      fuente: 'neon:mercado_noticias (RSS/Atom de api/_lib/news-sources.json)',
+      fuente: 'neon:mercado_noticias (titulares de los feeds RSS/Atom de las fuentes registradas)',
     }));
   }
+  if (url.pathname === '/foto-ok.gif') {
+    res.writeHead(200, { 'content-type': 'image/gif' }); return res.end(PIXEL_FOTO);
+  }
+  if (url.pathname === '/foto-rota.gif') { res.writeHead(404); return res.end('no'); }
   if (url.pathname === '/api/macro-markets') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -471,9 +520,15 @@ try {
   // una comprobación que lo EXIGE en vez de taparlo.
   const esFuente = (t, u) => /fonts\.(googleapis|gstatic)\.com/.test(u || '')
     || /ERR_CERT_AUTHORITY_INVALID|fonts\.(googleapis|gstatic)/.test(t || '');
+  // Y la foto ROTA del fixture tampoco: su 404 es el que prueba que la
+  // tarjeta se quita en vez de rellenarse. Que el navegador lo anote en la
+  // consola es correcto; contarlo como fallo de la página sería castigar la
+  // comprobación.
+  const esFotoRota = (u) => /\/foto-rota\.gif/.test(u || '');
   p.on('console', (m) => {
     if (m.type() !== 'error') return;
-    if (esFuente(m.text(), (m.location && m.location().url) || '')) return;
+    const u = (m.location && m.location().url) || '';
+    if (esFuente(m.text(), u) || esFotoRota(u)) return;
     errores.push(m.text());
   });
 
@@ -992,7 +1047,66 @@ try {
       })),
     };
   });
-  chequeo('"Lo de hoy" está, con sus notas', hoy.titulo === 'Lo de hoy' && hoy.filas.length === 2,
+  // "Lo de hoy" pinta el RESTO: lo que la revista no se llevó. Con seis notas
+  // y tres en la revista (una por medio, y la cuarta con la foto rota),
+  // quedan las que no tienen foto más las repetidas de fuente.
+  // ── LA REVISTA ──────────────────────────────────────────────────────
+  // Lety, 2026-10-22: *"En `/mercado` (celular), las noticias van justo
+  // debajo del mapa, antes de las tablas: 1 nota grande con foto a todo lo
+  // ancho, titular grande, fuente y hora; luego 4 medianas…"*
+  await p.waitForTimeout(5400);   // el plazo de la tarjeta rota es de 5 s
+  const rev = await p.evaluate(() => {
+    const zona = document.getElementById('p-revista');
+    const portada = zona.querySelector('.rev-portada');
+    const img = portada && portada.querySelector('img');
+    const meds = [...zona.querySelectorAll('.rev-med')];
+    const caja = (e) => (e ? e.getBoundingClientRect() : null);
+    const mapa = document.querySelector('main').getBoundingClientRect();
+    const tablas = document.getElementById('p-tablas').getBoundingClientRect();
+    return {
+      hayPortada: !!portada,
+      portadaCargada: !!img && img.complete && img.naturalWidth > 0,
+      portadaAncho: img ? Math.round(img.getBoundingClientRect().width) : 0,
+      anchoZona: Math.round(zona.getBoundingClientRect().width),
+      tituloPortada: portada ? Math.round(parseFloat(getComputedStyle(portada.querySelector('.tit')).fontSize)) : 0,
+      metaPortada: portada ? portada.querySelector('.rev-meta').textContent.trim() : '',
+      medianas: meds.length,
+      medianasCargadas: meds.filter((m) => {
+        const i = m.querySelector('img'); return i && i.complete && i.naturalWidth > 0;
+      }).length,
+      // La foto chica a la IZQUIERDA del titular.
+      fotoIzquierda: meds.every((m) => {
+        const i = caja(m.querySelector('img')); const t = caja(m.querySelector('.tit'));
+        return i && t && i.left < t.left;
+      }),
+      verTodas: (zona.querySelector('.ver-todas') || {}).getAttribute
+        ? zona.querySelector('.ver-todas').getAttribute('href') : null,
+      // El orden del celular: mapa → revista → tablas.
+      bajoElMapa: caja(zona).top >= mapa.bottom - 2,
+      antesDeLasTablas: caja(zona).top < tablas.top,
+      // Ninguna tarjeta con la foto sin cargar, y ningún bloque de relleno.
+      sinCargar: [...zona.querySelectorAll('img')].filter((i) => !(i.complete && i.naturalWidth > 0)).length,
+      bloques: zona.querySelectorAll('.bloque').length,
+    };
+  });
+  chequeo('la revista va JUSTO BAJO EL MAPA y antes de las tablas',
+    rev.bajoElMapa && rev.antesDeLasTablas, JSON.stringify({ bajo: rev.bajoElMapa, antes: rev.antesDeLasTablas }));
+  chequeo('con una portada grande, con su foto a todo lo ancho',
+    rev.hayPortada && rev.portadaCargada && rev.portadaAncho >= rev.anchoZona - 4,
+    JSON.stringify({ foto: rev.portadaCargada, ancho: rev.portadaAncho, zona: rev.anchoZona }));
+  chequeo('el titular de la portada es MÁS GRANDE que el de la lista',
+    rev.tituloPortada >= 16, String(rev.tituloPortada));
+  chequeo('y dice su fuente y su hora', /^\d{2}:\d{2} · \S/.test(rev.metaPortada), rev.metaPortada);
+  chequeo('las medianas llevan la foto chica a la IZQUIERDA del titular',
+    rev.medianas >= 2 && rev.fotoIzquierda, JSON.stringify({ n: rev.medianas, izq: rev.fotoIzquierda }));
+  chequeo('la tarjeta cuya foto no carga se QUITA: ninguna queda sin foto',
+    rev.sinCargar === 0 && rev.bloques === 0,
+    JSON.stringify({ sinCargar: rev.sinCargar, bloques: rev.bloques, medianas: rev.medianas }));
+  chequeo('y abajo, el botón para ver todas las noticias',
+    rev.verTodas === '/mercado/noticias', String(rev.verTodas));
+
+  chequeo('"Lo de hoy" está, con las notas que la revista no se llevó',
+    hoy.titulo === 'Lo de hoy' && hoy.filas.length >= 2,
     JSON.stringify(hoy.titulo) + ' · ' + hoy.filas.length);
   chequeo('cada nota lleva su hora en hora de México y su fuente',
     hoy.filas.every((f) => /^\d{2}:\d{2} · /.test(f.meta))
@@ -1032,6 +1146,15 @@ try {
   await p.waitForTimeout(120);
   await p.screenshot({ path: join(OUT, 'mercado-390-hoy.png') });
   console.log(`     → ${join(OUT, 'mercado-390-hoy.png')}`);
+  // Y la REVISTA, que es lo que hay justo bajo el mapa: el mapa se queda con
+  // la primera pantalla entera, así que sin esta captura no se ve.
+  await p.evaluate(() => {
+    const z = document.getElementById('p-revista');
+    if (z) window.scrollTo(0, z.getBoundingClientRect().top + window.scrollY - 8);
+  });
+  await p.waitForTimeout(120);
+  await p.screenshot({ path: join(OUT, 'mercado-390-revista.png') });
+  console.log(`     → ${join(OUT, 'mercado-390-revista.png')}`);
   await p.evaluate(() => window.scrollTo(0, 0));
 
   // NI UNA LÍNEA DE CUERPO. El encargo es explícito: esta sección manda a la
@@ -1683,7 +1806,9 @@ try {
   // encima manda a mirar el mercado en vez de la consulta. Lo vio Lety en el
   // preview (2026-10-05) con el mapa caído por una columna inexistente.
   const tablasRotas = await p.evaluate(() =>
-    [...document.querySelectorAll('#paneles h2')].slice(0, 3).map((h) => ({
+    // Desde la revista, `#paneles h2` empieza por "Noticias": las tablas
+    // viven en `#p-tablas` y se piden ahí, no por posición global.
+    [...document.querySelectorAll('#p-tablas h2')].slice(0, 3).map((h) => ({
       titulo: h.textContent.trim(),
       nota: (h.nextElementSibling && h.nextElementSibling.classList.contains('nota'))
         ? h.nextElementSibling.textContent.trim() : null,

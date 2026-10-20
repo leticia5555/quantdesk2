@@ -125,10 +125,17 @@ globalThis.fetch = async (recurso, opciones) => {
 };
 
 const { default: trackerHandler } = await import(join(ROOT, 'api/stock-tracker.js'));
-// La frase de cobertura, sacada del archivo del endpoint. Copiarla acá fue
-// como el `getcurrent` con comillas de código sobrevivió en pantalla.
-const COBERTURA_DEL_ENDPOINT = (await readFile(join(ROOT, 'api/stock-tracker.js'), 'utf8'))
-  .match(/cobertura:\s*'([^']+)'/)[1];
+// LA FRASE DE COBERTURA LA ARMA EL MISMO MÓDULO QUE EN PRODUCCIÓN.
+// Antes se leía el literal del endpoint con una expresión regular; ahora el
+// texto se CALCULA (depende de los dos números), así que se importa la
+// función y se la llama igual que lo hace el servidor. Copiar la frase acá
+// fue como el `getcurrent` con comillas de código sobrevivió en pantalla.
+const { coberturaDeDia } = await import(join(ROOT, 'api/_lib/edgar-indice.js'));
+// Dos modos: el día medido y completo, y el día al que le faltan filings.
+let coberturaCompleta = true;
+const COBERTURA = () => (coberturaCompleta
+  ? coberturaDeDia({ fecha: '2026-10-19', enIndice: 1842, guardados: 1842 })
+  : coberturaDeDia({ fecha: '2026-10-19', enIndice: 1842, guardados: 1700 }));
 async function fondosDeVerdad() {
   let body = null;
   const res = {
@@ -150,6 +157,10 @@ let pedidos = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/__romper') { caido = url.searchParams.get('v') === '1'; res.writeHead(200); return res.end('ok'); }
+  if (url.pathname === '/__cobertura') {
+    coberturaCompleta = url.searchParams.get('v') !== '0';
+    res.writeHead(200); return res.end('ok');
+  }
   if (url.pathname === '/api/stock-tracker') {
     pedidos++;
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -169,7 +180,9 @@ const server = createServer(async (req, res) => {
       // La MISMA frase que arma el endpoint, importada en vez de copiada: una
       // copia en el fixture es cómo la jerga sobrevivió a que se arreglara en
       // el endpoint.
-      cobertura: COBERTURA_DEL_ENDPOINT,
+      cobertura: COBERTURA().texto,
+      cobertura_completa: COBERTURA().completa,
+      cobertura_ultimo: COBERTURA(),
       lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después de la operación',
       generated_at: new Date(MOMENTO).toISOString(),
     }));
@@ -387,9 +400,39 @@ try {
   chequeo('nada de lo que se ve en pantalla trae jerga de código',
     jerga.length === 0, JSON.stringify(jerga.slice(0, 3)));
 
-  const aviso = await p.textContent('#aviso-cobertura');
-  chequeo('la cobertura se declara: lo que no está puede no haberse cosechado',
-    /no haberse cosechado/.test(aviso), aviso.slice(0, 80));
+  // ── LA COBERTURA, CON SUS DOS NÚMEROS ───────────────────────────────
+  // Lety, 2026-10-22: *"Prueba de cobertura: para un día cerrado, el conteo
+  // de Form 4 que guardamos debe ser igual al número de líneas Form 4 del
+  // índice de ese día. Muéstralo en la pantalla."*
+  const cob = await p.evaluate(() => {
+    const el = document.getElementById('aviso-cobertura');
+    return el ? { texto: el.textContent, clase: el.className, title: el.getAttribute('title') } : null;
+  });
+  chequeo('la cobertura completa se dice con sus DOS números',
+    cob && /100% de los Form 4 del día \(1842 de 1842\)/.test(cob.texto), cob ? cob.texto : 'no está');
+  chequeo('y ya NO pide disculpas por el arranque en frío',
+    cob && !/puede no haberse cosechado|arranque en frío|ventana/.test(cob.texto), cob ? cob.texto : 'no está');
+  chequeo('completa no se pinta como un aviso: es un dato medido',
+    cob && cob.clase === 'cobertura-ok', cob ? cob.clase : 'no está');
+  chequeo('y dice contra qué índice se midió',
+    cob && /índice diario de EDGAR del 2026-10-19/.test(cob.title || ''), cob ? cob.title : 'sin title');
+
+  // Y cuando NO cuadra, lo dice CON EL NÚMERO de los que faltan.
+  await p.goto(`${BASE}/__cobertura?v=0`);
+  await p.goto(`${BASE}/mercado/insiders`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#aviso-cobertura');
+  const cobFalta = await p.evaluate(() => {
+    const el = document.getElementById('aviso-cobertura');
+    return { texto: el.textContent, clase: el.className };
+  });
+  chequeo('si NO cuadra, lo dice con el número de los que faltan',
+    /1700 de 1842/.test(cobFalta.texto) && /faltan 142/.test(cobFalta.texto), cobFalta.texto);
+  chequeo('y ahí sí vuelve a ser un aviso',
+    cobFalta.clase === 'aviso', cobFalta.clase);
+  await p.goto(`${BASE}/__cobertura?v=1`);
+  await p.goto(`${BASE}/mercado/insiders`, { waitUntil: 'networkidle' });
+  await p.waitForSelector('#contenido tbody tr, #contenido .vacio');
+
 
   // ── LA FUENTE CAÍDA ─────────────────────────────────────────────────
   await p.goto(`${BASE}/__romper?v=1`);

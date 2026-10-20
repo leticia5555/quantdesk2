@@ -199,6 +199,14 @@ export function armaPagina(notas, { seccion = 'todo', idioma = 'todo', q = '', f
     destacadas_fuentes: dest.fuentes_distintas,
     destacadas_candidatas: dest.con_foto_total,
     motivo_destacadas: dest.motivo_vacio,
+    // La revista de la página: una portada y hasta cinco en rejilla. Sale de
+    // la MISMA función que usa `/mercado`, para que las dos pantallas
+    // destaquen lo mismo en el mismo momento.
+    revista: (() => {
+      const r = revistaDe(vistas, { medianas: 5 });
+      return { portada: r.portada, medianas: r.medianas, cuantas: r.cuantas,
+        con_foto_total: r.con_foto_total, motivo_vacio: r.motivo_vacio };
+    })(),
     medios: orden === 'fuente' ? [] : medios.slice(0, porColumna),
     medios_total: medios.length,
     medios_por_fuente: orden === 'fuente' ? porFuente(medios) : [],
@@ -340,4 +348,44 @@ export function candidatasDeFoto(filas, { cuantas = 20 } = {}) {
     vistas.add(k); primeraVuelta.push(f);
   }
   return [...primeraVuelta, ...resto].slice(0, cuantas);
+}
+
+/**
+ * LA REVISTA: una portada grande y unas cuantas medianas.
+ *
+ * Lety, 2026-10-22: *"Noticias como revista, no escondidas."* Una portada a
+ * todo lo ancho, luego cuatro medianas con foto chica, y un botón para ver
+ * todas.
+ *
+ * SÓLO ENTRA LO QUE TIENE FOTO. Una "revista" con huecos no es una revista;
+ * lo que no tiene foto va a la lista de abajo, que es donde se lee bien. Y
+ * una por fuente, por lo mismo que las destacadas: el medio que más publica
+ * no es "lo destacado".
+ *
+ * Devuelve también `resto`, que es lo que la lista tiene que pintar: sin eso,
+ * cada pantalla tendría que restar por su cuenta y las dos restarían distinto.
+ */
+export function revistaDe(notas, { medianas = 4 } = {}) {
+  const porRecencia = (a, b) => String(b.publicado_en || '').localeCompare(String(a.publicado_en || ''));
+  const todas = [...(notas || [])].sort(porRecencia);
+  const conFoto = todas.filter((n) => n && n.imagen);
+
+  const mejorPorFuente = new Map();
+  for (const n of conFoto) {
+    const k = n.fuente_id || n.fuente_nombre || 'sin_fuente';
+    if (!mejorPorFuente.has(k)) mejorPorFuente.set(k, n);
+  }
+  const elegidas = [...mejorPorFuente.values()].sort(porRecencia).slice(0, medianas + 1);
+  const usadas = new Set(elegidas.map((n) => n.url));
+  return {
+    portada: elegidas[0] || null,
+    medianas: elegidas.slice(1),
+    cuantas: elegidas.length,
+    // Lo que NO va en la revista va en la lista: las sin foto y las que se
+    // repiten de fuente. Ninguna nota se pierde por no tener imagen.
+    resto: todas.filter((n) => !usadas.has(n.url)),
+    con_foto_total: conFoto.length,
+    motivo_vacio: elegidas.length ? null
+      : 'ninguna de las notas de la ventana trae foto propia todavía',
+  };
 }

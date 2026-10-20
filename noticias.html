@@ -144,6 +144,37 @@
   /* `hidden` tiene que ganarle al `display` de la rejilla: sin esto, la zona
      de destacadas seguiría ocupando su fila aunque no tenga tarjetas. */
   #zona-destacadas[hidden]{display:none}
+  /* ── LA PORTADA ─────────────────────────────────────────────────────
+     Lety, 2026-10-22: *"`/mercado/noticias` también arriba en formato
+     revista: portada grande, rejilla de 4–6 con foto"*. */
+  .rev-portada{display:block;text-decoration:none;color:inherit;margin-bottom:10px;
+    border:1px solid var(--linea);border-radius:10px;overflow:hidden;background:var(--panel)}
+  .rev-portada[hidden]{display:none}
+  .rev-portada img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#121a22}
+  .rev-portada .cuerpo{padding:10px 12px 12px}
+  .rev-portada .tit{font-size:18px;line-height:1.25;font-weight:600;margin-bottom:5px}
+  .rev-portada .meta{font-family:var(--mono);font-size:10px;color:var(--tenue)}
+  .rev-portada .meta b{color:var(--tenue);font-weight:600}
+  @media (min-width:1000px){
+    /* ── LA PORTADA DE ESCRITORIO VA ACOTADA ──────────────────────────
+       A lo ancho y con el alto FIJO. Sin tope, la foto crecía con la
+       columna, la zona de destacadas se comía la fila entera de la rejilla
+       y las columnas de abajo se encimaban con el pie — se vio en la
+       captura de 1440 y no lo veía ninguna comprobación.
+
+       La página promete caber en 1440×1000 sin recorrerse (regla 8), y esa
+       promesa se cumple acotando lo que puede crecer, no esperando que no
+       crezca. */
+    .rev-portada{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);
+      align-items:stretch;height:168px;margin-bottom:8px}
+    .rev-portada img{aspect-ratio:auto;height:168px}
+    .rev-portada .tit{font-size:17px;
+      /* Tres líneas y a los puntos: un titular largo no puede estirar la
+         caja, que es justo lo que rompía la rejilla. */
+      display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+    .rev-portada .cuerpo{padding:12px 16px;display:flex;flex-direction:column;justify-content:center}
+  }
+
   #destacadas{display:grid;grid-auto-flow:column;grid-auto-columns:76%;gap:10px;
     align-items:start;
     overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px;scrollbar-width:none}
@@ -201,8 +232,9 @@
     #q{flex:0 0 auto;width:220px}
     main{display:grid;grid-template-columns:1fr 336px;gap:16px;align-items:start;
       padding:12px 24px 0;max-width:1440px;margin:0 auto}
-    #destacadas{grid-column:1 / -1;grid-auto-flow:row;grid-template-columns:repeat(4,1fr);
+    #destacadas{grid-column:1 / -1;grid-auto-flow:row;grid-template-columns:repeat(5,1fr);
       grid-auto-columns:auto;overflow:visible}
+    .dest .tit{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
     .dest{scroll-snap-align:none}
     .dest .tit{font-size:13px}
     .col-medios{min-width:0}
@@ -223,7 +255,13 @@
        viejo. */
     html,body{height:100%}
     body{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
-    main{flex:1;min-height:0;grid-template-rows:auto minmax(0,1fr) auto;
+    /* `max-content` y NO `auto` en la primera fila: cuando el contenido
+       total pasa del alto de la pantalla, una fila `auto` SE ENCOGE por
+       debajo de su contenido y lo que sobra se pinta encima de la fila
+       siguiente — en la captura de 1440 la rejilla de destacadas aparecía
+       cortada y las columnas empezaban encima. `max-content` no se encoge:
+       la que cede es la fila de las columnas, que ya se recorre por dentro. */
+    main{flex:1;min-height:0;grid-template-rows:max-content minmax(0,1fr) auto;
       overflow:hidden;padding-bottom:0;
       /* `align-items:stretch`, y NO el `start` de la regla de arriba.
          Con `start` cada columna se mide por su CONTENIDO y se sale de su
@@ -278,6 +316,9 @@
 <main>
   <div id="zona-destacadas" style="grid-column:1 / -1">
     <h2>Destacadas <span id="dest-nota"></span></h2>
+    <!-- LA REVISTA: una portada grande y una rejilla de 4 a 6. Debajo siguen
+         las columnas de siempre. -->
+    <a id="portada" class="rev-portada" hidden></a>
     <div id="destacadas"></div>
   </div>
   <div class="col-medios">
@@ -411,6 +452,10 @@
       if(img.dataset.atado) return;
       img.dataset.atado = '1';
       function quitar(){
+        // La PORTADA no se borra: se esconde. Borrarla dejaría a la página
+        // sin el nodo que la siguiente pintada vuelve a llenar.
+        var portada = img.closest('#portada');
+        if(portada){ portada.hidden = true; portada.innerHTML = ''; notaDeDestacadas(); return; }
         var tarjeta = img.closest('.dest');
         if(tarjeta && tarjeta.parentNode) tarjeta.remove();
         notaDeDestacadas();
@@ -428,7 +473,9 @@
   function notaDeDestacadas(){
     var zona = document.getElementById('zona-destacadas');
     var nota = document.getElementById('dest-nota');
-    var n = document.querySelectorAll('#destacadas .dest').length;
+    var portada = document.getElementById('portada');
+    var hayPortada = portada && !portada.hidden;
+    var n = document.querySelectorAll('#destacadas .dest').length + (hayPortada ? 1 : 0);
     // Sin ninguna, la sección entera desaparece: una franja vacía no es un
     // hueco que haya que llenar, es la respuesta.
     zona.hidden = n === 0;
@@ -465,8 +512,30 @@
   function pintarDestacadas(){
     var el = document.getElementById('destacadas');
     var zona = document.getElementById('zona-destacadas');
-    var ds = ((datos && datos.destacadas) || []).filter(function(n){ return n && n.imagen; });
-    if(!ds.length){
+    var por = document.getElementById('portada');
+    // LA PORTADA. Sale de `revistaDe`, la misma función con la que `/mercado`
+    // elige la suya: las dos pantallas destacan lo mismo en el mismo momento.
+    var rev = (datos && datos.revista) || {};
+    if(rev.portada && rev.portada.imagen){
+      por.hidden = false;
+      por.href = rev.portada.url;
+      por.target = '_blank'; por.rel = 'noopener noreferrer';
+      // `class="foto"` no es decoración: es lo que mira `atarCaidaDeFotos`
+      // para quitar la tarjeta cuya imagen no carga. Sin la clase, la portada
+      // se quedaba con el hueco gris que todo esto vino a eliminar.
+      por.innerHTML = '<img class="foto" src="' + esc(rev.portada.imagen) + '" alt="" decoding="async"'
+        + ' referrerpolicy="no-referrer" data-fuente="' + esc(rev.portada.fuente_nombre || '') + '">'
+        + '<div class="cuerpo"><div class="tit">' + esc(rev.portada.titular) + '</div>'
+        + '<div class="meta">' + metaDeNota(rev.portada) + '</div></div>';
+      atarCaidaDeFotos(por);
+    } else {
+      por.hidden = true; por.innerHTML = '';
+    }
+    // La rejilla: las de la revista menos la portada. Si la fuente no mandó
+    // revista —una respuesta vieja en caché— se cae a las destacadas.
+    var ds = ((rev.medianas && rev.medianas.length ? rev.medianas : (datos && datos.destacadas)) || [])
+      .filter(function(n){ return n && n.imagen; });
+    if(!ds.length && por.hidden){
       // La sección no aparece. Lo que pasó se dice en el pie, no con una
       // franja vacía que ocupa el lugar de las fotos que no hay.
       el.innerHTML = '';
@@ -651,8 +720,17 @@
       + caidas.slice(0,4).map(function(f){ return f.id + ' (' + (f.motivo || 'sin motivo') + ')'; }).join(' · ')
       + (caidas.length > 4 ? ' y ' + (caidas.length - 4) + ' más' : '')
       + '. Lo que falta de esas fuentes no está medido, no es que no haya pasado nada.';
+    // DENTRO de la zona de destacadas, no antes.
+    //
+    // Insertado como hermano, el aviso era UNA FILA MÁS de la rejilla de
+    // `main`, y la rejilla tiene tres filas declaradas: la de las
+    // destacadas se corría a la segunda, se quedaba con el alto de otra fila
+    // y la rejilla de tarjetas se pintaba encima de las columnas. Se vio en
+    // la captura de 1440 y no lo veía ninguna comprobación, porque el aviso
+    // sólo aparece cuando hay una fuente caída.
     var zona = document.getElementById('zona-destacadas');
-    zona.parentNode.insertBefore(div, zona);
+    zona.hidden = false;
+    zona.insertBefore(div, zona.firstChild);
   }
 
   function pintar(){
