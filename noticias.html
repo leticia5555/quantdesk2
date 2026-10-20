@@ -40,6 +40,21 @@
      1.5 s en 4G, y una pantalla en blanco esperando una tipografía es
      exactamente lo que eso prohíbe. Si Google Fonts no responde, la página se
      ve con la fuente del sistema y no se rompe nada. -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Noticias — /mercado — QuantDesk">
+<meta property="og:description" content="Titulares de mercado de medios, newsletters y fuentes oficiales, con hora y fuente. Sin resúmenes y sin IA.">
+<meta name="twitter:card" content="summary_large_image">
+<!-- ── R7: LA IMAGEN DEL PREVIEW ───────────────────────────────────────
+     `og:image` NO está puesta a propósito, y es una decisión, no un olvido.
+     El encargo pide que el preview de WhatsApp sea EL MISMO PNG que genera
+     el botón de compartir; ese PNG se dibuja en el navegador del lector, así
+     que para servirlo como `og:image` haría falta renderizarlo en el
+     servidor — otra dependencia (un renderizador tipo Satori) que no se
+     puede instalar ni probar desde este entorno sin red.
+     Poner una imagen genérica mientras tanto sería peor: el preview diría
+     algo distinto de lo que la URL abre. Sin `og:image`, WhatsApp enseña
+     título y descripción, que SÍ son ciertos. Queda anotado en el PR. -->
+<meta name="theme-color" content="#0b0f14">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">

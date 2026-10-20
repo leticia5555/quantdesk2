@@ -28,6 +28,21 @@
      composición del índice.
   ═══════════════════════════════════════════════════════════════════
 -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Ficha de índice — /mercado — QuantDesk">
+<meta property="og:description" content="Medias de 50 y 200 días, máximo y mínimo de 52 semanas, y rendimiento por periodo en dos monedas.">
+<meta name="twitter:card" content="summary_large_image">
+<!-- ── R7: LA IMAGEN DEL PREVIEW ───────────────────────────────────────
+     `og:image` NO está puesta a propósito, y es una decisión, no un olvido.
+     El encargo pide que el preview de WhatsApp sea EL MISMO PNG que genera
+     el botón de compartir; ese PNG se dibuja en el navegador del lector, así
+     que para servirlo como `og:image` haría falta renderizarlo en el
+     servidor — otra dependencia (un renderizador tipo Satori) que no se
+     puede instalar ni probar desde este entorno sin red.
+     Poner una imagen genérica mientras tanto sería peor: el preview diría
+     algo distinto de lo que la URL abre. Sin `og:image`, WhatsApp enseña
+     título y descripción, que SÍ son ciertos. Queda anotado en el PR. -->
+<meta name="theme-color" content="#0b0f14">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
@@ -91,6 +106,20 @@
     font-family:var(--mono);font-size:10px;color:var(--tenue)}
   .leyenda i{display:inline-block;width:14px;height:0;border-top:2px solid;margin-right:5px;
     vertical-align:middle}
+
+  /* R7: el botón de compartir y su hoja */
+  .compartir{min-height:36px;display:inline-flex;align-items:center;padding:0 10px;
+    border:1px solid var(--linea);border-radius:6px;color:var(--tenue);background:transparent;
+    font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap}
+  .compartir-caja{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:60;
+    display:flex;flex-direction:column;gap:6px;padding:12px;min-width:260px;
+    background:var(--panel);border:1px solid var(--linea);border-radius:10px;
+    box-shadow:0 14px 40px rgba(0,0,0,.6)}
+  .compartir-caja .et{font-family:var(--mono);font-size:10px;color:var(--apagado);letter-spacing:.06em}
+  .compartir-caja button{min-height:44px;background:transparent;border:1px solid var(--linea);
+    border-radius:6px;color:var(--texto);font-family:var(--mono);font-size:13px;cursor:pointer}
+  .compartir-caja .nota{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.4;
+    min-height:14px}
 
   table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
   th,td{padding:7px 10px;text-align:right;border-top:1px solid var(--linea);white-space:nowrap}
@@ -167,6 +196,7 @@
 <header>
   <div class="marca">/<b>mercado</b> · índice</div>
   <div class="chip" id="chip">—</div>
+  <button type="button" class="compartir" id="btn-compartir">Compartir imagen</button>
   <a class="volver" href="/mercado">← al mapa</a>
 </header>
 
@@ -221,6 +251,7 @@
 <script src="/qd-periods.js"></script>
 <script src="/qd-mercados.js"></script>
 <script src="/qd-pesos.js"></script>
+<script src="/qd-compartir.js"></script>
 <script>
 (function(){
   'use strict';
@@ -453,6 +484,98 @@
     var r = enPesos({ pctLocal: local.pct, moneda:'USD', usdMxnPct: fx,
       fix: datos.fix && datos.fix.fecha ? { serie:'SF43718', fecha:datos.fix.fecha, valor:datos.fix.valor } : null });
     return { pct: r.pct, periodLabel: periodo, motivo: r.motivo, etiqueta: 'en pesos', fuente: r.fuente };
+  }
+
+  /** Lo que la ficha de índice pone en la tarjeta. */
+  function datosParaCompartir(){
+    var ix = (datos && datos.indice) || {};
+    var s = serieParaPeriodos();
+    var ult = s.length ? s[s.length-1] : null;
+    var filas = [];
+    if(ult) filas.push({ k: 'Nivel', v: fmtPrice(ult.c) });
+    ['1D','1S','1M','YTD','1A'].forEach(function(p){
+      var c = cambioLocal(p);
+      filas.push({ k: p, v: Number.isFinite(c.pct) ? (c.pct>=0?'+':'') + c.pct.toFixed(2) + '%' : '—',
+                   color: Number.isFinite(c.pct) ? (c.pct>=0 ? '#00c97d' : '#E24B4A') : '#7d8793' });
+    });
+    return {
+      archivo: 'indice-' + (ix.id || ''),
+      titulo: ix.nombre || 'Índice',
+      subtitulo: (ix.pais || '') + ((datos && datos.serie && datos.serie.rango) ? ' · rango ' + datos.serie.rango : ''),
+      filas: filas,
+      periodo: estado.rango,
+      moneda: ix.moneda || null,
+      fuente: (datos && datos.serie && (datos.serie.fuente || datos.serie.motivo)) || null,
+      fecha: (datos && datos.generado_en) || null,
+      url: location.host + location.pathname + location.search
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // R7: COMPARTIR IMAGEN
+  //
+  // La tarjeta se dibuja EN EL NAVEGADOR (`qd-compartir.js`): no hay un
+  // servicio de imágenes que mantener ni una llamada más al abrir la
+  // pantalla. Lo que se comparte sale de lo que ya está en la pantalla, así
+  // que no puede decir algo distinto de lo que el lector está viendo.
+  //
+  // `navigator.share` con archivo cuando existe (iOS y Android lo tienen) y
+  // descarga cuando no: en escritorio la hoja de compartir no existe y un
+  // botón que no hace nada sería peor que un archivo en Descargas.
+  // ══════════════════════════════════════════════════════════════════
+  function abrirCompartir(){
+    var caja = document.getElementById('compartir-caja');
+    if(caja){ caja.remove(); return; }
+    caja = document.createElement('div');
+    caja.id = 'compartir-caja';
+    caja.className = 'compartir-caja';
+    // EL AVANCE: lo que la imagen va a decir, antes de generarla. No es
+    // adorno — es la línea que hace que nadie mande una tarjeta cuya
+    // procedencia dice "[object Object]" sin enterarse.
+    var av = opsDeTarjeta(datosParaCompartir(), 'historia').ops
+      .filter(function(o){ return o.rol === 'meta' || o.rol === 'fuente'; })
+      .map(function(o){ return o.texto; }).join(' · ');
+    caja.innerHTML = '<div class="et">COMPARTIR IMAGEN</div>'
+      + '<div class="nota" id="compartir-avance">' + esc(av || '') + '</div>'
+      + '<button type="button" data-fmt="historia">Vertical 1080×1920</button>'
+      + '<button type="button" data-fmt="cuadrado">Cuadrado 1080×1080</button>'
+      + '<div class="nota" id="compartir-nota"></div>';
+    document.body.appendChild(caja);
+    caja.addEventListener('click', function(ev){
+      var b = ev.target.closest('button[data-fmt]'); if(!b) return;
+      generarTarjeta(b.dataset.fmt);
+    });
+  }
+
+  function generarTarjeta(formato){
+    var nota = document.getElementById('compartir-nota');
+    var datos = datosParaCompartir();
+    var r;
+    try{ r = qdDibujaTarjeta(datos, formato); }
+    catch(e){ if(nota) nota.textContent = 'no se pudo dibujar: ' + e.message; return; }
+    if(!r.canvas){ if(nota) nota.textContent = 'este navegador no tiene canvas'; return; }
+    var nombre = 'quantdesk-' + (datos.archivo || 'mercado') + '-' + formato + '.png';
+    r.canvas.toBlob(function(blob){
+      if(!blob){ if(nota) nota.textContent = 'el navegador no pudo exportar el PNG'; return; }
+      var archivo = null;
+      try{ archivo = new File([blob], nombre, { type: 'image/png' }); }catch(e){}
+      if(archivo && navigator.canShare && navigator.canShare({ files: [archivo] })){
+        navigator.share({ files: [archivo], title: datos.titulo })
+          .then(function(){ if(nota) nota.textContent = 'compartido'; })
+          .catch(function(){ descargar(blob, nombre, nota); });
+      } else {
+        descargar(blob, nombre, nota);
+      }
+    }, 'image/png');
+  }
+
+  function descargar(blob, nombre, nota){
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = nombre;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+    if(nota) nota.textContent = 'descargada: ' + nombre;
   }
 
   // ── PINTADO ────────────────────────────────────────────────────────
@@ -772,6 +895,7 @@
       .then(function(){ pidiendo = false; pintar(); });
   }
 
+  document.getElementById('btn-compartir').addEventListener('click', abrirCompartir);
   document.getElementById('indices').addEventListener('click', function(ev){
     var b = ev.target.closest('button[data-idx]'); if(!b) return;
     estado.idx = b.dataset.idx; escribirUrl(); cargar();
