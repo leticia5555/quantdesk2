@@ -469,29 +469,24 @@
   // fecha del dato se dice APARTE, que es lo que pidió: el mapa muestra
   // cierres, y durante la sesión el último que hay es el de ayer. Decirlo no es
   // una disculpa, es la procedencia del número que se está viendo.
+  //
+  // ESTA COMPOSICIÓN YA NO VIVE ACÁ: es `chipDeMercado`, en `qd-mercados.js`.
+  // Se sacó porque las cuatro pantallas nuevas no la tenían y acabaron
+  // pintando el texto crudo de `estadoDeBolsa`, que dice "no se sabe de qué
+  // día es el último cierre" — cierto, y una queja en pantalla (Lety,
+  // 2026-10-20). Dejar acá una copia sería volver a tener dos opiniones sobre
+  // el mismo hecho, que es justo lo que este archivo vino a cerrar.
   function pintarChip(d){
-    var e = qdEstadoMercado(d.bolsa || estado.mapa, new Date(), { ultimoCierre: d.ultimo_cierre || null });
+    var c = chipDeMercado(d.bolsa || estado.mapa, {
+      ahora: new Date(),
+      ultimoCierre: d.ultimo_cierre || null,
+      // El mapa SÍ muestra cierres, así que sí nombra de cuándo son.
+      muestra: 'mapa',
+    });
     var el = document.getElementById('chip');
-    var dia = nombreDeDia(d.ultimo_cierre);
-    var txt, motivo = '';
-    if(e.abierto){
-      txt = dia ? 'abierto · mapa con cierre del ' + dia : 'abierto';
-      motivo = dia
-        ? 'la bolsa opera ahora; el mapa muestra el cierre del ' + d.ultimo_cierre
-          + ' porque el de hoy no existe hasta que cierre'
-        : 'la bolsa opera ahora; no se sabe de qué día es el cierre del mapa';
-    } else if(d.ultimo_cierre){
-      txt = 'cerrado · cierre del ' + dia;
-      motivo = 'último cierre en la tabla: ' + d.ultimo_cierre;
-    } else if(e.abierto === null){
-      txt = e.texto; motivo = e.motivo || '';
-    } else {
-      txt = 'cerrado';
-      motivo = 'no se sabe de qué día es el último cierre: no viajó con los datos';
-    }
-    el.className = 'chip' + (e.abierto ? ' abierto' : '');
-    el.textContent = (e.abierto?'● ':'○ ') + e.etiqueta + ': ' + txt;
-    el.title = motivo;
+    el.className = 'chip' + (c.abierto ? ' abierto' : '');
+    el.textContent = c.chip;
+    el.title = c.motivo;
   }
 
   function cuadrosVisibles(d){

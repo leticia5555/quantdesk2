@@ -43,10 +43,32 @@ const hace = (min) => new Date(MOMENTO - min * 60000).toISOString();
 
 // Una imagen de 1×1 que SÍ existe, servida por el fixture: sin ella, "la foto
 // se pintó" no se podría distinguir de "la foto falló y cayó al bloque".
+// Gris oscuro y no blanco: en la captura, un 1×1 blanco estirado a 16/9 se
+// ve como un hueco vacío y no como una foto, y la captura es donde se revisan
+// estas pantallas.
 const PIXEL = Buffer.from(
-  'R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs=', 'base64');
+  'R0lGODlhAQABAIAAACYwOwAAACwAAAAAAQABAAACAkQBADs=', 'base64');
 
 const NOTAS = [
+  // VALOR BR: cuatro notas, TODAS con imagen. Es el caso que se vio en
+  // producción (Lety, 2026-10-20): con `conFoto.slice(0,4)` las cuatro
+  // destacadas salían de este solo medio. Están primero a propósito, que es
+  // lo que las hacía ganar. Una de sus fotos CUELGA —el servidor no contesta
+  // ni error— que es la otra mitad del defecto: los cuadros grises.
+  // La MÁS NUEVA de Valor BR es la que tarda: es la que gana el lugar de
+  // destacada, así que es la que tiene que caer al bloque por plazo.
+  { url: 'https://valor.test/ibov', titular: 'Ibovespa fecha em alta de 1,2%',
+    fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
+    publicado_en: hace(3), imagen: '/foto-lenta.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
+  { url: 'https://valor.test/petro', titular: 'Petrobras anuncia dividendo extraordinário',
+    fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
+    publicado_en: hace(5), imagen: '/foto-ok.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
+  { url: 'https://valor.test/real', titular: 'Real se valoriza frente ao dólar',
+    fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
+    publicado_en: hace(7), imagen: '/foto-ok.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
+  { url: 'https://valor.test/vale', titular: 'Vale eleva projeção de produção',
+    fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
+    publicado_en: hace(9), imagen: '/foto-ok.gif', imagen_via: 'media:content', tickers: [], fuente_dato: null },
   { url: 'https://medio.test/nvidia', titular: 'Nvidia hits $1.4T valuation on AI demand',
     fuente_id: 'cnbc', fuente_nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'acciones',
     publicado_en: hace(12), imagen: '/foto-ok.gif', imagen_via: 'media:content',
@@ -83,6 +105,7 @@ const NOTAS = [
 ];
 
 const GO = [
+  { id: 'valor_br', nombre: 'Valor BR', idioma: 'pt', tipo: 'medio', seccion: 'mexico_latam' },
   { id: 'cnbc', nombre: 'CNBC', idioma: 'en', tipo: 'medio', seccion: 'mercado' },
   { id: 'marketwatch', nombre: 'MarketWatch', idioma: 'en', tipo: 'medio', seccion: 'mercado' },
   { id: 'el_financiero', nombre: 'El Financiero', idioma: 'es', tipo: 'medio', seccion: 'mexico_latam' },
@@ -93,6 +116,7 @@ const GO = [
   { id: 'sec_8k', nombre: 'SEC EDGAR 8-K', idioma: 'en', tipo: 'oficial', seccion: 'oficiales' },
 ];
 const CORRIDAS = [
+  { fuente_id: 'valor_br', ok: true, motivo: null, guardadas: 12, ultima_corrida: hace(5) },
   { fuente_id: 'cnbc', ok: true, motivo: null, guardadas: 4, ultima_corrida: hace(5) },
   { fuente_id: 'marketwatch', ok: true, motivo: null, guardadas: 6, ultima_corrida: hace(5) },
   { fuente_id: 'el_financiero', ok: true, motivo: null, guardadas: 9, ultima_corrida: hace(5) },
@@ -104,7 +128,22 @@ const CORRIDAS = [
   // `sec_8k` NO aparece: es el tercer estado, "sin cosechar".
 ];
 
+// ── EL VOLUMEN DE PRODUCCIÓN, PARA LA GEOMETRÍA ──────────────────────
+// Con tres notas por columna NINGUNA lista llega al pie, así que la
+// comprobación del pie encimado pasaba sobre una página corta. El registro
+// real tiene 16 fuentes y decenas de notas: con eso la lista de medios llegaba
+// 600 px MÁS ABAJO que el pie y le pasaba por debajo. Este relleno existe para
+// que esa geometría se pueda medir.
+const RELLENO = Array.from({ length: 40 }, (_, i) => ({
+  url: 'https://relleno.test/' + i,
+  titular: 'Titular de relleno número ' + i + ', con el largo de un titular real de un medio',
+  fuente_id: i % 2 ? 'cnbc' : 'marketwatch', fuente_nombre: i % 2 ? 'CNBC' : 'MarketWatch',
+  tipo: i % 7 === 0 ? 'newsletter' : 'medio', idioma: 'en', seccion: 'mercado',
+  publicado_en: hace(500 + i * 3), imagen: null, imagen_via: null, tickers: [], fuente_dato: null,
+}));
+
 let errorDeLectura = false;
+let conVolumen = false;
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.gif': 'image/gif' };
 let pedidosApi = 0;
 
@@ -114,17 +153,30 @@ const server = createServer(async (req, res) => {
     errorDeLectura = url.searchParams.get('v') === '1';
     res.writeHead(200); return res.end('ok');
   }
+  if (url.pathname === '/__volumen') {
+    conVolumen = url.searchParams.get('v') === '1';
+    res.writeHead(200); return res.end('ok');
+  }
   if (url.pathname === '/foto-ok.gif') {
     res.writeHead(200, { 'content-type': 'image/gif' }); return res.end(PIXEL);
   }
   // La foto "rota": 404, como un hotlink que el medio no deja traer.
   if (url.pathname === '/foto-rota.gif') { res.writeHead(404); return res.end('no'); }
+  // La foto LENTA: el servidor acepta la conexión y contesta seis segundos
+  // después. No dispara `error` —llega bien, tarde— así que el relevo por
+  // evento no entra nunca: sólo el plazo. Seis segundos de cuadro gris arriba
+  // de la página es lo que se vio en producción.
+  if (url.pathname === '/foto-lenta.gif') {
+    setTimeout(() => { res.writeHead(200, { 'content-type': 'image/gif' }); res.end(PIXEL); }, 6000);
+    return;
+  }
 
   if (url.pathname === '/api/noticias' && url.searchParams.get('vista') === 'pagina') {
     pedidosApi++;
     const q = url.searchParams;
     const antesDe = q.get('antes_de');
-    const notas = errorDeLectura ? [] : NOTAS.filter((n) => !antesDe || n.publicado_en < antesDe);
+    const base = conVolumen ? [...NOTAS, ...RELLENO] : NOTAS;
+    const notas = errorDeLectura ? [] : base.filter((n) => !antesDe || n.publicado_en < antesDe);
     const armado = armaPagina(notas, {
       seccion: q.get('seccion') || 'todo',
       idioma: q.get('idioma') === 'es' ? 'es' : 'todo',
@@ -132,7 +184,8 @@ const server = createServer(async (req, res) => {
       fuente: q.get('fuente') || null,
       orden: q.get('orden') === 'fuente' ? 'fuente' : 'hora',
       // Bajo a propósito: con 3 por columna, "cargar más" se puede ejercer.
-      porColumna: 3,
+      // Con volumen, el de producción: lo que llena las columnas.
+      porColumna: conVolumen ? 30 : 3,
     });
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({
@@ -154,7 +207,7 @@ const server = createServer(async (req, res) => {
       fuentes: chipsDeFuente(GO, CORRIDAS),
       leidas: notas.length, tope: 400,
       generado_en: new Date(MOMENTO).toISOString(),
-      fuente: 'neon:mercado_noticias (RSS/Atom de api/_lib/news-sources.json)',
+      fuente: 'neon:mercado_noticias (titulares de los feeds RSS/Atom de las fuentes registradas)',
     }));
   }
   const p = url.pathname === '/mercado/noticias' ? '/noticias.html' : url.pathname;
@@ -238,25 +291,68 @@ try {
   chequeo('sin scroll horizontal a 390 px', !scroll.h);
 
   // ── LAS DESTACADAS ──────────────────────────────────────────────────
+  // El plazo del relevo de fotos es de 4 s: se espera a que venza antes de
+  // mirar, o la foto que cuelga se leería como "todavía cargando".
+  await p.waitForTimeout(4600);
   const dest = await p.evaluate(() => {
     const ds = [...document.querySelectorAll('.dest')];
     return ds.map((d) => ({
       tit: d.querySelector('.tit').textContent,
+      fuente: (d.querySelector('.meta b') || {}).textContent || null,
       foto: !!d.querySelector('img.foto'),
+      // Alto del hueco de imagen: 0 cuando no hay NI foto NI bloque.
+      alto_media: (() => {
+        const m = d.querySelector('img.foto, .bloque');
+        return m ? Math.round(m.getBoundingClientRect().height) : 0;
+      })(),
       bloque: d.querySelector('.bloque') ? d.querySelector('.bloque').textContent.trim() : null,
     }));
   });
   chequeo('cuatro destacadas', dest.length === 4, String(dest.length));
   chequeo('la que SÍ traía foto la muestra', dest.some((d) => d.foto));
-  // La foto 404 cae al bloque de color CON el nombre de la fuente: es la caída
-  // que el encargo pide, y sólo se puede ver en un navegador.
-  chequeo('la foto que no carga cae al bloque con el nombre de la fuente',
-    dest.some((d) => d.bloque === 'MarketWatch'), JSON.stringify(dest.map((d) => d.bloque)));
-  chequeo('y las que el feed no trajo con foto también van en bloque',
-    dest.filter((d) => d.bloque).length >= 2, JSON.stringify(dest.map((d) => d.bloque)));
+
+  // ── CUATRO MEDIOS, NO CUATRO NOTAS DEL MISMO ────────────────────────
+  // En producción las cuatro salieron de Valor BR, que publica todo con
+  // imagen: `conFoto.slice(0,4)` le daba la fila entera al medio que más
+  // publica. El fixture trae ese medio con cuatro notas con foto, primeras
+  // en la lista, para que esta comprobación se ponga roja si alguien vuelve
+  // a elegir por nota en vez de por fuente.
+  const fuentesDest = dest.map((d) => d.fuente);
+  chequeo('las cuatro destacadas son de cuatro fuentes DISTINTAS',
+    new Set(fuentesDest).size === 4, JSON.stringify(fuentesDest));
+  chequeo('y el medio que publica todo con foto aporta una, no cuatro',
+    fuentesDest.filter((f) => f === 'Valor BR').length === 1, JSON.stringify(fuentesDest));
   const notaDest = await p.textContent('#dest-nota');
-  chequeo('y se DICE cuántas van sin foto y por qué (regla 2)',
-    /sin foto/.test(notaDest) && /media:content|enclosure/.test(notaDest), notaDest);
+  chequeo('la nota declara de cuántas fuentes son', /4 fuentes distintas/.test(notaDest), notaDest);
+
+  // ── SIN FOTO NO SE RESERVA EL HUECO DE LA FOTO ──────────────────────
+  // Lo que se vio en prod: cuadros grises vacíos arriba de la página.
+  const sinFoto = dest.filter((d) => !d.foto && !d.bloque);
+  chequeo('la destacada que el feed no trajo con foto NO reserva hueco de imagen',
+    sinFoto.length > 0 && sinFoto.every((d) => d.alto_media === 0),
+    JSON.stringify(dest.map((d) => ({ f: d.fuente, foto: d.foto, h: d.alto_media }))));
+  // La foto 404 cae al bloque de color CON el nombre de la fuente: ahí el
+  // hueco YA estaba medido y dejarlo vacío haría saltar la tarjeta.
+  chequeo('la foto que contesta 404 cae al bloque con el nombre de la fuente',
+    dest.some((d) => d.bloque === 'MarketWatch'), JSON.stringify(dest.map((d) => d.bloque)));
+  chequeo('y la foto que llega tarde también cae al bloque, por plazo vencido',
+    dest.some((d) => d.bloque === 'Valor BR'), JSON.stringify(dest.map((d) => d.bloque)));
+  chequeo('ninguna destacada queda con un hueco de imagen vacío',
+    dest.every((d) => d.alto_media === 0 || d.foto || d.bloque),
+    JSON.stringify(dest.map((d) => ({ h: d.alto_media, foto: d.foto, b: d.bloque }))));
+
+  // Y la tarjeta sin foto no se estira al alto de las que la tienen: eso
+  // sería reservar el hueco de la foto por la puerta de atrás, que es como se
+  // veía en la captura aunque el elemento de imagen ya no estuviera.
+  const altos = await p.evaluate(() => [...document.querySelectorAll('.dest')].map((d) => ({
+    media: !!d.querySelector('img.foto, .bloque'),
+    alto: Math.round(d.getBoundingClientRect().height),
+  })));
+  const conMedia = altos.filter((a) => a.media).map((a) => a.alto);
+  const sinMedia = altos.filter((a) => !a.media).map((a) => a.alto);
+  chequeo('y la tarjeta sin foto es MÁS BAJA que las que sí la traen',
+    sinMedia.length > 0 && conMedia.length > 0 && Math.max(...sinMedia) < Math.min(...conMedia),
+    JSON.stringify({ conMedia, sinMedia }));
 
   // ── EL ARREGLO DEL ESPACIO PERDIDO, EN PANTALLA ─────────────────────
   const titulares = await p.evaluate(() =>
@@ -345,14 +441,18 @@ try {
     await p.evaluate(() => location.search));
   // La URL cambia ANTES que la lista (replaceState es inmediato, el fetch no):
   // se espera el repintado o se mide la lista vieja.
+  const DE_LA_REGION = /Walmex|peso|Ibovespa|Petrobras|Real|Vale/;
   await p.waitForFunction(() => {
     const ts = [...document.querySelectorAll('.fila .tit')].map((e) => e.textContent);
-    return ts.length > 0 && ts.every((t) => /Walmex|peso/.test(t));
+    return ts.length > 0 && ts.every((t) => /Walmex|peso|Ibovespa|Petrobras|Real|Vale/.test(t));
   }, null, { timeout: 3000 }).catch(() => {});
   const trasMx = await p.evaluate(() =>
     [...document.querySelectorAll('.fila .tit')].map((e) => e.textContent));
-  chequeo('y la lista queda sólo con las de México',
-    trasMx.length > 0 && trasMx.every((t) => /Walmex|peso/.test(t)), JSON.stringify(trasMx));
+  // "México · LATAM" es la sección, y Brasil es LATAM: la lista tiene que
+  // quedar con las de la región, no sólo con las mexicanas. Lo que se exige
+  // es que NO se cuele nada de fuera (la Fed, Nvidia, el Nasdaq).
+  chequeo('y la lista queda sólo con las de México y LATAM',
+    trasMx.length > 0 && trasMx.every((t) => DE_LA_REGION.test(t)), JSON.stringify(trasMx));
 
   // ── TAP REAL: las pestañas sin fuente van deshabilitadas ────────────
   const cripto = p.locator('#secciones button[data-seccion="cripto"]');
@@ -433,6 +533,28 @@ try {
   // ── LA CAPTURA ──────────────────────────────────────────────────────
   await p.goto(`${BASE}/mercado/noticias`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.dest');
+  const encimaPie390 = await p.evaluate(() => {
+    const pie = document.getElementById('pie').getBoundingClientRect();
+    const sobre = [];
+    for (const sel of ['#medios', '#newsletters', '#oficiales', '#destacadas', '#mas-medios']) {
+      const el = document.querySelector(sel);
+      if (!el || el.hidden) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height === 0) continue;
+      if (r.bottom > pie.top + 1 && r.top < pie.bottom - 1
+          && r.right > pie.left + 1 && r.left < pie.right - 1) {
+        sobre.push({ sel, bottom: Math.round(r.bottom), pieTop: Math.round(pie.top) });
+      }
+    }
+    return sobre;
+  });
+  const piePlano = await p.textContent('#pie');
+  chequeo('el pie no enseña rutas de archivo ni jerga de código',
+    !/\.json|\.js\b|api\/_lib|`/.test(piePlano), piePlano);
+
+  chequeo('el pie NO se encima sobre ninguna lista a 390',
+    encimaPie390.length === 0, JSON.stringify(encimaPie390));
+
   await p.screenshot({ path: join(OUT, 'noticias-390.png'), fullPage: true });
   console.log(`  → ${join(OUT, 'noticias-390.png')}`);
   await movil.close();
@@ -474,13 +596,60 @@ try {
   });
   chequeo('el pie se ve sin recorrer la página', pieVisible);
 
+  // ── EL PIE NO SE ENCIMA SOBRE LAS LISTAS ────────────────────────────
+  // Lo que Lety vio en prod. La comprobación de arriba sólo miraba que el pie
+  // ENTRARA en la ventana, y un pie encimado entra igual de bien: cae dentro
+  // de la ventana porque está pintado sobre el contenido. Hay que medir la
+  // distancia, no la visibilidad.
+  // Con el volumen de producción: 16 fuentes y 50 notas, columnas llenas.
+  await d.goto(`${BASE}/__volumen?v=1`);
+  await d.goto(`${BASE}/mercado/noticias`, { waitUntil: 'networkidle' });
+  await d.waitForSelector('.fila');
+  const encimaPie = await d.evaluate(() => {
+    const pie = document.getElementById('pie').getBoundingClientRect();
+    const sobre = [];
+    for (const sel of ['#medios', '#newsletters', '#oficiales', '#destacadas', '#mas-medios']) {
+      const el = document.querySelector(sel);
+      if (!el || el.hidden) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height === 0) continue;
+      // Se tocan en vertical Y comparten horizontal: eso es encimarse.
+      const cruza = r.bottom > pie.top + 1 && r.top < pie.bottom - 1
+        && r.right > pie.left + 1 && r.left < pie.right - 1;
+      if (cruza) sobre.push({ sel, bottom: Math.round(r.bottom), pieTop: Math.round(pie.top) });
+    }
+    return sobre;
+  });
+  chequeo('el pie NO se encima sobre ninguna lista a 1440, con columnas llenas',
+    encimaPie.length === 0, JSON.stringify(encimaPie));
+  // Y la lista se recorre POR DENTRO en vez de empujar la página: es la otra
+  // mitad del arreglo. Sin esto, "no se encima" se podría cumplir recortando
+  // la lista a la mitad sin forma de ver el resto.
+  const medioScroll = await d.evaluate(() => {
+    const e = document.querySelector('#medios');
+    return { alto: Math.round(e.getBoundingClientRect().height), contenido: e.scrollHeight };
+  });
+  chequeo('y la lista de medios se recorre por dentro, no empuja la página',
+    medioScroll.contenido > medioScroll.alto + 20, JSON.stringify(medioScroll));
+  // Una fila partida por la mitad contra el borde se lee como "roto" o como
+  // "el pie se encimó". El desvanecido dice que hay más y que se recorre.
+  const desvanece = await d.evaluate(() => {
+    const cs = getComputedStyle(document.querySelector('#medios'));
+    return cs.maskImage || cs.webkitMaskImage || 'none';
+  });
+  chequeo('y la lista que se recorre lo dice con un desvanecido abajo',
+    /gradient/.test(desvanece), desvanece);
+  await d.goto(`${BASE}/__volumen?v=0`);
+  await d.goto(`${BASE}/mercado/noticias`, { waitUntil: 'networkidle' });
+  await d.waitForSelector('.dest');
+
   // El toggle "Por fuente" agrupa, con hover de escritorio (click, no tap).
   await d.click('#t-orden button[data-orden="fuente"]');
   await d.waitForSelector('.grupo-fuente');
   const grupos = await d.evaluate(() =>
     [...document.querySelectorAll('.grupo-fuente b')].map((e) => e.textContent));
   chequeo('"Por fuente" agrupa y la que más publicó va primero',
-    grupos.length >= 2 && grupos[0] === 'MarketWatch', JSON.stringify(grupos));
+    grupos.length >= 2 && grupos[0] === 'Valor BR', JSON.stringify(grupos));
   // El desempate por alfabeto se fija en la prueba unitaria
   // (mercado-noticias-pagina.test.mjs), donde se puede construir un empate de
   // verdad: acá las tres fuentes tienen cuentas distintas, así que "el orden
