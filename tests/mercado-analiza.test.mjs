@@ -71,17 +71,81 @@ const UPA = [
 
 test('"le ganó" es real menos estimado, y se dice que es contra el consenso', () => {
   const r = upaRealVsEstimado(UPA);
-  const t2 = r.filas.find((f) => f.trimestre === '2026 T2');
+  const t2 = r.filas.find((f) => f.fecha === '2026-07-30');
   assert.ok(Math.abs(t2.sorpresa - 0.06) < 1e-9, String(t2.sorpresa));
   assert.match(r.nota, /CONSENSO/);
   assert.match(r.nota, /no contra el movimiento de la acción/);
+});
+
+// ── EL TRIMESTRE SE NOMBRA POR SU FECHA DE CIERRE ────────────────────
+//
+// En producción la tabla de NVDA enseñaba "2027 T2" y "2026 T2" con el mismo
+// real y el mismo estimado (Lety, 2026-10-21). NVDA cierra su ejercicio en
+// enero, así que su año fiscal va adelantado: el trimestre que termina en
+// julio de 2026 es el T2 del fiscal 2027. Con unas filas rotuladas por año
+// fiscal y otras por calendario, el mismo trimestre salía dos veces.
+test('el trimestre se rotula con su fecha de cierre, no con el año fiscal', () => {
+  const r = upaRealVsEstimado(UPA);
+  const t2 = r.filas.find((f) => f.fecha === '2026-07-30');
+  assert.equal(t2.trimestre, '2026-07-30', 'el rótulo es la fecha de cierre');
+  // El nombre fiscal se conserva, pero DICHO como fiscal: es el que usa la
+  // empresa en su reporte y no se puede confundir con el calendario.
+  assert.equal(t2.trimestre_fiscal, 'T2 del fiscal 2026');
+});
+
+test('el mismo trimestre con año fiscal y calendario se cuenta UNA vez', () => {
+  // El caso exacto de NVDA: dos filas del trimestre que cerró el 27 de julio,
+  // una rotulada fiscal 2027 y otra calendario 2026.
+  const r = upaRealVsEstimado([
+    { period: '2026-07-27', year: 2027, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+    { period: '2026-07-27', year: 2026, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+    { period: '2026-04-27', year: 2027, quarter: 1, eps_actual: 1.96, eps_estimate: 1.90 },
+  ]);
+  assert.equal(r.filas.length, 2, 'dos trimestres, no tres');
+  assert.equal(r.duplicados, 1);
+  assert.match(r.motivo_duplicados, /año fiscal y el calendario/);
+  // Y la tasa NO cuenta el repetido: con el duplicado dentro decía "2 de 3".
+  assert.equal(r.medidos, 2);
+});
+
+test('y también cuando el duplicado viene con la fecha corrida unos días', () => {
+  // La otra forma del mismo defecto: el cierre contable y el del calendario
+  // difieren en días. Un trimestre dura ~91, así que dos filas a menos de 45
+  // son la misma.
+  const r = upaRealVsEstimado([
+    { period: '2026-07-27', year: 2027, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+    { period: '2026-07-31', year: 2026, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+  ]);
+  assert.equal(r.filas.length, 1);
+  assert.equal(r.duplicados, 1);
+});
+
+test('dos trimestres de verdad NO se colapsan', () => {
+  // La prueba que impide que el arreglo se pase de listo: 91 días de
+  // distancia son dos trimestres distintos y los dos tienen que quedar.
+  const r = upaRealVsEstimado([
+    { period: '2026-07-27', year: 2027, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+    { period: '2026-04-27', year: 2027, quarter: 1, eps_actual: 1.96, eps_estimate: 1.90 },
+  ]);
+  assert.equal(r.filas.length, 2);
+  assert.equal(r.duplicados, 0);
+  assert.equal(r.motivo_duplicados, null);
+});
+
+test('al juntar dos filas gana la que trae el real ya publicado', () => {
+  const r = upaRealVsEstimado([
+    { period: '2026-07-27', year: 2027, quarter: 2, eps_actual: null, eps_estimate: 2.14 },
+    { period: '2026-07-29', year: 2026, quarter: 2, eps_actual: 2.22, eps_estimate: 2.14 },
+  ]);
+  assert.equal(r.filas.length, 1);
+  assert.equal(r.filas[0].real, 2.22, 'el real publicado dice más que el estimado solo');
 });
 
 test('un trimestre sin estimado NO se descarta: se muestra con su causa', () => {
   // Descartarlo haría que la tasa de aciertos se calcule sobre los
   // trimestres que convienen.
   const r = upaRealVsEstimado(UPA);
-  const sin = r.filas.find((f) => f.trimestre === '2025 T3');
+  const sin = r.filas.find((f) => f.fecha === '2025-10-29');
   assert.ok(sin, 'la fila sigue ahí');
   assert.equal(sin.sorpresa, null);
   assert.match(sin.sorpresa_motivo, /no trae estimado/);
@@ -89,7 +153,7 @@ test('un trimestre sin estimado NO se descarta: se muestra con su causa', () => 
 
 test('el que todavía no reporta se distingue del que no tiene estimado', () => {
   const r = upaRealVsEstimado(UPA);
-  const futuro = r.filas.find((f) => f.trimestre === '2026 T3');
+  const futuro = r.filas.find((f) => f.fecha === '2026-10-29');
   assert.match(futuro.sorpresa_motivo, /todavía no reporta/);
 });
 
@@ -257,4 +321,102 @@ test('y sin operaciones en la ventana se dice eso, que es otra cosa', () => {
   const r = netoInsiders([], { hoy: HOY });
   assert.equal(r.neto_usd, null);
   assert.match(r.motivo, /sin operaciones en los últimos 90 días/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL CONCEPTO DE INGRESOS: "EXISTE" NO ES "SIRVE"
+//
+// En producción los ingresos de NVDA salían "—" en los ocho trimestres
+// mientras la utilidad salía perfecta (Lety, 2026-10-21). La causa: se elegía
+// el PRIMER concepto de la lista que existiera en el archivo, y una emisora
+// puede tener `RevenueFromContractWithCustomer…` declarado sólo con periodos
+// ANUALES y reportar el trimestre bajo `Revenues`.
+// ═══════════════════════════════════════════════════════════════════════
+const u = (start, end, val, extra = {}) => ({
+  start, end, val, accn: '0001045810-26-000' + String(val).slice(0, 3),
+  form: '10-Q', filed: end, ...extra,
+});
+
+test('si el concepto preferido sólo trae el AÑO, se usa el que sí trae trimestres', () => {
+  const facts = { facts: { 'us-gaap': {
+    // El preferido existe… y sólo con el ejercicio completo.
+    RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: [
+      u('2025-01-27', '2026-01-25', 130_497_000_000, { form: '10-K' }),
+    ] } },
+    // El trimestre vive acá.
+    Revenues: { units: { USD: [
+      u('2026-04-28', '2026-07-27', 46_743_000_000),
+      u('2026-01-26', '2026-04-27', 44_062_000_000),
+    ] } },
+    NetIncomeLoss: { units: { USD: [
+      u('2026-04-28', '2026-07-27', 26_422_000_000),
+      u('2026-01-26', '2026-04-27', 18_775_000_000),
+    ] } },
+  } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.filas.length, 2);
+  // Lo que fallaba: los ingresos llegaban.
+  assert.equal(r.filas[0].ingresos, 46_743_000_000);
+  assert.equal(r.filas[0].ingresos_concepto, 'Revenues');
+  assert.equal(r.conceptos.ingresos, 'Revenues');
+  // Y el anual NO se coló entre los trimestres.
+  assert.ok(!r.filas.some((f) => f.ingresos === 130_497_000_000));
+  assert.equal(r.motivo_ingresos, null);
+});
+
+test('la grafía más específica gana cuando las dos traen el mismo trimestre', () => {
+  // El orden de `CONCEPTOS_INGRESO` no es casual: las grafías específicas van
+  // antes que `Revenues`, que es la bolsa grande y puede llevar otras cosas.
+  const facts = { facts: { 'us-gaap': {
+    RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: [
+      u('2026-04-28', '2026-07-27', 46_743_000_000),
+    ] } },
+    Revenues: { units: { USD: [
+      u('2026-04-28', '2026-07-27', 47_900_000_000),
+    ] } },
+  } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.filas[0].ingresos, 46_743_000_000);
+  assert.equal(r.filas[0].ingresos_concepto, 'RevenueFromContractWithCustomerExcludingAssessedTax');
+});
+
+test('si la emisora cambió de concepto a mitad de la serie, se usan los dos y se DICE', () => {
+  const facts = { facts: { 'us-gaap': {
+    RevenueFromContractWithCustomerExcludingAssessedTax: { units: { USD: [
+      u('2026-04-28', '2026-07-27', 46_743_000_000),
+    ] } },
+    Revenues: { units: { USD: [
+      u('2025-04-28', '2025-07-27', 30_040_000_000),
+    ] } },
+  } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.filas.length, 2);
+  assert.equal(r.conceptos_todos.ingresos.length, 2);
+  assert.match(r.motivo_conceptos, /conceptos distintos/);
+});
+
+test('con trimestres pero sin NINGÚN ingreso, se dice — y es lo que apaga las barras', () => {
+  const facts = { facts: { 'us-gaap': {
+    NetIncomeLoss: { units: { USD: [
+      u('2026-04-28', '2026-07-27', 26_422_000_000),
+      u('2026-01-26', '2026-04-27', 18_775_000_000),
+    ] } },
+  } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.filas.length, 2);
+  assert.ok(r.filas.every((f) => f.ingresos == null));
+  // La causa separada: "no hay trimestres" y "hay trimestres sin ingresos"
+  // son dos problemas distintos, y el segundo es el que dejó ocho barras
+  // iguales en pantalla.
+  assert.match(r.motivo_ingresos, /no trae ingresos trimestrales/);
+  assert.equal(r.motivo, null, 'trimestres sí hay');
+});
+
+test('el concepto que existe pero sólo con periodos anuales se declara como tal', () => {
+  const facts = { facts: { 'us-gaap': {
+    Revenues: { units: { USD: [u('2025-01-27', '2026-01-25', 130_497_000_000, { form: '10-K' })] } },
+  } } };
+  const r = trimestresDeCompanyFacts(facts);
+  assert.equal(r.filas.length, 0);
+  assert.match(r.motivo, /ninguno con periodos trimestrales/);
 });
