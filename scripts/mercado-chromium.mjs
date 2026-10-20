@@ -379,7 +379,8 @@ const server = createServer(async (req, res) => {
     const m = url.searchParams.get('map') === 'mx' ? 'mx' : 'us';
     return res.end(JSON.stringify(FIXTURES[m]));
   }
-  const p = url.pathname === '/mercado' ? '/mercado.html' : url.pathname;
+  // R8: la raíz sirve el mapa, como el rewrite de producción.
+  const p = (url.pathname === '/mercado' || url.pathname === '/') ? '/mercado.html' : url.pathname;
   try {
     const buf = await readFile(join(ROOT, p.replace(/^\//, '')));
     res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream' });
@@ -534,6 +535,26 @@ try {
       .map((id) => ({ id, visible: document.getElementById(id).offsetParent !== null })));
   chequeo('el buscador, Cripto/ETFs y el toggle de agrupar NO salen a 390 px',
     soloEscritorio.every((x) => !x.visible), JSON.stringify(soloEscritorio));
+
+  // R8: en el celular la terminal se alcanza por el botón de abajo, no por
+  // la cabecera. Sin él, la home dejaría a app.html sin puerta desde el
+  // teléfono — y el encargo pide ese botón en CADA pantalla nueva.
+  await p.evaluate(() => document.getElementById('paneles').scrollIntoView());
+  await p.waitForSelector('#abrir-terminal', { timeout: 5000 }).catch(() => {});
+  const terminalMovil = await p.evaluate(() => {
+    const a = document.getElementById('abrir-terminal');
+    if (!a) return null;
+    const r = a.getBoundingClientRect();
+    return { href: a.getAttribute('href'), alto: Math.round(r.height), texto: a.textContent.trim() };
+  });
+  chequeo('a 390 px la terminal se alcanza por el botón de abajo, tocable',
+    terminalMovil && terminalMovil.href === '/app' && terminalMovil.alto >= 44
+    && /Modo experto/.test(terminalMovil.texto), JSON.stringify(terminalMovil));
+  // VOLVER ARRIBA. Las comprobaciones del pellizco que vienen después tocan
+  // coordenadas de la ventana, y con la página recorrida caen en otro lugar:
+  // las tres se pusieron rojas por esto, no por el mapa.
+  await p.evaluate(() => window.scrollTo(0, 0));
+  await p.waitForTimeout(120);
 
   const nSectores = await p.locator('.cuadro').count();
   chequeo('al abrir se ven EMPRESAS, no sólo sectores', nSectores >= 20, `${nSectores} cuadros`);
@@ -2021,6 +2042,26 @@ try {
     JSON.stringify(pestanas.map((x) => x.k + ':' + x.off)));
 
   // ══════════════════════════════════════════════════════════════════
+  // R8: /mercado ES LA HOME
+  // ══════════════════════════════════════════════════════════════════
+  console.log('\n── R8: la home ──');
+  await w.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  chequeo('la raíz abre el mapa', (await w.title()).includes('/mercado'), await w.title());
+  const puertas = await w.evaluate(() => ({
+    experto: (document.getElementById('modo-experto') || {}).getAttribute
+      ? document.getElementById('modo-experto').getAttribute('href') : null,
+    expertoVisible: document.getElementById('modo-experto')
+      ? document.getElementById('modo-experto').offsetParent !== null : false,
+    terminal: document.getElementById('abrir-terminal')
+      ? document.getElementById('abrir-terminal').getAttribute('href') : null,
+  }));
+  chequeo('en escritorio la home ofrece "Modo experto" hacia la terminal',
+    puertas.experto === '/app' && puertas.expertoVisible, JSON.stringify(puertas));
+  chequeo('y abajo está "Abrir la terminal completa", que el encargo pide en cada pantalla',
+    puertas.terminal === '/app', JSON.stringify(puertas));
+
+    // ══════════════════════════════════════════════════════════════════
   // R7: COMPARTIR IMAGEN
   // ══════════════════════════════════════════════════════════════════
   console.log('\n── R7: la imagen para compartir ──');
