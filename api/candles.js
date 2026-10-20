@@ -13,6 +13,10 @@
 // ═══════════════════════════════════════════════════════════════
 
 // intervalo → ventana por fuente + caché CDN (segundos)
+// Los rangos que Yahoo acepta en `v8/finance/chart`. Lista blanca porque este
+// valor viaja a una URL: lo que llega por query no se concatena sin acotar.
+export const RANGOS_PERMITIDOS = new Set(['5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max']);
+
 export const INTERVALS = {
   '1d': { yahoo: { interval: '1d',  range: '1y'  }, binance: { interval: '1d', limit: 365 }, smaxage: 300, swr: 600 },
   '1h': { yahoo: { interval: '60m', range: '1mo' }, binance: { interval: '1h', limit: 720 }, smaxage: 120, swr: 300 },
@@ -107,6 +111,24 @@ export default async function handler(req, res) {
   const iv = INTERVALS[interval];
   if (!iv) return res.status(400).json({ error: `interval must be one of: ${Object.keys(INTERVALS).join(', ')}` });
 
+  // ── `?range=` OPCIONAL (R4) ──────────────────────────────────────────
+  // La ficha de índice del artboard 6 pide el chart de 1D a "Máx", y con el
+  // año que trae `1d` por default no existen ni 3A ni 5A.
+  //
+  // Es un parámetro NUEVO con el default INTACTO a propósito: `app.html` pide
+  // `?symbol=&interval=` y sigue recibiendo exactamente lo mismo que hoy. Un
+  // cambio al default habría quintuplicado el payload del chart de TRACKER sin
+  // que nadie lo pidiera — eso es una decisión de plan, no un efecto
+  // secundario de R4.
+  //
+  // Lista blanca y no texto libre: `range` va a la URL de Yahoo, y lo que
+  // llega por query no se concatena a una URL sin acotarlo.
+  const rangoPedido = String((req.query && req.query.range) || '').trim();
+  if (rangoPedido && !RANGOS_PERMITIDOS.has(rangoPedido)) {
+    return res.status(400).json({ error: `range must be one of: ${[...RANGOS_PERMITIDOS].join(', ')}` });
+  }
+  const rangoYahoo = rangoPedido || iv.yahoo.range;
+
   try {
     let extracted = null;
     let source = null;
@@ -122,7 +144,7 @@ export default async function handler(req, res) {
       source = 'yahoo';
       const ySym = toYahooSymbol(symbol);
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySym)}`
-        + `?interval=${iv.yahoo.interval}&range=${iv.yahoo.range}`;
+        + `?interval=${iv.yahoo.interval}&range=${rangoYahoo}`;
       const r = await fetch(url, { headers: UA }).catch(() => null);
       if (r && r.ok) extracted = extractYahooCandles(await r.json().catch(() => null));
     }
@@ -139,6 +161,10 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', `public, s-maxage=${iv.smaxage}, stale-while-revalidate=${iv.swr}`);
     return res.status(200).json({
       symbol, interval, source,
+      // El rango EFECTIVO, no el pedido: con Binance el `range` no aplica y
+      // decir que se pidió 5y cuando se trajo otra cosa sería mentir sobre la
+      // ventana que la pantalla está midiendo.
+      range: source === 'yahoo' ? rangoYahoo : null,
       currency: extracted.currency,
       candles,
       generated_at: new Date().toISOString(),

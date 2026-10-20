@@ -48,10 +48,20 @@ const SERIE = Array.from({ length: 60 }, (_, i) => ({
 }));
 const AHORA = new Date('2026-03-01T12:00:00Z');
 
-test('GEMELAS: 1D, 1S y 1M dan exactamente lo mismo en las dos implementaciones', () => {
-  for (const p of ['1D', '1S', '1M']) {
-    const a = APP.qdPeriodChange(SERIE, p);
-    const b = MERCADO.qdPeriodChange(SERIE, p, AHORA);
+// Una serie LARGA para comparar los periodos que no caben en 60 cierres. La
+// de 60 sigue siendo la de los casos cortos, que es donde estaba el valor.
+const SERIE_LARGA = Array.from({ length: 300 }, (_, i) => ({
+  t: T0 + i * DIA,
+  c: 100 + i * 0.4 + (i % 11) * 1.1,
+}));
+
+test('GEMELAS: 1D, 1S, 1M y 3M dan exactamente lo mismo en las dos implementaciones', () => {
+  // Con la serie LARGA: `3M` necesita 64 cierres y la de 60 no los tiene, así
+  // que compararlos ahí no medía la paridad — medía el recorte, y desde R4
+  // `qd-periods.js` ya no recorta (ver la prueba de la divergencia, al final).
+  for (const p of ['1D', '1S', '1M', '3M']) {
+    const a = APP.qdPeriodChange(SERIE_LARGA, p);
+    const b = MERCADO.qdPeriodChange(SERIE_LARGA, p, AHORA);
     assert.equal(b.pct, a.pct, `${p}: pct distinto`);
     assert.equal(b.value, a.value, `${p}: value distinto`);
     assert.equal(b.refIdx, a.refIdx, `${p}: ancla distinta`);
@@ -163,3 +173,92 @@ test('el chip NO se define dos veces: qd-periods ya no lo exporta', () => {
   assert.equal(MERCADO.qdHoraEn, undefined);
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// R4: LA SERIE TIENE QUE CUBRIR EL PERIODO
+//
+// EL BUG, encontrado al armar la ficha de índice: el ancla salía de
+// `Math.max(0, n - 1 - tradingDays)`, así que con la serie más corta que el
+// periodo caía en el PRIMER punto y el resultado se pintaba con la etiqueta
+// del periodo PEDIDO. Con 180 sesiones, pedir "5A" devolvía el cambio de ocho
+// meses rotulado "5A".
+//
+// No se había visto porque hasta R4 los únicos periodos eran 1D, 1S y 1M, que
+// casi siempre caben. Un % con la etiqueta equivocada es peor que un "—": el
+// "—" se nota y éste no.
+// ═══════════════════════════════════════════════════════════════════════
+test('una serie más corta que el periodo da "—" CON su causa, no el cambio entero', () => {
+  const serie = Array.from({ length: 180 }, (_, i) => ({ t: 1000 + i * 86400, c: 100 + i }));
+  const r = MERCADO.qdPeriodChange(serie, '5A');
+  assert.equal(r.pct, null, 'no puede dar un número');
+  assert.match(r.motivo, /180 sesiones y 5A necesita 1261/, r.motivo);
+  // Y la etiqueta sigue siendo la pedida: el "—" dice de qué periodo es.
+  assert.equal(r.periodLabel, '5A');
+});
+
+test('y cuando SÍ cubre, el ancla es el punto exacto, no el primero', () => {
+  const serie = Array.from({ length: 300 }, (_, i) => ({ t: 1000 + i * 86400, c: 100 + i }));
+  const r = MERCADO.qdPeriodChange(serie, '1A');
+  // 300 puntos, 1A = 252 sesiones atrás → ancla en el índice 47.
+  assert.equal(r.refIdx, 300 - 1 - 252);
+  assert.equal(r.refValue, 100 + 47);
+});
+
+test('los cinco periodos largos de la ficha existen, con sus sesiones del año bursátil', () => {
+  const largos = { '3M': 63, '6M': 126, '1A': 252, '3A': 756, '5A': 1260 };
+  for (const [k, dias] of Object.entries(largos)) {
+    // Con exactamente `dias + 1` puntos alcanza, y con uno menos no: es la
+    // forma de fijar el número de sesiones sin leerlo de la tabla.
+    const justo = Array.from({ length: dias + 1 }, (_, i) => ({ t: 1000 + i * 86400, c: 100 + i }));
+    assert.ok(Number.isFinite(MERCADO.qdPeriodChange(justo, k).pct), `${k} con ${dias + 1} puntos debería alcanzar`);
+    assert.equal(MERCADO.qdPeriodChange(justo.slice(1), k).pct, null, `${k} con ${dias} puntos NO debería alcanzar`);
+  }
+});
+
+test('1D sigue siendo contra el cierre anterior, no contra el primero de la serie', () => {
+  const serie = [{ t: 1, c: 100 }, { t: 2, c: 110 }, { t: 3, c: 121 }];
+  const r = MERCADO.qdPeriodChange(serie, '1D');
+  assert.ok(Math.abs(r.pct - 10) < 1e-9, String(r.pct));
+});
+
+test('LA DIVERGENCIA CON app.html, declarada y acotada', () => {
+  // `app.html` lleva su PROPIA copia del calculador —por eso existe la prueba
+  // de paridad de arriba— y esta rebanada NO la toca: el encargo dice que
+  // app.html no se rediseña en este trabajo, salvo el cambio a TRACKER de R5.
+  //
+  // Entonces la divergencia se declara acá en vez de quedar escondida:
+  //   · los periodos largos (3M…5A) existen en `qd-periods.js` y NO en
+  //     app.html, que no los usa;
+  //   · el guardia de cobertura está sólo de este lado. app.html sigue
+  //     devolviendo el cambio de la serie entera con la etiqueta del periodo
+  //     cuando la serie es más corta — un bug REAL que vive ahí desde antes y
+  //     que hay que decidir si se arregla (ver el PR de R4).
+  //
+  // Esta prueba se pone roja el día que alguien toque uno de los dos lados
+  // sin mirar al otro, que es justo lo que hay que evitar.
+  // `3M` YA existía en app.html —con las mismas 63 sesiones, por suerte— así
+  // que lo que esta rebanada estrena son los CUATRO de arriba.
+  assert.equal(MERCADO.QD_PERIODS['3M'].tradingDays, APP.QD_PERIODS['3M'].tradingDays,
+    '3M tiene que medir lo mismo en los dos lados');
+  for (const largo of ['6M', '1A', '3A', '5A']) {
+    assert.ok(MERCADO.QD_PERIODS[largo], `qd-periods.js debería conocer ${largo}`);
+    assert.ok(!APP.QD_PERIODS[largo], `app.html NO conoce ${largo} todavía: si ya lo conoce, actualizá esta prueba`);
+  }
+  // Y al revés: `YTD` existe de este lado y NO en app.html, que lo resuelve
+  // por otro camino. Se deja anotado para que nadie "unifique" a ciegas.
+  assert.ok(MERCADO.QD_PERIODS.YTD && !APP.QD_PERIODS.YTD);
+  const corta = Array.from({ length: 10 }, (_, i) => ({ t: 1000 + i * 86400, c: 100 + i }));
+  assert.equal(MERCADO.qdPeriodChange(corta, '1M').pct, null, '/mercado: "—" porque 10 sesiones no son un mes');
+  assert.ok(Number.isFinite(APP.qdPeriodChange(corta, '1M').pct),
+    'app.html todavía devuelve un número ahí: es el bug declarado arriba');
+});
+
+test('y en series que SÍ cubren el periodo los dos siguen dando lo mismo', () => {
+  // La paridad que importa: donde las dos pueden contestar, contestan igual.
+  const larga = Array.from({ length: 300 }, (_, i) => ({ t: T0 + i * DIA, c: 100 + i * 0.4 }));
+  for (const p of ['1D', '1S', '1M']) {
+    const a = APP.qdPeriodChange(larga, p);
+    const b = MERCADO.qdPeriodChange(larga, p);
+    assert.ok(Math.abs(a.pct - b.pct) < 1e-12, `${p}: ${a.pct} vs ${b.pct}`);
+  }
+});
