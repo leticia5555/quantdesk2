@@ -32,6 +32,81 @@ function ok(cond, name, detail) {
   else { failures++; console.error('  FAIL', name, detail !== undefined ? '→ ' + detail : ''); }
 }
 
+// ── NINGUNA PRUEBA DE ESTE ARCHIVO TOCA LA RED ───────────────────────
+// TERCERA VEZ QUE LA MISMA FUGA ROMPE ESTE ARCHIVO EN CI. Primero fue
+// `fetchDesdeEtf`, después `fetchNasdaq100`, y las dos veces el arreglo fue
+// inyectar ESA dependencia en los bloques que ya se conocían. Quedaron las que
+// no: el bloque del ciclo Neon y el del filtro de instrumento no inyectaban la
+// tabla pública del Nasdaq-100, así que en CI —la única máquina con internet
+// donde corre esta suite— leían la lista viva (104 símbolos, porque la tabla
+// lista las clases de acción por separado) y contaban 134 donde el fixture
+// declara 30.
+//
+// Inyectar de a una no cierra nada: la próxima dependencia de red que el lib
+// agregue vuelve a entrar por la puerta que nadie miró. Así que el guardia va
+// acá, una vez, para TODO el archivo: `fetch` se prohíbe de entrada.
+//
+// Dos efectos, y los dos hacen falta:
+//
+//   1. el resultado deja de depender de la máquina. Una dependencia que se
+//      escape recibe un throw, el lib lo trata como el escalón caído que el
+//      bloque ya suponía, y el sandbox y CI miden LO MISMO;
+//   2. la fuga no se traga en silencio. El lib atrapa el throw —así está
+//      escrito, a propósito— así que el error solo no alcanzaría: cada intento
+//      queda anotado en `FUGAS` y al final del archivo se reclama con la URL.
+//
+// Los dos bloques que se fabrican su propio `fetch` (los de Alpaca) lo
+// restauran al salir llamando a `prohibirRed()`.
+const FUGAS = [];
+function prohibirRed() {
+  globalThis.fetch = async (recurso) => {
+    const url = String((recurso && recurso.url) || recurso || '(sin url)');
+    FUGAS.push(url);
+    throw new Error('fuga a la red: ' + url + ' — la dependencia no se inyectó');
+  };
+}
+prohibirRed();
+
+// ── `sinRed()`: TODA PUERTA DE INYECCIÓN, CERRADA POR DEFECTO ─────────
+// El guardia de arriba deja el resultado estable, pero cada fuga sigue costando
+// un throw que el lib atrapa y convierte en un escalón caído — o sea que un
+// bloque puede estar midiendo una degradación que no pidió. Así que acá se
+// cierran TODAS las puertas que `arena-universe.js` lee de `deps`, y cada
+// bloque abre SOLO las que su escenario necesita (el spread deja ganar a las
+// del bloque).
+//
+// Las de red lanzan con el nombre de la puerta en vez de devolver vacío: si un
+// bloque se olvida una que SÍ le hacía falta, se entera por el nombre y no por
+// un conteo raro tres asserts más abajo.
+const faltaInyectar = (puerta) => async () => {
+  throw new Error(`la prueba no inyectó \`${puerta}\`: ningún bloque de este archivo sale a la red`);
+};
+const PUERTAS_CERRADAS = {
+  // Los cuatro escalones del universo: cerrados = "no contestó", que es lo que
+  // suponen los bloques que prueban los de abajo.
+  fetchDesdeEtf: async () => null,
+  fetchNasdaq100: async () => null,
+  fetchConstituents: async () => null,
+  readStored: async () => null,
+  readStatic: async () => null,
+  writeStored: async () => true,
+  // El catálogo de Alpaca: sin él el canal del día se apaga DECLARADO, que es
+  // el fail-closed que ya está probado más abajo.
+  cargarCatalogo: async () => ({ assets: null, error: 'la prueba no inyectó `cargarCatalogo`' }),
+  getAllAssets: faltaInyectar('getAllAssets'),
+  // `symbolTypes` es best-effort en el lib: null deja las reglas de nombre, que
+  // es exactamente lo que recibía cuando no hay key de Finnhub.
+  getSymbolTypes: async () => null,
+  getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
+  getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
+  getPriceAndDollarVolume: faltaInyectar('getPriceAndDollarVolume'),
+  resolveAdmission: faltaInyectar('resolveAdmission'),
+  getFiftyTwoWeek: async () => ({}),
+  // La caché de market cap vive en Neon. Cerrada, no persiste nada.
+  mcapCache: { leer: async () => ({}), guardar: async () => {} },
+};
+const sinRed = (deps) => ({ ...PUERTAS_CERRADAS, ...deps });
+
 const HOY = new Date('2026-09-16T13:00:00Z');   // 9:00 ET, media hora antes de la apertura
 const sp500 = Array.from({ length: 500 }, (_, i) => 'SP' + i);
 const nq100 = Array.from({ length: 100 }, (_, i) => 'NQ' + i);
@@ -74,7 +149,7 @@ const conCatalogo = (deps) => ({ cargarCatalogo: async () => catalogoTodoComun, 
 // diez bloques ya suponía: son sobre FMP, Neon y el JSON del repo, que son los
 // escalones de ABAJO. Los bloques que sí prueban el ETF lo inyectan ellos
 // mismos (y ya lo hacían), así que ninguno cambia de significado.
-const depsBase = ({ fmp, neon, repo, etf, nasdaq } = {}) => ({
+const depsBase = ({ fmp, neon, repo, etf, nasdaq } = {}) => sinRed({
   fetchDesdeEtf: async (index) => (etf === undefined ? null : (typeof etf === 'function' ? etf(index) : etf)),
   // UNA DEPENDENCIA MÁS QUE SE ESCAPABA A LA RED. Misma historia que el ETF de
   // arriba, un escalón más abajo: `resolveConstituents` cae a la tabla pública
@@ -233,13 +308,13 @@ console.log(`\n── 4) el tope de ${MOVERS_MAX} se gasta SOLO en nombres nuevo
   const nuevos = Array.from({ length: 130 }, (_, i) => 'NEW' + i);
   const u = await buildUniverse({
     now: HOY, creds: {},
-    deps: {
+    deps: sinRed({
       ...conIndices(),
       cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: yaEstan.map((s) => ({ symbol: s, price: 50, percent_change: 5 })), losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: nuevos.map((s) => ({ symbol: s, volume: 1e7 })), by: 'volume', last_updated: null }),
       resolveAdmission: admisionTodo,
-    },
+    }),
   });
   ok(u.counts.indices === 600, 'los índices aportan 600 nombres', String(u.counts.indices));
   ok(u.counts.del_dia_nuevos === MOVERS_MAX,
@@ -261,7 +336,7 @@ console.log('\n── el costo: 6 requests de precio, no 600 ──');
 
   const u = await buildUniverse({
     now: HOY, creds: {},
-    deps: {
+    deps: sinRed({
       ...conIndices(),
       cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [{ symbol: 'DAY1', price: 50, percent_change: 9 }], losers: [], last_updated: null }),
@@ -278,7 +353,7 @@ console.log('\n── el costo: 6 requests de precio, no 600 ──');
         return Object.fromEntries(syms.map((s2) => [s2, { ...(opts.known || {})[s2] }]));
       },
       getFiftyTwoWeek: async () => ({}),
-    },
+    }),
   });
 
   ok(lotesDePrecio === 1 && simbolosPedidos === 602,
@@ -308,7 +383,7 @@ console.log('\n── un nombre sin precio NO se admite por defecto ──');
 {
   const u = await buildUniverse({
     now: HOY, creds: {},
-    deps: {
+    deps: sinRed({
       ...conIndices(),
       cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
@@ -318,7 +393,7 @@ console.log('\n── un nombre sin precio NO se admite por defecto ──');
         syms.slice(0, 300).map((s2) => [s2, { price: 100, dollarVolume: 5e8, sessions: 20 }])),
       resolveAdmission: async (syms, opts) => Object.fromEntries(syms.map((s2) => [s2, { ...(opts.known || {})[s2] }])),
       getFiftyTwoWeek: async () => ({}),
-    },
+    }),
   });
   ok(u.counts.admitidos === 300,
     'los 300 sin barras NO entran: sin precio no hay admisión posible (fail closed, la cicatriz DDDX)', String(u.counts.admitidos));
@@ -330,14 +405,14 @@ console.log('\n── 5) los ÍNDICES también pasan por admisión ──');
   const caido = sp500[0];
   const u = await buildUniverse({
     now: HOY, creds: {},
-    deps: {
+    deps: sinRed({
       ...conIndices(),
       cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
       resolveAdmission: async (syms) => Object.fromEntries(syms.map((s) => [s,
         s === caido ? { price: 3.2, marketCap: 8e8, dollarVolume: 2e6 } : TODO_ADMISIBLE])),
-    },
+    }),
   });
   ok(!u.symbols.includes(caido),
     'un constituyente del S&P 500 que cayó bajo $5 NO entra: el Arena no hereda la demora del comité del índice');
@@ -350,13 +425,13 @@ console.log('\n── 6) degradación: sin índices, el tablero SIGUE saliendo �
 {
   const u = await buildUniverse({
     now: HOY, creds: {},
-    deps: {
+    deps: sinRed({
       ...depsBase({}),   // los tres escalones vacíos
       cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [{ symbol: 'NVDA', price: 200, percent_change: 8 }], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [{ symbol: 'AAPL', volume: 9e7 }], by: 'volume', last_updated: null }),
       resolveAdmission: admisionTodo,
-    },
+    }),
   });
   ok(u.universe_source === 'movers_only',
     'sin ninguna lista de índices, la fuente es `movers_only` — DECLARADO, no silencioso', u.universe_source);
@@ -368,13 +443,13 @@ console.log('\n── y con TODO caído, vacío honesto ──');
 {
   const u = await buildUniverse({
     now: HOY, creds: {},
-    deps: {
+    deps: sinRed({
       ...depsBase({}),
       cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => { throw new Error('HTTP 403'); },
       getMostActives: async () => { throw new Error('HTTP 403'); },
       resolveAdmission: admisionTodo,
-    },
+    }),
   });
   ok(u.universe_source === 'empty' && u.symbols.length === 0, 'fuente `empty`, cero nombres — no se inventa uno solo', u.universe_source);
   ok(/403/.test(u.errors.movers || ''), 'con el error real de cada canal', JSON.stringify(u.errors));
@@ -384,13 +459,13 @@ console.log('\n── la admisión caída NO vacía el universo ──');
 {
   const u = await buildUniverse({
     now: HOY, creds: {},
-    deps: {
+    deps: sinRed({
       ...conIndices(),
       cargarCatalogo: async () => catalogoTodoComun,
       getMovers: async () => ({ gainers: [], losers: [], last_updated: null }),
       getMostActives: async () => ({ most_actives: [], by: 'volume', last_updated: null }),
       resolveAdmission: async () => { throw new Error('Finnhub 429'); },
-    },
+    }),
   });
   ok(u.admission.applied === false, 'se declara que el filtro NO corrió');
   ok(u.counts.admitidos === 600, 'y los nombres pasan sin filtrar en vez de dejar el tablero vacío', String(u.counts.admitidos));
@@ -414,7 +489,7 @@ console.log('\n── el ciclo se cierra solo: bajar → guardar → leer → re
   // La "base de datos": un objeto que sobrevive entre llamadas, como Neon.
   const neon = {};
   let llamadasAFmp = 0;
-  const deps = {
+  const deps = sinRed({
     fetchConstituents: async (index) => {
       llamadasAFmp++;
       return { index, source: 'fmp', built_at: new Date(AHORA).toISOString(), symbols: listaDe(index) };
@@ -422,7 +497,12 @@ console.log('\n── el ciclo se cierra solo: bajar → guardar → leer → re
     readStored: async (index) => neon[index] || null,
     writeStored: async (index, snap) => { neon[index] = { ...snap, index, source: 'neon' }; return true; },
     readStatic: async () => null,
-  };
+    // Los dos escalones de ARRIBA, cerrados: este bloque es sobre el ciclo
+    // FMP → Neon → refresco, y con el ETF o la tabla pública vivos gana el
+    // escalón 1 y ninguna de estas cinco líneas mide lo que dice medir.
+    fetchDesdeEtf: async () => null,
+    fetchNasdaq100: async () => null,
+  });
   let AHORA = HOY.getTime();
 
   // Día 1: Neon vacío. El cron baja y guarda, sin que nadie toque nada.
@@ -448,7 +528,7 @@ console.log('\n── el ciclo se cierra solo: bajar → guardar → leer → re
   // Y si la escritura falla, se dice: la lista de hoy sirve igual, pero mañana
   // se va a volver a pagar la cuota. Es un aviso, no una caída.
   const dFalla = await resolveConstituents('nasdaq100', {
-    now: new Date(AHORA), deps: { ...deps, writeStored: async () => false },
+    now: new Date(AHORA), deps: sinRed({ ...deps, writeStored: async () => false }),
   });
   ok(dFalla.source === 'fmp' && dFalla.stored === false,
     'una escritura fallida NO rompe la corrida, pero queda marcada (`stored: false`)', `stored=${dFalla.stored}`);
@@ -633,10 +713,11 @@ console.log('\n── el filtro de instrumento corre ANTES del tope ──');
 
   const u = await buildUniverse({
     now: HOY, moversMax: 100,
-    deps: {
+    deps: sinRed({
       cargarCatalogo: async () => catalogo,
       fetchConstituents: async () => null,
       fetchDesdeEtf: async () => null,
+      fetchNasdaq100: async () => null,   // sin esto, en CI entran los 104 de la tabla viva
       readStored: async () => null,
       readStatic: async () => null,
       writeStored: async () => true,
@@ -645,7 +726,7 @@ console.log('\n── el filtro de instrumento corre ANTES del tope ──');
       getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: 5e7 }])),
       resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
       getFiftyTwoWeek: async () => ({}),
-    },
+    }),
   });
 
   ok(u.counts.del_dia_brutos === 100, 'entraron los 100 brutos del screener', String(u.counts.del_dia_brutos));
@@ -664,7 +745,7 @@ console.log('\n── sin catálogo de Alpaca: el canal del día se apaga, DECLA
 {
   const u = await buildUniverse({
     now: HOY, moversMax: 100,
-    deps: {
+    deps: sinRed({
       cargarCatalogo: async () => ({ assets: null, error: 'Alpaca 500' }),
       fetchConstituents: async () => null,
       fetchDesdeEtf: async (i) => ({ index: i, source: 'etf', built_at: HOY.toISOString(), symbols: i === 'sp500' ? sp500 : nq100 }),
@@ -674,7 +755,7 @@ console.log('\n── sin catálogo de Alpaca: el canal del día se apaga, DECLA
       getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: 5e7 }])),
       resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
       getFiftyTwoWeek: async () => ({}),
-    },
+    }),
   });
   ok(u.counts.del_dia_nuevos === 0, 'sin catálogo, ningún nombre del día entra: fail closed');
   ok(u.counts.indices === 600 && u.counts.admitidos === 600,
@@ -688,7 +769,7 @@ console.log('\n── las tenencias del ETF son la fuente D1; FMP es respaldo op
   let pidioFmp = false;
   const u = await buildUniverse({
     now: HOY, moversMax: 0,
-    deps: {
+    deps: sinRed({
       cargarCatalogo: async () => catalogoTodoComun,
       fetchDesdeEtf: async (i) => ({ index: i, source: 'etf', etf: i === 'sp500' ? 'IVV' : 'QQQ', built_at: HOY.toISOString(), symbols: i === 'sp500' ? sp500 : nq100 }),
       fetchConstituents: async () => { pidioFmp = true; return null; },
@@ -698,7 +779,7 @@ console.log('\n── las tenencias del ETF son la fuente D1; FMP es respaldo op
       getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { price: 40, dollarVolume: 5e7 }])),
       resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
       getFiftyTwoWeek: async () => ({}),
-    },
+    }),
   });
   ok(u.counts.indices === 600 && u.indices.sp500.source === 'etf',
     'los 600 nombres salen de las tenencias de IVV y QQQ, sin key y sin plan de pago',
@@ -763,7 +844,7 @@ console.log('\n── Finnhub: "0 admitidos" tiene que decir de quién es la cul
 // ═══════════════════════════════════════════════════════════════
 console.log('\n── el Nasdaq 100 ausente no degrada ni ensucia ──');
 {
-  const soloSp = {
+  const soloSp = sinRed({
     cargarCatalogo: async () => catalogoTodoComun,
     fetchDesdeEtf: async (i) => (i === 'sp500'
       ? { index: i, source: 'etf', etf: 'IVV', built_at: HOY.toISOString(), symbols: sp500 }
@@ -775,7 +856,7 @@ console.log('\n── el Nasdaq 100 ausente no degrada ni ensucia ──');
     getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((x) => [x, { price: 40, dollarVolume: 5e7 }])),
     resolveAdmission: async (syms) => Object.fromEntries(syms.map((x) => [x, { symbol: x, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
     getFiftyTwoWeek: async () => ({}),
-  };
+  });
   const u = await buildUniverse({ now: HOY, moversMax: 0, deps: soloSp });
 
   ok(u.counts.admitidos === 500,
@@ -799,7 +880,7 @@ console.log('\n── el Nasdaq 100 ausente no degrada ni ensucia ──');
   // apagado la señal para todos.
   const uRoto = await buildUniverse({
     now: HOY, moversMax: 0,
-    deps: { ...soloSp, fetchDesdeEtf: async () => null },
+    deps: sinRed({ ...soloSp, fetchDesdeEtf: async () => null }),
   });
   ok(uRoto.universe_source !== 'etf',
     'pero si se cae el S&P 500 —que es obligatorio— la fuente SÍ degrada: la señal sigue viva', uRoto.universe_source);
@@ -814,7 +895,7 @@ console.log('\n── cuánto aportaría el Nasdaq 100, medido ──');
   const propios = Array.from({ length: 20 }, (_, i) => 'NDXONLY' + i);
   const u = await buildUniverse({
     now: HOY, moversMax: 0,
-    deps: {
+    deps: sinRed({
       cargarCatalogo: async () => catalogoTodoComun,
       fetchDesdeEtf: async (i) => ({ index: i, source: 'etf', built_at: HOY.toISOString(), symbols: i === 'sp500' ? sp500 : [...compartidos, ...propios] }),
       fetchConstituents: async () => null,
@@ -824,7 +905,7 @@ console.log('\n── cuánto aportaría el Nasdaq 100, medido ──');
       getPriceAndDollarVolume: async (syms) => Object.fromEntries(syms.map((x) => [x, { price: 40, dollarVolume: 5e7 }])),
       resolveAdmission: async (syms) => Object.fromEntries(syms.map((x) => [x, { symbol: x, price: 40, dollarVolume: 5e7, marketCap: 5e9 }])),
       getFiftyTwoWeek: async () => ({}),
-    },
+    }),
   });
   ok(u.indices.solo_en.nasdaq100 === 20,
     'el journal dice cuántos nombres aporta el Nasdaq 100 que el S&P 500 no tiene', String(u.indices.solo_en.nasdaq100));
@@ -929,6 +1010,7 @@ console.log('\n── SIP primero, IEX de respaldo, y se dice cuál contestó �
   ok(FEED_FALLBACK_STATUS.has(403) && !FEED_FALLBACK_STATUS.has(500),
     'la lista de status que justifican el fallback está acotada y declarada');
   if (anterior === undefined) delete process.env.ALPACA_DATA_FEED; else process.env.ALPACA_DATA_FEED = anterior;
+  prohibirRed();   // el `fetch` fabricado de acá no se queda tapando las fugas de los bloques que siguen
 }
 
 console.log('\n── el canal del día: los MÁS LÍQUIDOS, no los primeros ──');
@@ -940,7 +1022,7 @@ console.log('\n── el canal del día: los MÁS LÍQUIDOS, no los primeros ─
   const orden = ['CHICO1', 'LIQ3', 'CHICO2', 'LIQ1', 'LIQ2'];   // como los devuelve el screener
   const u = await buildUniverse({
     now: HOY, moversMax: 3,
-    deps: {
+    deps: sinRed({
       cargarCatalogo: async () => catalogoTodoComun,
       fetchDesdeEtf: async () => null, fetchConstituents: async () => null,
       readStored: async () => null, readStatic: async () => null, writeStored: async () => true,
@@ -952,7 +1034,7 @@ console.log('\n── el canal del día: los MÁS LÍQUIDOS, no los primeros ─
       }),
       resolveAdmission: async (syms) => Object.fromEntries(syms.map((s2) => [s2, { symbol: s2, price: 40, dollarVolume: volumenes[s2] ?? 1e3, marketCap: 5e9 }])),
       getFiftyTwoWeek: async () => ({}),
-    },
+    }),
   });
   ok(u.from_day.length === 3 && ['LIQ1', 'LIQ2', 'LIQ3'].every((x) => u.from_day.includes(x)),
     'con tope 3 entran los TRES más líquidos, no los tres primeros que llegaron',
@@ -974,6 +1056,48 @@ console.log('\n── el tope del día sale de la cuota de Finnhub ──');
   ok(MOVERS_MAX <= 60 - FINNHUB_CALL_BUDGET + FINNHUB_CALL_BUDGET && MOVERS_MAX <= FINNHUB_CALL_BUDGET + 10,
     'y el tope del canal entra en el presupuesto de llamadas declarado',
     `tope ${MOVERS_MAX} · presupuesto ${FINNHUB_CALL_BUDGET}`);
+}
+
+// ── LA CUENTA DE LAS FUGAS ───────────────────────────────────────────
+// Va al final, con nombre propio y con las URLs: el lib atrapa el throw del
+// guardia y sigue, así que sin este bloque una dependencia nueva volvería a
+// escaparse en silencio y el archivo seguiría verde mintiendo.
+// ── Y LA PRÓXIMA PUERTA, ANTES DE QUE SE ESCAPE ──────────────────────
+// Cerrar las puertas que HOY existen no evita la cuarta vuelta: lo que falló
+// las tres veces fue que el lib agregó una dependencia de red y este archivo
+// no se enteró. Así que se lee la fuente del lib y se exige que CADA punto de
+// inyección esté cerrado acá. Una dependencia nueva pone este archivo rojo con
+// su nombre, en cualquier máquina, antes de que la lea de internet.
+console.log('\n── toda puerta nueva del lib llega cerrada ──');
+{
+  const { readFileSync } = await import('node:fs');
+  const fuentes = ['api/_lib/arena-universe.js', 'api/_lib/arena-instrumento.js'];
+  const puertas = new Set();
+  for (const f of fuentes) {
+    for (const m of readFileSync(new URL('../' + f, import.meta.url), 'utf8').matchAll(/deps\.([A-Za-z0-9_]+)/g)) {
+      puertas.add(m[1]);
+    }
+  }
+  // Las dos que NO son de red: `forzarFmp` es una bandera y `filtrarComunes` es
+  // el filtro puro que varios bloques prueban de verdad.
+  const NO_SON_DE_RED = new Set(['forzarFmp', 'filtrarComunes']);
+  const descubiertas = [...puertas].filter((k) => !NO_SON_DE_RED.has(k));
+  const sinCerrar = descubiertas.filter((k) => !(k in PUERTAS_CERRADAS));
+
+  ok(descubiertas.length >= 15,
+    'se leyeron los puntos de inyección de la fuente del lib, no de una lista a mano',
+    `${descubiertas.length} puertas`);
+  ok(sinCerrar.length === 0,
+    'ninguna puerta de `deps` del lib quedó sin cerrar en `PUERTAS_CERRADAS`',
+    sinCerrar.length ? sinCerrar.join(', ') + ' — agregalas a PUERTAS_CERRADAS' : undefined);
+}
+
+console.log('\n── el archivo no toca la red ──');
+{
+  const unicas = [...new Set(FUGAS)];
+  ok(unicas.length === 0,
+    'ninguna dependencia se escapó a la red: lo que mide esta suite no depende de la máquina',
+    unicas.length ? `${FUGAS.length} intento(s) · ${unicas.slice(0, 6).join(' · ')}` : undefined);
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
