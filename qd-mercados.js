@@ -355,8 +355,77 @@ function qdEstadoMercado(bolsa, ahora, { ultimoCierre = null } = {}) {
   };
 }
 
+/**
+ * EL CHIP, UNA SOLA VEZ, PARA LAS CINCO PANTALLAS.
+ *
+ * `/mercado` ya tenía esta composición dentro de `pintarChip`, y las cuatro
+ * pantallas nuevas llamaban a `qdEstadoMercado` en crudo. Eso dejó en pantalla
+ * la frase que Lety leyó el 2026-10-20: *"no se sabe de qué día es el último
+ * cierre"*. Dicha así no es prudencia, es una queja: quien lee la página de
+ * noticias no está mirando ningún cierre, y que la pantalla se disculpe por no
+ * saber la fecha de un dato que no está mostrando sólo la hace parecer rota.
+ *
+ * Las dos reglas que esto cierra:
+ *
+ *   · EL ESTADO ES DEL HORARIO. Lo decide `estadoDeBolsa`, y es el mismo
+ *     cálculo para las cinco pantallas.
+ *   · LA FECHA DEL DATO SE DICE SÓLO DONDE HAY UN DATO CON FECHA. `muestra`
+ *     es lo que la pantalla tiene en la mano —"mapa", "serie", "ficha"— y si
+ *     no pasa ninguno, el chip no nombra ninguna fecha ni se excusa por no
+ *     tenerla. La causa sigue viajando en `motivo`, que va al `title`: visible
+ *     para quien lo busque, fuera del renglón para quien no.
+ *
+ * Devuelve las piezas y además `chip`, el renglón ya armado, porque la página
+ * de noticias compone DOS bolsas en una línea y la ficha una sola.
+ */
+function chipDeMercado(bolsa, { ahora = new Date(), ultimoCierre = null, datoIntradia = false, muestra = null } = {}) {
+  const e = estadoDeBolsa(bolsa, ahora, { ultimoCierre, datoIntradia });
+  if (e.estado === 'desconocida') {
+    return { ok: false, abierto: false, nombre: null, estado: 'desconocida',
+      texto: 'sin horario declarado', motivo: 'esta pantalla no sabe en qué bolsa opera este instrumento',
+      punto: '○', chip: 'sin horario declarado' };
+  }
+  const dia = nombreDeDia(ultimoCierre);
+  let texto;
+  let motivo = '';
+  if (e.abierta) {
+    // Abierta. La fecha del dato se nombra sólo si la pantalla declara QUÉ
+    // está mostrando: "abierto · mapa con cierre del jueves" dice de dónde
+    // viene el número que se ve; "abierto · cierre del jueves" a secas se lee
+    // como que la bolsa cerró el jueves.
+    texto = (muestra && dia) ? `abierto · ${muestra} con cierre del ${dia}` : 'abierto';
+    motivo = dia
+      ? `la bolsa opera ahora; lo que se muestra es el cierre del ${ultimoCierre} porque el de hoy no existe hasta que cierre`
+      : 'la bolsa opera ahora';
+  } else if (e.estado === 'receso') {
+    texto = e.etiqueta;
+    motivo = 'la bolsa tiene receso de mediodía: no opera nadie en esa hora';
+  } else if (dia) {
+    // "cierre del martes" un martes se lee como de la semana pasada. Es la
+    // misma salvedad que ya hacía `estadoDeBolsa`, y vale igual acá.
+    texto = ultimoCierre === e.fecha_local ? 'cerrado · cierre de hoy' : `cerrado · cierre del ${dia}`;
+    motivo = `último cierre que viajó con los datos: ${ultimoCierre}`;
+  } else if (e.estado === 'sin_cierre_nuevo' || e.estado === 'horario_solo') {
+    texto = e.etiqueta;
+    motivo = e.etiqueta;
+  } else {
+    // CERRADA Y SIN FECHA QUE DECIR. "cerrado" a secas: es todo lo que el
+    // horario permite afirmar, y es cierto. La ausencia va al title.
+    texto = 'cerrado';
+    motivo = muestra
+      ? `no se sabe de qué día es el último cierre: no viajó con los datos`
+      : 'esta pantalla no muestra cierres, así que no hay fecha de cierre que declarar';
+  }
+  return {
+    ok: true, abierto: !!e.abierta, nombre: e.nombre, estado: e.estado,
+    texto, motivo, punto: e.abierta ? '●' : '○',
+    hora_local: e.hora_local,
+    chip: `${e.abierta ? '●' : '○'} ${e.nombre}: ${texto}`,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { BOLSAS, ALIAS_BOLSA, ETIQUETA_24H, ZONA_CT, DIAS_CORTO,
     horaEnZona, estadoDeBolsa, estado24h, qdEstadoMercado, proximaApertura, estadoDeRegion,
-    nombreDeDia };
+    nombreDeDia, chipDeMercado };
 }

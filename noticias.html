@@ -134,7 +134,13 @@
     border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
 
   /* ── DESTACADAS ─────────────────────────────────────────────────── */
+  /* `align-items:start`: la tarjeta sin foto mide lo que mide su titular.
+     Estirada al alto de las que SÍ traen foto quedaba con un hueco vacío
+     debajo del texto — que es reservar el espacio de la foto por la puerta de
+     atrás, y se ve igual de roto. Un borde inferior disparejo es la forma
+     honesta de decir "esta nota no trajo imagen". */
   #destacadas{display:grid;grid-auto-flow:column;grid-auto-columns:76%;gap:10px;
+    align-items:start;
     overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px;scrollbar-width:none}
   #destacadas::-webkit-scrollbar{display:none}
   .dest{scroll-snap-align:start;background:var(--panel);border:1px solid var(--linea);
@@ -169,6 +175,19 @@
     border:1px solid var(--linea);border-radius:8px;color:var(--tenue);
     font-family:var(--mono);font-size:12px;cursor:pointer}
   #mas-medios[hidden]{display:none}
+
+  /* ── "HAY MÁS ABAJO" NO ES LO MISMO QUE "ESTO ESTÁ CORTADO" ───────
+     La lista que se recorre por dentro termina partiendo su última fila por
+     la mitad contra el borde, y una fila cortada en seco se lee como que la
+     página está rota o como que el pie se le encimó encima (Lety, mirando
+     prod). El desvanecido es la señal de que hay más y se puede recorrer.
+     Va sólo donde la lista REALMENTE se recorre: en el teléfono las listas
+     crecen hacia abajo y no hay nada que desvanecer. */
+  @media (min-width:1000px){
+    .lista.scrollable,#oficiales{
+      -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent 100%);
+      mask-image:linear-gradient(to bottom,#000 calc(100% - 22px),transparent 100%)}
+  }
 
   .aviso{font-family:var(--mono);font-size:11px;color:#c9a227;line-height:1.5;
     border:1px dashed #3a3222;border-radius:8px;padding:9px 11px;margin:10px 0}
@@ -205,7 +224,15 @@
     html,body{height:100%}
     body{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
     main{flex:1;min-height:0;grid-template-rows:auto minmax(0,1fr) auto;
-      overflow:hidden;padding-bottom:0}
+      overflow:hidden;padding-bottom:0;
+      /* `align-items:stretch`, y NO el `start` de la regla de arriba.
+         Con `start` cada columna se mide por su CONTENIDO y se sale de su
+         fila hacia abajo: con nueve notas por columna no se notaba, con las
+         de producción (16 fuentes, decenas de notas) la lista de medios
+         llegaba 600 px más abajo del pie y le pasaba por debajo (Lety, en
+         Chrome contra prod, 2026-10-20). Estirada, la fila manda y es
+         `#medios` el que se recorre por dentro, que es lo que se quería. */
+      align-items:stretch}
     .col-medios,.col-lado{min-height:0;display:flex;flex-direction:column}
     /* `flex:1` + `min-height:0` es lo que deja que el hijo se recorra en vez
        de empujar: sin el `min-height:0` el contenido fija el alto mínimo del
@@ -355,7 +382,16 @@
 
   function piezaFoto(n){
     var nom = n.fuente_nombre || n.fuente_id || 'fuente';
-    if(!n.imagen) return htmlDeBloque(nom);
+    // SIN FOTO NO SE RESERVA EL HUECO DE LA FOTO.
+    //
+    // Hasta el 2026-10-20 acá iba el bloque de color del artboard también
+    // cuando el feed NUNCA trajo imagen, y en producción eso se vio como
+    // cuatro cuadros vacíos arriba de la página (Lety, en Chrome contra
+    // prod). El bloque tiene sentido como RELEVO de una foto que falla —ahí
+    // el hueco ya está medido y dejarlo vacío haría saltar la tarjeta—, no
+    // como anuncio de que no hay nada: una tarjeta de puro titular ocupa lo
+    // que ocupa y se lee mejor.
+    if(!n.imagen) return '';
     // `referrerpolicy=no-referrer`: la foto se sirve desde el feed y no hace
     // falta contarle al medio desde dónde se pidió.
     // La caída del hotlink se ata en JS (`atarCaidaDeFotos`) y no en un
@@ -363,7 +399,12 @@
     // escapado dos veces —una para el atributo y otra para el string de JS— y
     // una comilla mal contada deja de ser un bloque de color para convertirse
     // en código roto dentro de una página que ya cargó.
-    return '<img class="foto" src="' + esc(n.imagen) + '" alt="" loading="lazy" decoding="async"'
+    // SIN `loading="lazy"`. Las cuatro destacadas son lo primero de la
+    // página, y en el teléfono van en un carrusel horizontal: tres de las
+    // cuatro nacen fuera de la ventana, así que el navegador tenía permiso
+    // para no bajarlas nunca — y una foto que no se baja no dispara `error`,
+    // o sea que el relevo del bloque tampoco entraba. Quedaban grises.
+    return '<img class="foto" src="' + esc(n.imagen) + '" alt="" decoding="async"'
       + ' referrerpolicy="no-referrer" data-bloque="' + esc(nom) + '">';
   }
 
@@ -387,7 +428,13 @@
         img.outerHTML = htmlDeBloque(img.dataset.bloque || 'fuente');
       }
       img.addEventListener('error', caer);
-      if(img.complete && img.naturalWidth === 0) caer();
+      if(img.complete && img.naturalWidth === 0) return caer();
+      // Y POR TIEMPO. Un hotlink protegido no siempre contesta un error: hay
+      // medios cuyo servidor deja la petición colgada, y ahí `error` no
+      // llega nunca. Sin este plazo el cuadro se queda gris para siempre, que
+      // es exactamente lo que se vio en producción.
+      var plazo = setTimeout(function(){ if(!img.complete || img.naturalWidth === 0) caer(); }, 4000);
+      img.addEventListener('load', function(){ clearTimeout(plazo); });
     });
   }
 
@@ -426,9 +473,14 @@
       return;
     }
     var sinFoto = ds.filter(function(n){ return !n.imagen; }).length;
-    nota.textContent = sinFoto
-      ? '· ' + sinFoto + ' sin foto: ' + (datos.motivo_sin_foto || 'el feed no la trajo')
-      : '';
+    var partes = [];
+    if(datos.destacadas_fuentes) partes.push(datos.destacadas_fuentes === 1
+      ? 'de 1 fuente' : 'de ' + datos.destacadas_fuentes + ' fuentes distintas');
+    if(sinFoto) partes.push(sinFoto + ' sin foto: ' + (datos.motivo_sin_foto || 'el feed no la trajo'));
+    // Si hubo que repetir medio, se dice. Cuatro tarjetas del mismo sitio sin
+    // avisar se leen como que eso es lo que pasó en el mercado.
+    if(datos.motivo_repetidas) partes.push(datos.motivo_repetidas);
+    nota.textContent = partes.length ? '· ' + partes.join(' · ') : '';
     el.innerHTML = ds.map(function(n){
       return '<a class="dest" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
         + piezaFoto(n)
@@ -546,17 +598,18 @@
     // Regla 4: el estado del mercado por instrumento. Esta pantalla mezcla
     // EE.UU. y México, así que se dicen las dos: una sola etiqueta "cerrado"
     // mentiría la mitad del día (la BMV cierra una hora antes que el NYSE).
+    //
+    // LA MISMA FUNCIÓN QUE EL MAPA (`chipDeMercado`, en `qd-mercados.js`).
+    // Antes cada pantalla componía su renglón a mano y las cuatro nuevas
+    // acabaron diciendo cosas distintas del mismo hecho. `muestra` no se pasa
+    // a propósito: esta pantalla enseña titulares, no cierres, así que no
+    // nombra ninguna fecha de cierre ni se excusa por no tenerla.
     var el = document.getElementById('chip');
-    try{
-      var a = qdEstadoMercado('nyse', new Date());
-      var b = qdEstadoMercado('bmv', new Date());
-      var txt = 'NYSE ' + (a.abierto ? 'abierto' : 'cerrado') + ' · BMV ' + (b.abierto ? 'abierto' : 'cerrado');
-      el.textContent = txt;
-      el.className = 'chip' + (a.abierto || b.abierto ? ' abierto' : '');
-    }catch(e){
-      el.textContent = 'sin estado de mercado';
-      el.className = 'chip';
-    }
+    var a = chipDeMercado('nyse', { ahora: new Date() });
+    var b = chipDeMercado('bmv', { ahora: new Date() });
+    el.textContent = a.punto + ' NYSE ' + a.texto + ' · ' + b.punto + ' BMV ' + b.texto;
+    el.title = 'NYSE/Nasdaq: ' + a.motivo + ' · BMV: ' + b.motivo;
+    el.className = 'chip' + (a.abierto || b.abierto ? ' abierto' : '');
   }
 
   function pintarPie(){
@@ -576,7 +629,9 @@
     function plural(n, sing, pl){ return n + ' ' + (n === 1 ? sing : pl); }
     var txt = 'Fuente: ' + (datos.fuente || 'neon:mercado_noticias')
       + ' · ' + (datos.leidas != null ? plural(datos.leidas, 'nota leída', 'notas leídas') : '')
-      + ' de ' + plural((datos.fuentes || []).length, 'fuente GO', 'fuentes GO')
+      // "fuentes GO" es como se llaman en el encargo (Fase 0, go / no-go), y
+      // en pantalla no quiere decir nada: quien lee no sabe qué es un GO.
+      + ' de ' + plural((datos.fuentes || []).length, 'fuente registrada', 'fuentes registradas')
       + (caidas.length ? ' (' + plural(caidas.length, 'caída', 'caídas') + ': '
           + caidas.slice(0,3).map(function(f){ return f.id; }).join(', ')
           + (caidas.length > 3 ? '…' : '') + ')' : '')

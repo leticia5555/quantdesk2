@@ -165,7 +165,7 @@ export default async function handler(req, res) {
       // en el HTML para que se vea desde la API: un hueco declarado en la
       // pantalla y mudo en el JSON se arregla dos veces.
       sin_dato: {
-        pu_agregado: 'el P/U agregado necesita el `metric` de Finnhub por componente, y sin la lista de componentes no hay sobre qué agregarlo',
+        pu_agregado: 'el P/U agregado necesita los fundamentales de cada componente, y sin la lista de componentes no hay sobre qué agregarlo',
         cap_total: 'la capitalización total del índice necesita la lista de componentes, y no la tenemos verificada',
       },
       generado_en: new Date().toISOString(),

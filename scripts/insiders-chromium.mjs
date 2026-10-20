@@ -56,16 +56,92 @@ FILAS.push({
   filing_fecha: '2026-10-18', firmantes: 1, es_duenio_10: false, plan_10b5: false,
 });
 
-const FONDOS = {
-  cat: '13f',
-  funds: [{ name: 'Fondo Ejemplo LP', cik: '0001', quarterEnd: '2026-09-30', totalValue: 4.2e9,
-            counts: { added: 7, closed: 3, increased: 12, reduced: 9 },
-            top: { added: [{ ticker: 'NVDA', value: 2e8 }, { ticker: 'MSFT', value: 1e8 }],
-                   closed: [{ ticker: 'INTC', value: 5e7 }], increased: [], reduced: [] } }],
-  lag_note: 'SEC 13F: foto al cierre del trimestre, publicada hasta 45 días después — no es el portafolio de hoy',
-  sources: { edgar: { ok: true } },
-  generated_at: new Date(MOMENTO).toISOString(),
+// ═══════════════════════════════════════════════════════════════════
+// LOS FONDOS SALEN DEL ENDPOINT, NO DE MI MANO.
+//
+// La versión anterior escribía el fondo a mano con `name: 'Fondo Ejemplo
+// LP'`. El endpoint devuelve `fund`, no `name`, así que en producción la
+// pestaña enseñaba el CIK —1067983— en vez de "Berkshire Hathaway" (Lety,
+// 2026-10-20), y la comprobación pasaba igual porque medía mi invento.
+//
+// Acá se corre `build13F` de verdad, fingiendo a la SEC: submissions, el
+// índice del filing y el infoTable, en su forma cruda. Si alguien cambia una
+// llave de la fila del fondo, esto lo ve.
+// ═══════════════════════════════════════════════════════════════════
+const CIK_BERKSHIRE = '1067983';
+const ACC = ['0000950123-26-000111', '0000950123-26-000222'];
+
+function infoTable(filas) {
+  return '<?xml version="1.0"?><informationTable>' + filas.map((f) => `
+    <infoTable><nameOfIssuer>${f.n}</nameOfIssuer><cusip>${f.cusip}</cusip>
+      <value>${f.valor}</value>
+      <shrsOrPrnAmt><sshPrnamt>${f.acciones}</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+    </infoTable>`).join('') + '</informationTable>';
+}
+// Trimestre actual contra el anterior: una posición nueva, una cerrada, una
+// que crece y una que baja. Es lo que el diff tiene que encontrar.
+const CARTERA_HOY = [
+  { n: 'NVIDIA CORP', cusip: '67066G104', valor: 2_000_000_000, acciones: 10_000_000 },
+  { n: 'APPLE INC', cusip: '037833100', valor: 60_000_000_000, acciones: 300_000_000 },
+  { n: 'COCA COLA CO', cusip: '191216100', valor: 25_000_000_000, acciones: 400_000_000 },
+];
+const CARTERA_ANTES = [
+  { n: 'APPLE INC', cusip: '037833100', valor: 70_000_000_000, acciones: 400_000_000 },
+  { n: 'COCA COLA CO', cusip: '191216100', valor: 24_000_000_000, acciones: 400_000_000 },
+  { n: 'INTEL CORP', cusip: '458140100', valor: 1_000_000_000, acciones: 50_000_000 },
+];
+
+const fetchOriginal = globalThis.fetch;
+globalThis.fetch = async (recurso, opciones) => {
+  const u = String((recurso && recurso.url) || recurso || '');
+  const texto = (t, tipo = 'application/json') => new Response(t, {
+    status: 200, headers: { 'content-type': tipo },
+  });
+  if (u.includes('data.sec.gov/submissions/')) {
+    // Sólo Berkshire contesta: los otros cinco fondos quedan con su causa
+    // declarada, que es el estado normal de una corrida real.
+    if (!u.includes(String(CIK_BERKSHIRE).padStart(10, '0'))) {
+      return new Response('no', { status: 404 });
+    }
+    return texto(JSON.stringify({ filings: { recent: {
+      form: ['13F-HR', '8-K', '13F-HR'],
+      accessionNumber: [ACC[0], '0000950123-26-000999', ACC[1]],
+      reportDate: ['2026-09-30', '2026-10-01', '2026-06-30'],
+      filingDate: ['2026-11-14', '2026-10-02', '2026-08-14'],
+    } } }));
+  }
+  if (u.includes('/index.json')) {
+    return texto(JSON.stringify({ directory: { item: [
+      { name: 'primary_doc.xml', size: '900' },
+      { name: 'infotable.xml', size: '120000' },
+    ] } }));
+  }
+  if (/\/infotable\.xml$/.test(u)) {
+    const cartera = u.includes(ACC[0].replace(/-/g, '')) ? CARTERA_HOY : CARTERA_ANTES;
+    return texto(infoTable(cartera), 'text/xml');
+  }
+  if (u.includes('openfigi')) return texto(JSON.stringify([{ data: [{ ticker: 'NVDA' }] }]));
+  throw new Error('la corrida intentó salir a la red: ' + u);
 };
+
+const { default: trackerHandler } = await import(join(ROOT, 'api/stock-tracker.js'));
+// La frase de cobertura, sacada del archivo del endpoint. Copiarla acá fue
+// como el `getcurrent` con comillas de código sobrevivió en pantalla.
+const COBERTURA_DEL_ENDPOINT = (await readFile(join(ROOT, 'api/stock-tracker.js'), 'utf8'))
+  .match(/cobertura:\s*'([^']+)'/)[1];
+async function fondosDeVerdad() {
+  let body = null;
+  const res = {
+    setHeader() {}, getHeader() {}, status() { return this; },
+    json(o) { body = o; return this; }, send(o) { body = o; return this; }, end() { return this; },
+  };
+  await trackerHandler({ method: 'GET', query: { cat: '13f' }, headers: {}, url: '/' }, res);
+  return body;
+}
+const FONDOS = await fondosDeVerdad();
+if (!FONDOS || !(FONDOS.funds || []).length) {
+  throw new Error('el endpoint no devolvió fondos: ' + JSON.stringify(FONDOS).slice(0, 200));
+}
 
 let caido = false;
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css' };
@@ -90,7 +166,10 @@ const server = createServer(async (req, res) => {
       cat: 'form4', items: FILAS,
       scan: { atom_entries: 200, inspected: 40, xml_fetched: 38, accumulated: 3 },
       sources: { edgar_form4_atom: { ok: true, items: 200 } },
-      cobertura: 'la ventana del feed `getcurrent` de EDGAR más lo que la instancia acumuló; un arranque en frío sólo ve la ventana',
+      // La MISMA frase que arma el endpoint, importada en vez de copiada: una
+      // copia en el fixture es cómo la jerga sobrevivió a que se arreglara en
+      // el endpoint.
+      cobertura: COBERTURA_DEL_ENDPOINT,
       lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después de la operación',
       generated_at: new Date(MOMENTO).toISOString(),
     }));
@@ -260,12 +339,54 @@ try {
     null, { timeout: 2000 });
   const t13f = await p.textContent('#contenido');
   chequeo('la pestaña de 13F muestra el fondo y su caveat de 45 días',
-    /Fondo Ejemplo/.test(t13f) && /45 días/.test(await p.textContent('#nota-tabla')),
+    /Berkshire Hathaway/.test(t13f) && /45 días/.test(await p.textContent('#nota-tabla')),
     await p.textContent('#nota-tabla'));
+  // EL NOMBRE, NO EL CIK. Es lo que se vio en producción: 1067983 donde
+  // debía decir Berkshire Hathaway, porque la página leía `name` y el
+  // endpoint manda `fund`.
+  chequeo('y lo nombra por su NOMBRE, no por su CIK',
+    !/\b1067983\b/.test(t13f) && /Warren Buffett/.test(t13f),
+    t13f.replace(/\s+/g, ' ').slice(0, 90));
+  const fondoLateral = await p.textContent('#fondos');
+  chequeo('y en el lateral también va el nombre',
+    /Berkshire/.test(fondoLateral) && !/\b1067983\b/.test(fondoLateral),
+    fondoLateral.replace(/\s+/g, ' ').slice(0, 80));
   await p.locator('#pestanas button[data-tab="form4"]').tap();
   await p.waitForSelector('#contenido tbody tr');
 
   // ── EL AVISO DE COBERTURA ───────────────────────────────────────────
+  // ── LO QUE SE VE EN PANTALLA VA SIN JERGA ───────────────────────────
+  // Es la pantalla donde Lety lo vio: el aviso de cobertura decía
+  // `getcurrent` entre comillas de código. Las fuentes declaradas sí se ven
+  // —es la procedencia que pide la regla 3—; lo que no, es el nombre interno
+  // de un endpoint, de un campo o de un archivo.
+  const jerga = await p.evaluate(() => {
+    const malas = [];
+    const PROHIBIDO = [
+      [/`/, 'comillas de código'],
+      [/\.(js|json|mjs)\b/, 'nombre de archivo'],
+      [/api\/_lib/, 'ruta del repo'],
+      [/getcurrent|companyfacts|quoteSummary|metric=all|cik_str|infotable|sharesOwnedFollowing/i,
+       'nombre interno de un endpoint o campo'],
+    ];
+    const paseo = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = paseo.nextNode())) {
+      const t = (n.textContent || '').trim();
+      if (!t) continue;
+      const padre = n.parentElement;
+      if (padre && (padre.tagName === 'SCRIPT' || padre.tagName === 'STYLE')) continue;
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push(por + ': ' + t.slice(0, 70));
+    }
+    for (const el of document.querySelectorAll('[title]')) {
+      const t = el.getAttribute('title') || '';
+      for (const [re, por] of PROHIBIDO) if (re.test(t)) malas.push('en un title · ' + por + ': ' + t.slice(0, 70));
+    }
+    return malas;
+  });
+  chequeo('nada de lo que se ve en pantalla trae jerga de código',
+    jerga.length === 0, JSON.stringify(jerga.slice(0, 3)));
+
   const aviso = await p.textContent('#aviso-cobertura');
   chequeo('la cobertura se declara: lo que no está puede no haberse cosechado',
     /no haberse cosechado/.test(aviso), aviso.slice(0, 80));
@@ -309,7 +430,10 @@ try {
   const pie = await d.textContent('#pie');
   chequeo('el pie nombra la fuente, el lag y de dónde sale "le quedan"',
     /SEC EDGAR/.test(pie) && /2 días hábiles/.test(pie)
-    && /sharesOwnedFollowingTransaction/.test(pie) && /Información, no asesoría/.test(pie),
+    // La procedencia tiene que estar DICHA, en español: no con el nombre del
+    // campo del XML, que era jerga en pantalla.
+    && /el propio formulario 4 declara después de la operación/.test(pie)
+    && /Información, no asesoría/.test(pie),
     pie.slice(0, 90));
 
   await d.screenshot({ path: join(OUT, 'insiders-1440.png') });

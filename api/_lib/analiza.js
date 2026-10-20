@@ -81,14 +81,19 @@ export function serieDeRendimiento(velas) {
  * null y su causa. Descartarlo haría que la tasa de aciertos se calculara
  * sobre los trimestres que convienen.
  */
-export function upaRealVsEstimado(filas, { tope = 8 } = {}) {
+export function upaRealVsEstimado(filas, { tope = 8, motivoFuente = null } = {}) {
+  // LOS NOMBRES SON LOS DE `/api/earnings`, NO LOS QUE YO SUPUSE.
+  // Ese endpoint manda `period` y `eps_estimate`; esta función pedía `date` y
+  // `eps_est`, y el resultado era un bloque vacío sobre un historial completo.
+  // Se aceptan los dos nombres —no cuesta nada y hay fixtures viejos— pero el
+  // que manda es el del productor.
   const fs = (filas || [])
-    .filter((e) => e && (e.eps_actual != null || e.eps_est != null))
+    .filter((e) => e && (e.eps_actual != null || e.eps_estimate != null || e.eps_est != null))
     .map((e) => {
       const real = num(e.eps_actual);
-      const est = num(e.eps_est);
+      const est = num(e.eps_estimate != null ? e.eps_estimate : e.eps_est);
       return {
-        fecha: e.date || null,
+        fecha: e.period || e.date || null,
         trimestre: e.quarter != null && e.year != null ? `${e.year} T${e.quarter}` : null,
         real, estimado: est,
         sorpresa: real != null && est != null ? real - est : null,
@@ -107,9 +112,14 @@ export function upaRealVsEstimado(filas, { tope = 8 } = {}) {
     medidos: conSorpresa.length,
     fuente: 'finnhub:earnings',
     nota: 'la sorpresa es contra el CONSENSO de analistas, no contra el movimiento de la acción',
-    motivo: fs.length ? null : 'la fuente no devolvió trimestres con UPA',
+    // Y si no hay trimestres, se dice POR QUÉ: "la fuente no devolvió" tapa
+    // por igual un ticker sin cobertura y una llave mal leída.
+    motivo: fs.length ? null
+      : (motivoFuente || 'la fuente no devolvió trimestres con UPA para este ticker'),
   };
 }
+
+import { CAMPOS_METRIC } from './mercado-fase0.js';
 
 const CONCEPTOS_INGRESO = [
   'RevenueFromContractWithCustomerExcludingAssessedTax',
@@ -264,7 +274,11 @@ export function precioObjetivo(financialData) {
   if (medio == null && bajo == null && alto == null) {
     return {
       disponible: false,
-      motivo: 'la fuente no devolvió precio objetivo (es el caso NO-GO de la Fase 0.8: Yahoo quoteSummary pide crumb desde el servidor)',
+      // En pantalla, en castellano. "NO-GO de la Fase 0.8" y "crumb" son
+      // nuestros: nombran un documento interno y un detalle del protocolo de
+      // Yahoo. Lo que necesita saber quien lee es que el número no está y
+      // que no es un fallo suyo.
+      motivo: 'Yahoo no entregó el precio objetivo: pide una credencial que sólo le da a un navegador, no a un servidor como el nuestro',
     };
   }
   return {
@@ -304,6 +318,65 @@ export function tablaValuacion(yahoo) {
     // "0.0%", que se lee como "no paga dividendo". Es un número mal por
     // redondeo — el peor tipo, porque parece deliberado.
     { k: 'Dividendo', ...dato(v(sd, 'dividendYield'), F), formato: 'pct2' },
+  ];
+}
+
+/**
+ * LA MISMA TABLA, DESDE FINNHUB, CUANDO YAHOO NO CONTESTA.
+ *
+ * Lety, 2026-10-20: *"Yahoo `quoteSummary` da 429 … si sigue fallando, que la
+ * valuación salga de Finnhub `metric`, que ya usamos en el mapa."*
+ *
+ * Las grafías de los campos NO se adivinan acá: salen de `CAMPOS_METRIC`, en
+ * `mercado-fase0.js`, que ya es la lista candidata del proyecto —Finnhub
+ * mezcla sufijos TTM / Annual / Quarterly y no documenta cuáles trae el tier
+ * gratis— y gana la primera grafía que exista.
+ *
+ * DOS TRAMPAS DE UNIDADES, Y LAS DOS SE RESUELVEN EN LA PUERTA:
+ *
+ *   · Finnhub da la capitalización y el valor de empresa EN MILLONES. Es el
+ *     mismo tropiezo que ya costó que Apple midiera lo mismo que una small
+ *     cap en el censo del mapa, y está anotado allá.
+ *   · Finnhub da los márgenes, ROA, ROE y el dividendo EN POR CIENTO (3.1 =
+ *     3.1 %); Yahoo los da en FRACCIÓN (0.031). La pantalla multiplica por
+ *     100 porque la convención de adentro es la fracción, así que un número
+ *     de Finnhub sin convertir se pintaría 310 %.
+ *
+ * Cada fila dice que viene de Finnhub: son dos proveedores y pueden no
+ * coincidir al segundo decimal, y callar cuál se usó haría imposible
+ * explicar por qué un P/U cambió entre dos recargas.
+ */
+export function tablaValuacionFinnhub(metric) {
+  const m = (metric && metric.metric) || metric || null;
+  const F = 'finnhub:metric';
+  // La primera grafía que exista, como hace el censo.
+  const g = (clave) => {
+    if (!m) return null;
+    const fila = CAMPOS_METRIC.find((c) => c[0] === clave);
+    for (const nombre of (fila ? fila[1] : [])) {
+      const v = num(m[nombre]);
+      if (v != null) return v;
+    }
+    return null;
+  };
+  const millones = (v) => (v == null ? null : v * 1e6);
+  const deFraccion = (v) => (v == null ? null : v / 100);
+  return [
+    { k: 'Capitalización', ...dato(millones(g('cap')), F), formato: 'usd' },
+    { k: 'Valor de empresa', ...dato(millones(g('ev')), F), formato: 'usd' },
+    { k: 'P/U', ...dato(g('pe'), F), formato: 'x' },
+    { k: 'P/U adelantado', ...dato(g('pe_fwd'), F), formato: 'x' },
+    { k: 'PEG', ...dato(g('peg'), F), formato: 'x' },
+    { k: 'P/Ventas', ...dato(g('ps'), F), formato: 'x' },
+    { k: 'P/Valor en libros', ...dato(g('pb'), F), formato: 'x' },
+    { k: 'VE/Ingresos', ...dato(g('ev_rev'), F), formato: 'x' },
+    // `margen` de Finnhub es el margen NETO, no el operativo: se nombra por
+    // lo que es. Dos márgenes distintos bajo la misma etiqueta sería un
+    // número mal con cara de bueno.
+    { k: 'Margen neto', ...dato(deFraccion(g('margen')), F), formato: 'pct1' },
+    { k: 'ROA', ...dato(deFraccion(g('roa')), F), formato: 'pct1' },
+    { k: 'ROE', ...dato(deFraccion(g('roe')), F), formato: 'pct1' },
+    { k: 'Dividendo', ...dato(deFraccion(g('dividendo')), F), formato: 'pct2' },
   ];
 }
 

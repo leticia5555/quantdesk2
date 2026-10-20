@@ -81,7 +81,15 @@ export async function enProceso(handler, query = {}, { topeMs = TOPE_FUENTE_MS }
     // Sin esto el temporizador mantiene viva la función después de responder.
     if (temporizador) clearTimeout(temporizador);
   }
-  if (code !== 200) return { error: `el handler respondió ${code}` };
+  if (code !== 200) {
+    // LA CAUSA DEL HANDLER GANA SOBRE EL NÚMERO.
+    // "el handler respondió 502" es verdad y no sirve para nada: en pantalla
+    // se lee como un error nuestro, y el hecho —que Yahoo está limitando las
+    // peticiones— se perdía acá (Lety lo vio en la ficha de índice,
+    // 2026-10-20). El código viaja igual, detrás.
+    const dicho = body && typeof body.error === 'string' ? body.error : null;
+    return { error: dicho ? `${dicho} (HTTP ${code})` : `la fuente respondió HTTP ${code}`, code };
+  }
   return { json: body };
 }
 

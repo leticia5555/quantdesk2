@@ -427,7 +427,7 @@
       return;
     }
     el.innerHTML = fs.map(function(f){
-      return '<div class="fila-lado"><span class="k">' + esc(f.name || f.cik) + '</span>'
+      return '<div class="fila-lado"><span class="k">' + esc(nombreDeFondo(f)) + '</span>'
         + '<span class="v">' + fmtUsd(f.totalValue) + '</span>'
         + '<span class="f">cierre del ' + esc(f.quarterEnd || f.reportDate || '—')
         + (f.counts ? ' · ' + (f.counts.added || 0) + ' nuevas, ' + (f.counts.closed || 0) + ' cerradas' : '')
@@ -445,12 +445,14 @@
   }
 
   function pintarChip(){
+    // La misma función que el mapa. Sin `muestra`: esta pantalla enseña
+    // filings, no cierres, así que no nombra ninguna fecha de cierre ni se
+    // excusa por no tenerla.
     var el = document.getElementById('chip');
-    try{
-      var e = qdEstadoMercado('nyse', new Date());
-      el.textContent = 'NYSE/Nasdaq: ' + (e.texto || (e.abierto ? 'abierto' : 'cerrado'));
-      el.className = 'chip' + (e.abierto ? ' abierto' : '');
-    }catch(err){ el.textContent = 'sin estado de mercado'; }
+    var c = chipDeMercado('nyse', { ahora: new Date() });
+    el.textContent = c.chip;
+    el.title = c.motivo;
+    el.className = 'chip' + (c.abierto ? ' abierto' : '');
   }
 
   function pintarPie(){
@@ -461,7 +463,11 @@
       + (datos.scan ? ' · ' + datos.scan.atom_entries + ' filings en el feed, '
           + datos.scan.xml_fetched + ' documentos leídos esta corrida' : '')
       + ' · ' + (datos.lag_note || '')
-      + ' · "le quedan" sale de sharesOwnedFollowingTransaction del propio filing'
+      // El nombre del campo en el XML del Form 4 es
+      // `sharesOwnedFollowingTransaction`, y decirlo así en pantalla no
+      // informa a nadie: lo que importa es que el número sale del propio
+      // documento y no de una resta nuestra.
+      + ' · "le quedan" es la tenencia que el propio formulario 4 declara después de la operación'
       + ' · actualizado ' + hora(datos.generado_en || datos.generated_at)
       + ' · Información, no asesoría.';
   }
@@ -541,6 +547,23 @@
       }).join('') + '</tbody></table></div>';
   }
 
+  /**
+   * EL NOMBRE DEL FONDO. La llave es `fund`, no `name`.
+   *
+   * Esta página leía `f.name`, y el endpoint manda `fund` desde que existe.
+   * En pantalla salía el CIK —1067983— donde debía decir Berkshire Hathaway
+   * (Lety, 2026-10-20). Un CIK es correcto y es ilegible: identifica al fondo
+   * para la SEC, no para quien lee.
+   *
+   * La persona también viaja (`persona`: Warren Buffett) y es la mitad de lo
+   * que hace reconocible al fondo, así que se dice.
+   */
+  function nombreDeFondo(f){
+    var nom = f.fund || f.name || null;
+    if(!nom) return 'CIK ' + (f.cik || '—');
+    return f.persona ? nom + ' · ' + f.persona : nom;
+  }
+
   function pintar13f(){
     if(!datos13f) return '<div class="vacio">cargando los 13F…</div>';
     var fs = datos13f.funds || [];
@@ -549,7 +572,7 @@
     return fs.map(function(f){
       var bloques = ['added','closed','increased','reduced'];
       var nombres = { added:'Nuevas', closed:'Cerradas', increased:'Aumentadas', reduced:'Reducidas' };
-      return '<h2 style="margin-top:14px">' + esc(f.name || f.cik)
+      return '<h2 style="margin-top:14px">' + esc(nombreDeFondo(f))
         + ' <span>· cierre del ' + esc(f.quarterEnd || f.reportDate || '—')
         + ' · ' + fmtUsd(f.totalValue) + '</span></h2>'
         + '<div class="panel lado">' + bloques.map(function(b){
