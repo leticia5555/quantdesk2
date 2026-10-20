@@ -17,10 +17,12 @@
   2. CERO IA (regla 6). Las secciones salen del registro de fuentes y los
      chips de ticker de cruzar el titular contra el catálogo del mapa. No
      hay una llamada a un modelo en todo el archivo.
-  3. FOTO SÓLO SI EL FEED LA TRAJO. El encargo prohíbe scrapear `og:image`;
-     cuando no hay `media:content` ni `enclosure`, va el bloque de color con
-     el nombre de la fuente Y la razón. Si el hotlink falla al cargar, cae al
-     mismo bloque: `onerror` lo reemplaza en vivo.
+  3. UNA DESTACADA ES UNA NOTA CON FOTO. La foto la lee la cosecha de la
+     propia nota (su `og:image`, el mismo que el medio publica para que su
+     enlace se vea bien al compartirlo) y viaja con la fecha en que se leyó.
+     Hasta cuatro, de fuentes distintas; si hay menos, se muestran las que
+     haya; si no hay ninguna, la sección no aparece. NO hay bloque de
+     relleno: si la foto no carga, la tarjeta se quita.
   4. UNA SOLA PETICIÓN para abrir (regla 7). El filtrado por sección, idioma,
      fuente y búsqueda lo hace el servidor, así que la URL es el estado
      (regla 9) y lo que se pega en WhatsApp abre igual del otro lado.
@@ -139,6 +141,9 @@
      debajo del texto — que es reservar el espacio de la foto por la puerta de
      atrás, y se ve igual de roto. Un borde inferior disparejo es la forma
      honesta de decir "esta nota no trajo imagen". */
+  /* `hidden` tiene que ganarle al `display` de la rejilla: sin esto, la zona
+     de destacadas seguiría ocupando su fila aunque no tenga tarjetas. */
+  #zona-destacadas[hidden]{display:none}
   #destacadas{display:grid;grid-auto-flow:column;grid-auto-columns:76%;gap:10px;
     align-items:start;
     overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px;scrollbar-width:none}
@@ -146,11 +151,6 @@
   .dest{scroll-snap-align:start;background:var(--panel);border:1px solid var(--linea);
     border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:var(--tap)}
   .dest .foto{aspect-ratio:16/9;width:100%;object-fit:cover;display:block;background:#121a22}
-  /* El bloque de color: el nombre de la fuente sobre su propio tono. No es
-     decoración — es la declaración de que el feed no trajo foto. */
-  .dest .bloque{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
-    font-family:var(--mono);font-size:13px;letter-spacing:.5px;text-align:center;padding:8px;
-    color:#0a0a0a;font-weight:600}
   .dest .cuerpo{padding:9px 10px 10px;display:flex;flex-direction:column;gap:6px;flex:1}
   .dest .tit{font-size:14px;line-height:1.3;font-weight:600}
   .dest .meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:auto}
@@ -364,78 +364,77 @@
     }catch(e){ return iso.slice(0,16).replace('T',' '); }
   }
 
-  // ── EL BLOQUE DE COLOR, DERIVADO DEL NOMBRE DE LA FUENTE ───────────
-  // Sin foto el artboard pide "bloque de color con el nombre de la fuente".
-  // El tono sale del nombre para que una fuente se vea siempre igual, y la
-  // luminosidad se fija alta con texto oscuro encima: así el contraste del
-  // nombre contra su bloque no depende del tono que salga del hash.
-  function tonoDeFuente(nombre){
-    var h = 0, s = String(nombre || '?');
-    for(var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
-    return 'hsl(' + h + ' 42% 68%)';
-  }
-
-  function htmlDeBloque(nom){
-    return '<div class="bloque" style="background:' + tonoDeFuente(nom) + '">'
-      + esc(nom) + '</div>';
-  }
-
+  // ═══════════════════════════════════════════════════════════════
+  // SIN BLOQUE DE RELLENO. NUNCA.
+  //
+  // Acá vivía `tonoDeFuente` + `htmlDeBloque`: un rectángulo de color con el
+  // nombre del medio que ocupaba el lugar de la foto que no había. En el
+  // iPhone se veía mal (Lety, 2026-10-22), y tiene razón: un rectángulo plano
+  // al lado de tres fotos reales no se lee como "esta nota no trajo imagen",
+  // se lee como que la página está rota.
+  //
+  // Ahora la regla es dura: una destacada es una nota CON FOTO. La foto la
+  // lee la cosecha de la propia nota (`og:image`). Y si la foto que el medio
+  // declaró no carga —404, hotlink bloqueado, o tarda demasiado— la tarjeta
+  // SE QUITA. Tres tarjetas buenas se ven mejor que cuatro con un hueco.
+  // ═══════════════════════════════════════════════════════════════
   function piezaFoto(n){
     var nom = n.fuente_nombre || n.fuente_id || 'fuente';
-    // SIN FOTO NO SE RESERVA EL HUECO DE LA FOTO.
-    //
-    // Hasta el 2026-10-20 acá iba el bloque de color del artboard también
-    // cuando el feed NUNCA trajo imagen, y en producción eso se vio como
-    // cuatro cuadros vacíos arriba de la página (Lety, en Chrome contra
-    // prod). El bloque tiene sentido como RELEVO de una foto que falla —ahí
-    // el hueco ya está medido y dejarlo vacío haría saltar la tarjeta—, no
-    // como anuncio de que no hay nada: una tarjeta de puro titular ocupa lo
-    // que ocupa y se lee mejor.
     if(!n.imagen) return '';
-    // `referrerpolicy=no-referrer`: la foto se sirve desde el feed y no hace
-    // falta contarle al medio desde dónde se pidió.
-    // La caída del hotlink se ata en JS (`atarCaidaDeFotos`) y no en un
-    // `onerror=` dentro del atributo: ahí el HTML del bloque tendría que ir
-    // escapado dos veces —una para el atributo y otra para el string de JS— y
-    // una comilla mal contada deja de ser un bloque de color para convertirse
-    // en código roto dentro de una página que ya cargó.
-    // SIN `loading="lazy"`. Las cuatro destacadas son lo primero de la
-    // página, y en el teléfono van en un carrusel horizontal: tres de las
-    // cuatro nacen fuera de la ventana, así que el navegador tenía permiso
-    // para no bajarlas nunca — y una foto que no se baja no dispara `error`,
-    // o sea que el relevo del bloque tampoco entraba. Quedaban grises.
+    // `referrerpolicy=no-referrer`: la foto se sirve desde el sitio del medio
+    // y no hace falta contarle desde dónde se pidió.
+    //
+    // SIN `loading="lazy"`: son lo primero de la página y en el teléfono van
+    // en un carrusel horizontal, así que tres de las cuatro nacen fuera de la
+    // ventana. Con `lazy`, el navegador tenía permiso para no bajarlas nunca
+    // —y una foto que no se baja tampoco dispara `error`, así que ni se
+    // quitaba ni se veía—.
     return '<img class="foto" src="' + esc(n.imagen) + '" alt="" decoding="async"'
-      + ' referrerpolicy="no-referrer" data-bloque="' + esc(nom) + '">';
+      + ' referrerpolicy="no-referrer" data-fuente="' + esc(nom) + '">';
   }
 
   /**
-   * Si la foto no carga, el bloque de color la reemplaza EN VIVO.
+   * LA TARJETA CUYA FOTO NO CARGA SE QUITA.
    *
-   * Es la caída que el encargo pide ("si el hotlink falla, cae al bloque"): un
-   * ícono de imagen rota sobre una tarjeta de noticias se lee como que la
-   * página está rota, no como que el medio no deja traer su foto.
+   * Tres caminos, porque un hotlink falla de tres formas distintas:
+   *   · `error`: el servidor contestó 404 o 403;
+   *   · ya falló antes de que este código corriera (`complete` con ancho 0),
+   *     que es lo normal cuando la imagen está en caché como rota;
+   *   · no contesta nunca. Hay medios cuyo servidor deja la petición colgada,
+   *     y ahí `error` no llega: por eso el plazo.
    *
-   * Se ata después de cada pintado y sobre las imágenes que todavía no
-   * fallaron. `complete && naturalWidth === 0` cubre la que falló ANTES de que
-   * este código corriera, que es lo normal con una imagen en caché.
+   * Al quitar una tarjeta se repinta la nota de arriba, que dice cuántas hay:
+   * "4 destacadas" con tres en pantalla sería un conteo que no se sostiene.
    */
   function atarCaidaDeFotos(raiz){
     [].forEach.call((raiz || document).querySelectorAll('img.foto'), function(img){
       if(img.dataset.atado) return;
       img.dataset.atado = '1';
-      function caer(){
-        if(!img.parentNode) return;
-        img.outerHTML = htmlDeBloque(img.dataset.bloque || 'fuente');
+      function quitar(){
+        var tarjeta = img.closest('.dest');
+        if(tarjeta && tarjeta.parentNode) tarjeta.remove();
+        notaDeDestacadas();
       }
-      img.addEventListener('error', caer);
-      if(img.complete && img.naturalWidth === 0) return caer();
-      // Y POR TIEMPO. Un hotlink protegido no siempre contesta un error: hay
-      // medios cuyo servidor deja la petición colgada, y ahí `error` no
-      // llega nunca. Sin este plazo el cuadro se queda gris para siempre, que
-      // es exactamente lo que se vio en producción.
-      var plazo = setTimeout(function(){ if(!img.complete || img.naturalWidth === 0) caer(); }, 4000);
+      img.addEventListener('error', quitar);
+      if(img.complete && img.naturalWidth === 0) return quitar();
+      var plazo = setTimeout(function(){
+        if(!img.complete || img.naturalWidth === 0) quitar();
+      }, 5000);
       img.addEventListener('load', function(){ clearTimeout(plazo); });
     });
+  }
+
+  /** La nota de arriba cuenta lo que HAY en pantalla, no lo que llegó. */
+  function notaDeDestacadas(){
+    var zona = document.getElementById('zona-destacadas');
+    var nota = document.getElementById('dest-nota');
+    var n = document.querySelectorAll('#destacadas .dest').length;
+    // Sin ninguna, la sección entera desaparece: una franja vacía no es un
+    // hueco que haya que llenar, es la respuesta.
+    zona.hidden = n === 0;
+    if(!n){ nota.textContent = ''; return; }
+    nota.textContent = '· ' + n + (n === 1 ? ' nota con foto propia' : ' notas con foto propia')
+      + ' · de ' + n + (n === 1 ? ' fuente' : ' fuentes distintas');
   }
 
   function chipsDeTicker(n){
@@ -465,22 +464,16 @@
 
   function pintarDestacadas(){
     var el = document.getElementById('destacadas');
-    var nota = document.getElementById('dest-nota');
-    var ds = (datos && datos.destacadas) || [];
+    var zona = document.getElementById('zona-destacadas');
+    var ds = ((datos && datos.destacadas) || []).filter(function(n){ return n && n.imagen; });
     if(!ds.length){
-      el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>';
-      nota.textContent = '';
+      // La sección no aparece. Lo que pasó se dice en el pie, no con una
+      // franja vacía que ocupa el lugar de las fotos que no hay.
+      el.innerHTML = '';
+      zona.hidden = true;
       return;
     }
-    var sinFoto = ds.filter(function(n){ return !n.imagen; }).length;
-    var partes = [];
-    if(datos.destacadas_fuentes) partes.push(datos.destacadas_fuentes === 1
-      ? 'de 1 fuente' : 'de ' + datos.destacadas_fuentes + ' fuentes distintas');
-    if(sinFoto) partes.push(sinFoto + ' sin foto: ' + (datos.motivo_sin_foto || 'el feed no la trajo'));
-    // Si hubo que repetir medio, se dice. Cuatro tarjetas del mismo sitio sin
-    // avisar se leen como que eso es lo que pasó en el mercado.
-    if(datos.motivo_repetidas) partes.push(datos.motivo_repetidas);
-    nota.textContent = partes.length ? '· ' + partes.join(' · ') : '';
+    zona.hidden = false;
     el.innerHTML = ds.map(function(n){
       return '<a class="dest" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
         + piezaFoto(n)
@@ -488,6 +481,7 @@
         + '<div class="meta">' + metaDeNota(n) + '</div></div></a>';
     }).join('');
     atarCaidaDeFotos(el);
+    notaDeDestacadas();
   }
 
   function filaDeNota(n){
@@ -565,6 +559,7 @@
     }).join('');
     nav.innerHTML = html;
   }
+
 
   function pintarFuentes(){
     var el = document.getElementById('fuentes');
