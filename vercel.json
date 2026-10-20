@@ -113,6 +113,10 @@
       "destination": "/indice.html"
     },
     {
+      "source": "/mercado/insiders",
+      "destination": "/insiders.html"
+    },
+    {
       "source": "/hoy",
       "destination": "/hoy.html"
     },
