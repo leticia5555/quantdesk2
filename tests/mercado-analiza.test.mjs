@@ -188,7 +188,12 @@ test('las recomendaciones van en CONTEOS, no en una nota inventada', () => {
 test('el precio objetivo ausente va declarado, no con el precio actual', () => {
   const r = precioObjetivo({});
   assert.equal(r.disponible, false);
-  assert.match(r.motivo, /Fase 0\.8/);
+  // La causa, DICHA para quien lee la pantalla. Antes decía "el caso NO-GO
+  // de la Fase 0.8", que nombra un documento interno nuestro, y "crumb", que
+  // es un detalle del protocolo de Yahoo: jerga en pantalla (Lety,
+  // 2026-10-20). El hecho es el mismo; ahora se entiende.
+  assert.match(r.motivo, /credencial que sólo le da a un navegador/);
+  assert.doesNotMatch(r.motivo, /NO-GO|crumb|Fase 0\.\d/);
 });
 
 test('y cuando la fuente SÍ lo trae, viene con sus tres niveles y su fuente', () => {
