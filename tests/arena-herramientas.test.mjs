@@ -139,7 +139,9 @@ console.log('\n── una herramienta que revienta devuelve un resultado legible
     deps: { sectorOf, getNews: async () => { throw new Error('HTTP 500'); } },
   });
   const r = await ex.call('noticias', { ticker: 'NVDA' });
-  ok(/No se pudieron traer noticias/.test(r.text) && /500/.test(r.text), 'el error viaja como resultado', r.text.slice(0, 80));
+  // Con Alpaca caída se consultan las otras dos; acá tampoco responden (sin
+  // key de Finnhub, sin DB), así que es una falla de TODAS: `error`, no cero.
+  ok(/ninguna fuente de noticias respondió/.test(r.text) && /500/.test(r.text) && r.error === true, 'el error viaja como resultado', r.text.slice(0, 80));
   ok(/no significa que no haya noticias/.test(r.text),
     'aclarando que es una falla nuestra y no una ausencia de noticias — el modelo no puede distinguirlas solo');
 }

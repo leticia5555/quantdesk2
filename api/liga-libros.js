@@ -119,6 +119,17 @@ export function resultadoDePaso(s) {
   // Corrió bien y no tenía el dato: no es falla de la herramienta ni un cero.
   if (Array.isArray(s.datos_faltantes) && s.datos_faltantes.length) return `sin dato: ${s.datos_faltantes.join(', ')}`;
   if (s.sin_resultado || s.rows == null) return 'sin resultado';
+  // noticias: el cero dice CUÁL cero es, y lo que trajo dice de qué fuente.
+  if (s.tool === 'noticias' && Array.isArray(s.fuentes)) {
+    const caidas = s.fuentes.filter((f) => f.error).map((f) => f.id);
+    if (s.rows === 0) {
+      return s.cobertura === 'parcial'
+        ? `0 titulares (fuentes con falla: ${caidas.join(', ')})`
+        : '0 titulares (sin cobertura en nuestras fuentes)';
+    }
+    const con = s.fuentes.filter((f) => !f.error && f.n > 0).map((f) => f.id);
+    return plural(s.rows, s.tool) + (con.length ? ` · ${con.join('+')}` : '') + (s.truncated ? ' (truncado)' : '');
+  }
   return plural(s.rows, s.tool) + (s.truncated ? ' (truncado)' : '');
 }
 
@@ -141,6 +152,9 @@ export function secuenciaPublicable(ctx) {
     ms: s.ms ?? null,
     ...(s.refused ? { rechazada: s.refused } : {}),
     ...(Array.isArray(s.datos_faltantes) && s.datos_faltantes.length ? { datos_faltantes: s.datos_faltantes } : {}),
+    ...(Array.isArray(s.fuentes) ? { fuentes: s.fuentes } : {}),
+    ...(s.cobertura ? { cobertura: s.cobertura } : {}),
+    ...(Array.isArray(s.mapeo) && s.mapeo.length ? { mapeo: s.mapeo } : {}),
     // Antes el `error` del ejecutor se quedaba en el journal y acá salía como
     // "0 filas": una herramienta caída se leía igual que un filtro vacío. Un
     // paso ejecutado sin conteo (`rows: null`) también es una falla.
