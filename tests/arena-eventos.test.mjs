@@ -135,7 +135,9 @@ console.log('\n── la caché por día no guarda la falla ──');
 {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../api/_lib/arena-tools.js', import.meta.url), 'utf8');
-  ok(/if \(cache && !out\.error\) await writeDayCache\(key, out, now\)/.test(src),
+  // Desde #302 la condición suma `no_cachear` (429 de Finnhub) y la cobertura
+  // parcial de noticias; lo que importa acá sigue siendo `!out.error`.
+  ok(/if \(cache && !out\.error[^)]*\) await writeDayCache\(key, out, now\)/.test(src),
     'el ejecutor solo cachea lo que no es error: "sin datos hoy" se reintenta en la próxima llamada');
 }
 
