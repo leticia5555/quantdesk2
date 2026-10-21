@@ -271,82 +271,46 @@ ok(/vacio\.motivo/.test(app), 'el estado vacío muestra el MOTIVO que dio el end
 
 
 // ═══════════════════════════════════════════════════════════════
-// LINT del BLOQUE DE DESACUERDO
+// LA ALERTA DE DESACUERDO NO EXISTE — y no vuelve por la puerta de atrás
 //
-// El riesgo de este bloque no es un bug de render: es que afirme que el
-// mercado sabe algo. Un hueco de 70 puntos es más fácil de producir con un
-// mercado mal emparejado que con información real — la Fase 0 se corrigió
-// cuatro veces por eso. Y es que la brecha convierta la tasa histórica en el
-// pronóstico de QuantDesk por la puerta de atrás: restarle un precio a un
-// conteo solo se puede escribir nombrando a cada uno por lo que es.
+// Decisión de Lety tras la alerta falsa de META (GAAP contra ajustado, en un
+// libro vacío): QuantDesk NO juzga el desacuerdo. La tarjeta pone los números
+// lado a lado, cada uno con lo que mide, y el usuario compara. Este lint falla
+// si alguien vuelve a escribir la alerta, la brecha o "dónde mirar", en la
+// pantalla o en el endpoint. Volver a tenerla es una decisión, no un descuido:
+// se borra este bloque a propósito, en el mismo commit.
 // ═══════════════════════════════════════════════════════════════
 
-const iDes = app.indexOf('const EB_DONDE_MIRAR_EN');
-const des = app.slice(iDes, app.indexOf('// Días hasta la fecha', iDes));
-ok(iDes > 0, 'el bloque de desacuerdo existe en la pantalla');
+const vistaEb = app.slice(app.indexOf('function renderEbLive('), app.indexOf('\nfunction ebDiasHasta'));
+ok(vistaEb.length > 1000, 'se recortó la vista EARNINGS en vivo de app.html', vistaEb.length);
+const SIN_ALERTA = [
+  { nombre: 'el título de la alerta', re: /DESACUERDO ·|DISAGREEMENT ·|⚠ DESACUERDO|⚠ DISAGREEMENT/ },
+  { nombre: 'la brecha en puntos', re: /brecha de|-point gap|gap_puntos/ },
+  { nombre: '"dónde mirar"', re: /Dónde mirar|Where to look|donde_mirar/ },
+  { nombre: 'el dictamen del endpoint', re: /clasificacion\s*===|\.desacuerdo\b|desacuerdos\b/ },
+];
+for (const p of SIN_ALERTA) {
+  ok(!p.re.test(vistaEb), `la tarjeta NO tiene ${p.nombre}`, (p.re.exec(vistaEb) || [])[0]);
+}
+ok(!/ebDesacuerdoBloque|EB_DONDE_MIRAR_EN|EB_LECTURA_EN/.test(app), 'ni el bloque ni sus traducciones quedan en app.html');
 
-// 1. NO puede afirmar que el mercado esté informado.
-ok(!/Algo que el historial no contiene está moviendo el precio/i.test(des),
-  'el bloque NO afirma "algo que el historial no contiene está moviendo el precio"');
-ok(!/el mercado sabe|the market knows/i.test(des), 'ni "el mercado sabe"');
-ok(/EB_LECTURA_EN\[d\.lectura_codigo\]/.test(des),
-  'la lectura se TRADUCE por código del endpoint, no se arma acá');
-ok(/instrumento_primero/.test(des) && /ambas_causas/.test(des),
-  'y las dos lecturas posibles están escritas, las dos');
-ok(/asking something ELSE/.test(des),
-  'la versión en inglés también nombra la causa que hay que descartar primero');
+const lib = readFileSync(new URL('../api/_lib/earnings-beat.js', import.meta.url), 'utf8');
+for (const [nombre, src] of [['api/earnings-beat.js', api], ['api/_lib/earnings-beat.js', lib]]) {
+  ok(!/evaluaDesacuerdo|CRITERIOS_DESACUERDO|gap_puntos|donde_mirar|spread_max_puntos|instrumento_primero/.test(src),
+    `${nombre}: sin cálculo de brecha, sin dictamen, sin umbral de spread que condicione`,
+    (/evaluaDesacuerdo|CRITERIOS_DESACUERDO|gap_puntos|donde_mirar|spread_max_puntos|instrumento_primero/.exec(src) || [])[0]);
+}
+const libMod = await import('../api/_lib/earnings-beat.js');
+ok(libMod.evaluaDesacuerdo === undefined && libMod.CRITERIOS_DESACUERDO === undefined,
+  'y el lib ya no exporta evaluaDesacuerdo ni CRITERIOS_DESACUERDO');
 
-// 2. La brecha nombra a cada número por lo que es.
-ok(/tasa histórica/.test(des) && /historical rate/.test(des), 'la tasa histórica se llama tasa histórica');
-ok(/trimestres\)/.test(des) && /quarters\)/.test(des),
-  'y va con el CONTEO al lado ("15 de 20 trimestres"), no sola');
-ok(/CONTEO de trimestres pasados: no es predicción/.test(des)
-  && /COUNT of past quarters: it is not a forecast/.test(des),
-  'la frase de que el conteo no es predicción va en las DOS lenguas, dentro del bloque');
-// Y usa LA frase sancionada del proyecto ("no es predicción"), que es la que el
-// lint de arriba aparta. Una variante nueva obligaría a ensanchar el lint.
-ok(/no es predicci/.test(des), 'con la redacción que el lint de honestidad ya reconoce');
-ok(!/probabilidad de|probability of/i.test(des), 'en ninguna parte se dice "probabilidad de"');
-ok(!/QuantDesk dice|QuantDesk says/i.test(des), 'y la tasa nunca se atribuye a QuantDesk como opinión');
-
-// 3. No es señal.
-ok(/No es señal de compra ni de venta/.test(des) && /Not a buy or sell signal/.test(des),
-  '"no es señal de compra ni de venta", en las dos lenguas');
-
-// 4. Solo se dibuja si el ENDPOINT lo dictaminó.
-ok(/d\.clasificacion===.desacuerdo./.test(des),
-  'el bloque se pinta solo cuando el endpoint clasificó "desacuerdo"');
-ok(/if\(!en\) return ''/.test(des),
-  'un código que la pantalla no conoce NO se escribe: mejor una pista menos que una frase inventada');
-ok(/varios_umbrales/.test(des) && /different thresholds/.test(des),
-  'varios umbrales sobre el mismo reporte se avisan, en las dos lenguas');
-
-// 5. El endpoint decide el ORDEN de dónde mirar, no la pantalla.
-ok(!/sort\(|reverse\(/.test(des), 'la pantalla no reordena las pistas: el orden lo manda el endpoint');
-ok(/\(d\.donde_mirar\|\|\[\]\)\.map/.test(des), 'las recorre tal como vinieron');
-
-// 6. En el endpoint: el desacuerdo se mide POR MERCADO.
-ok(/desacuerdo: evaluaDesacuerdo\(\{/.test(api), 'el endpoint calcula el desacuerdo por mercado');
-ok(/consenso_declarado: m\.consenso_eps/.test(api),
-  'y le pasa el umbral DE ESE MERCADO, no uno de la empresa');
-ok(/instrumento_obligatorio/.test(api),
-  'con varios mercados abiertos el instrumento queda marcado como obligatorio');
-ok(/const hoy = new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/.test(api),
-  'el día se calcula una vez en el endpoint y entra por parámetro');
-
-// 7. El diag de desacuerdos: la fila en la mano, y la MISMA fuente que la tarjeta.
-const iDiag = api.indexOf('async function diagDesacuerdos');
-const diag = api.slice(iDiag, api.indexOf('// ── Diagnóstico por símbolo', iDiag));
-ok(iDiag > 0, 'el diag de desacuerdos existe');
-ok(/const live = await vistaLive\(/.test(diag),
-  'corre la MISMA vista que la pantalla: si dijera otros números, no serviría de evidencia');
-ok(/pregunta: m\.titulo/.test(diag) && !/slice\(0, ?90\)/.test(diag),
-  'imprime la pregunta LITERAL, sin recortar: recortada no se ve si pide otro umbral');
-ok(/umbral_declarado/.test(diag) && /nivel_eps_reciente/.test(diag) && /desvio_umbral_pct/.test(diag),
-  'y los tres números con los que se decide si el hueco significa algo');
-ok(/No es predicción|no es predicción|No es señal de compra ni de venta/.test(diag),
-  'el diag también lleva las advertencias: se lee suelto, fuera de la pantalla');
-ok(/criterios: CRITERIOS_DESACUERDO/.test(diag), 'y publica los umbrales congelados con los que dictaminó');
+// Lo que SÍ está: cada número con lo que mide.
+ok(/'Resuelve sobre '/.test(card) && /'Resolves on '/.test(card), 'el mercado con su métrica y su umbral ("Resuelve sobre GAAP EPS de $6.31")');
+ok(/'Métrica del mercado: no determinada'/.test(card), 'y si no se pudo leer, lo dice así');
+ok(/'Consenso de analistas: /.test(card) && /métrica no declarada por la fuente/.test(card), 'el consenso de analistas, con su fuente y su métrica dicha');
+ok(/'contando EPS ajustado \(Alpha Vantage\)'/.test(card), 'el track record etiquetado "contando EPS ajustado (Alpha Vantage)"');
+ok(/mv\.estado==='distinta'/.test(card) && /the track record counts adjusted EPS/.test(card),
+  'la línea neutral cuando el mercado mide otra cosa');
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');
 process.exit(failures ? 1 : 0);

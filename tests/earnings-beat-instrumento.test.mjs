@@ -1,29 +1,26 @@
 // ═══════════════════════════════════════════════════════════════
-// Tests del INSTRUMENTO de la alerta de desacuerdo: la métrica que pide el
-// mercado y la profundidad de su libro.
+// Tests del INSTRUMENTO de la tarjeta en vivo: qué métrica pide el mercado,
+// el libro del Yes y el consenso — los números que la tarjeta pone LADO A
+// LADO, cada uno con lo que mide.
 //
 // LA CICATRIZ: META, mercado abierto que resolvía el 2026-10-21
 // (meta-quarterly-earnings-gaap-eps-10-21-2026-6pt31). La tarjeta dijo
-// "DESACUERDO · 68 puntos": Polymarket 7% contra un histórico de 15 de 20.
-// Dos causas, y ninguna era información:
+// "DESACUERDO · 68 puntos" y era falsa: el mercado resuelve sobre GAAP EPS, el
+// histórico cuenta EPS AJUSTADO de Alpha Vantage, y el libro estaba vacío
+// (Yes a 28¢, No a 96.3¢). Lety decidió que QuantDesk NO juzga el desacuerdo:
+// la alerta se retiró entera, y tests/earnings-beat-live.test.mjs vigila que
+// no vuelva. Lo que queda es decir bien qué mide cada número.
 //
-//   1. MÉTRICA DISTINTA. El mercado resuelve sobre GAAP EPS; el histórico
-//      cuenta el EPS AJUSTADO de Alpha Vantage. En 2025-10-29 el histórico
-//      marca ✓ (6.71 → 7.25) y el GAAP fue $1.05 por un cargo fiscal único.
-//   2. LIBRO VACÍO. $4.2K de volumen, $1.3K de liquidez, Yes a 28¢ y No a
-//      96.3¢. La tarjeta mostró 7% (outcomePrices), Polymarket 16% (mid).
-//
-// La aserción central — y la que tiene que ponerse ROJA si alguien la
-// reactiva — es la sección 4: la alerta de desacuerdo NO puede dispararse si
-// la métrica no empata o si no se pudo determinar. Ningún override la apaga.
+// Y el arreglo del lector: 20 de 30 mercados salían "conflicto" por una
+// cláusula condicional de respaldo («If … without a non-GAAP EPS, then the
+// market will resolve according to the GAAP EPS listed in…»).
 //
 // Correr con `node tests/earnings-beat-instrumento.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
 import { readFileSync } from 'node:fs';
 import {
-  extraeMetricaMercado, comparaMetricas, libroDelYes, umbralDelSlug, METRICA_HISTORICO,
-  evaluaDesacuerdo, CRITERIOS_DESACUERDO,
+  extraeMetricaMercado, comparaMetricas, libroDelYes, umbralDelSlug, METRICA_HISTORICO, sinCondicionales,
 } from '../api/_lib/earnings-beat.js';
 
 let failures = 0;
@@ -72,12 +69,48 @@ ok(/no el GAAP/.test(METRICA_HISTORICO.nota), 'con la nota de que no es GAAP');
 ok(Object.isFrozen(METRICA_HISTORICO), 'congelada: nadie la "corrige" en runtime para que empate');
 
 ok(comparaMetricas(meta).estado === 'distinta' && comparaMetricas(meta).empata === false, 'GAAP vs ajustado: distinta');
-ok(/el mercado pide GAAP EPS, el histórico cuenta EPS ajustado — no son comparables/.test(comparaMetricas(meta).aviso),
-  'y el aviso nombra las dos métricas', comparaMetricas(meta).aviso);
-ok(comparaMetricas(nada).estado === 'indeterminada' && /No se pudo leer qué EPS pide el mercado/.test(comparaMetricas(nada).aviso),
-  'indeterminada: dice que no se sabe');
-ok(comparaMetricas(null).estado === 'indeterminada', 'sin métrica → indeterminada, nunca "empata"');
-ok(comparaMetricas({ metrica: 'eps_ajustado' }).empata === true, 'ajustado vs ajustado: empata');
+ok(comparaMetricas(meta).nota === 'El mercado mide GAAP EPS, el histórico cuenta EPS ajustado.',
+  'la nota es NEUTRAL: dice qué mide cada uno', comparaMetricas(meta).nota);
+ok(comparaMetricas(nada).nota === 'Métrica del mercado: no determinada.', 'no determinada: lo dice así, sin inventar', comparaMetricas(nada).nota);
+for (const c of [meta, nada]) {
+  const n = comparaMetricas(c).nota;
+  ok(!/no son comparables|advertencia|⚠|no se comparan|alerta/i.test(n), 'la nota no es una advertencia ni un bloqueo', n);
+}
+ok(comparaMetricas(null).estado === 'indeterminada', 'sin métrica → no determinada, nunca "empata"');
+ok(comparaMetricas({ metrica: 'eps_ajustado' }).empata === true && comparaMetricas({ metrica: 'eps_ajustado' }).nota === null,
+  'ajustado vs ajustado: empata, y no hay nada que decir');
+
+// ═══════════════════ 1b. las cláusulas CONDICIONALES de respaldo ═══════════════════
+console.log('el lector ignora las cláusulas condicionales de respaldo');
+
+// La forma de los 20 mercados que salían "conflicto": slug nongaap-eps, la
+// oración principal sin métrica, y el respaldo condicional nombrando GAAP.
+const DESC_RESPALDO = 'This market will resolve to "Yes" if Apple Inc. (AAPL) reports quarterly earnings per share (EPS) greater than $1.60 for Q4 2026. '
+  + 'If Apple releases earnings without a non-GAAP EPS, then the market will resolve according to the GAAP EPS listed in the official earnings release. '
+  + 'The resolution source will be the company\'s official earnings documentation.';
+const respaldo = { slug: 'aapl-quarterly-earnings-nongaap-eps-10-30-2026-1pt60', pregunta: 'Will Apple (AAPL) beat quarterly earnings?', descripcion: DESC_RESPALDO };
+const viejo = extraeMetricaMercado(respaldo, { ignorarCondicionales: false });
+const nuevo = extraeMetricaMercado(respaldo);
+ok(viejo.metrica === 'indeterminada' && viejo.motivo === 'conflicto', 'el lector VIEJO lo leía como conflicto (el bug)', `${viejo.metrica}/${viejo.motivo}`);
+ok(/the market will resolve according to the GAAP EPS listed in/.test(viejo.por_fuente.descripcion.fragmento || ''),
+  'con el MISMO fragmento que salió en los 20', viejo.por_fuente.descripcion.fragmento);
+ok(nuevo.metrica === 'eps_ajustado', 'el lector nuevo: ajustado, como dice el slug', `${nuevo.metrica}/${nuevo.motivo}`);
+ok(nuevo.por_fuente.descripcion.ignoradas.length === 1 && /^If Apple releases earnings without a non-GAAP EPS/.test(nuevo.por_fuente.descripcion.ignoradas[0]),
+  'y dice QUÉ cláusula dejó de leer', JSON.stringify(nuevo.por_fuente.descripcion.ignoradas));
+ok(!/\$1\.6\b|1\.60 for/.test(nuevo.por_fuente.descripcion.ignoradas.join(' ')), 'el "$1.60" no corta la oración: el punto decimal no es fin de oración');
+
+// La oración principal NUNCA se descarta, aunque empiece con "If".
+ok(extraeMetricaMercado({ slug: 'x', descripcion: 'If Meta reports GAAP EPS greater than $6.31, the market will resolve to "Yes". Otherwise it resolves No.' }).metrica === 'eps_gaap',
+  'una principal que empieza con "If" sigue contando');
+ok(extraeMetricaMercado({ slug: 'x', descripcion: 'This market will resolve to “Yes” if X reports non-GAAP EPS above $1.00; if X does not report non-GAAP EPS, GAAP EPS will be used.' }).metrica === 'eps_ajustado',
+  'un respaldo después de ";" también es una cláusula condicional');
+// Lo que NO encaja en el patrón se lee como siempre: si choca, sigue sin determinarse.
+const noEncaja = extraeMetricaMercado({ slug: 'x-quarterly-earnings-nongaap-eps-1pt00',
+  descripcion: 'This market will resolve to "Yes" if X reports EPS above $1.00, using GAAP EPS where non-GAAP EPS is unavailable.' });
+ok(noEncaja.metrica === 'indeterminada' && noEncaja.motivo === 'conflicto',
+  'un respaldo DENTRO de la principal (sin oración condicional aparte) no se adivina: sigue no determinada', `${noEncaja.metrica}/${noEncaja.motivo}`);
+ok(sinCondicionales('Unless X reports, GAAP applies. Main text.').ignoradas.length === 1, '"Unless…" también es condicional');
+ok(sinCondicionales('').ignoradas.length === 0, 'texto vacío: nada que ignorar');
 
 // ═══════════════════ 2. el libro del Yes ═══════════════════
 console.log('libroDelYes: bid, ask, mid y spread');
@@ -97,111 +130,30 @@ ok(libroDelYes({ bids: [{ price: '0.3', size: '1' }], asks: [] }).estado === 'si
 ok(libroDelYes({ bids: [{ price: '0.6', size: '1' }], asks: [{ price: '0.4', size: '1' }] }).estado === 'cruzado', 'libro cruzado: se dice, no se promedia');
 ok(libroDelYes(null).mid === null, 'null → sin mid, no crashea');
 
-// ═══════════════════ 3. el umbral de spread: SIN congelar ═══════════════════
-console.log('el umbral de spread se fija CON DATOS, no antes');
-
-// Cuando se elija con el censo (?vista=live&diag=instrumento), este test se
-// cambia JUNTO con el valor, en el mismo commit, citando la distribución.
-ok(CRITERIOS_DESACUERDO.spread_max_puntos === null,
-  'spread_max_puntos sigue en null: el censo de spreads va ANTES de fijarlo', CRITERIOS_DESACUERDO.spread_max_puntos);
-
-// ═══════════════════ 4. LA ALERTA NO PUEDE DISPARAR SIN MÉTRICA QUE EMPATE ═══════════════════
-console.log('LA ALERTA DE DESACUERDO no dispara si la métrica no empata o no se sabe');
-
-const hist = {
-  sin_datos: false,
-  ventana: { trimestres: 20, beats: 15, total: 20, pct: 75 },
-  ultimos: [6.71, 6.30, 5.25, 4.70].map((e, i) => ({ fecha: `2026-0${i + 1}-15`, estimado: e, reportado: e + 0.4, beat: true })),
-};
-const libroAngosto = libroDelYes({ bids: [{ price: '0.06', size: '900' }], asks: [{ price: '0.08', size: '900' }] });
-// Criterios lo más PERMISIVOS posible: cualquier spread pasa. Si aun así la
-// alerta no dispara, es por la métrica y solo por la métrica.
-const PERMISIVO = { ...CRITERIOS_DESACUERDO, spread_max_puntos: 100 };
-const caso = (metrica_mercado, extra = {}) => evaluaDesacuerdo({
-  historico: hist, precio_mercado: 0.07, consenso_declarado: 6.31,
-  fecha_reporte: '2026-10-21', hoy: '2026-10-20', libro: libroAngosto, criterios: PERMISIVO,
-  metrica_mercado, ...extra,
-});
-
-// Control: con la métrica que EMPATA, este mismo caso SÍ es un desacuerdo. Sin
-// esto, el resto de la sección podría pasar por cualquier otro motivo.
-const control = caso({ metrica: 'eps_ajustado' });
-ok(control.clasificacion === 'desacuerdo' && control.gap_puntos === -68,
-  'CONTROL: con métrica que empata, el caso META da desacuerdo de 68 puntos', `${control.clasificacion} ${control.gap_puntos}`);
-
-const noEmpatan = {
-  'GAAP (el caso META)': meta,
-  'indeterminada por conflicto': choque,
-  'indeterminada sin mención': nada,
-  'métrica null': null,
-  'métrica undefined': undefined,
-  'objeto vacío': {},
-  'código desconocido': { metrica: 'ebitda' },
-};
-for (const [nombre, mm] of Object.entries(noEmpatan)) {
-  const r = caso(mm);
-  ok(r.clasificacion !== 'desacuerdo', `${nombre}: la alerta de desacuerdo NO dispara`, r.clasificacion);
-  ok(r.clasificacion !== 'coincide', `${nombre}: y tampoco se afirma que "coincide"`, r.clasificacion);
-  ok(r.gap_puntos === null, `${nombre}: no se publica la brecha de dos métricas distintas`, r.gap_puntos);
-  ok(r.motivo === 'metrica_distinta' || r.motivo === 'metrica_indeterminada', `${nombre}: con el motivo dicho`, r.motivo);
-}
-ok(caso(meta).motivo === 'metrica_distinta', 'META: motivo métrica distinta');
-ok(caso(nada).motivo === 'metrica_indeterminada', 'sin mención: motivo métrica indeterminada');
-ok(/no son comparables/.test(caso(meta).metrica.aviso), 'y el aviso de métricas distintas viaja en la respuesta');
-// Sin pasar el parámetro en absoluto (el llamador viejo): tampoco dispara.
-const sinParam = evaluaDesacuerdo({ historico: hist, precio_mercado: 0.07, consenso_declarado: 6.31, libro: libroAngosto, criterios: PERMISIVO });
-ok(sinParam.clasificacion !== 'desacuerdo' && sinParam.motivo === 'metrica_indeterminada',
-  'un llamador que NO pasa la métrica no recupera la alerta vieja', sinParam.motivo);
-
-// Ningún criterio la apaga: el cierre de métrica no vive en `criterios`.
-for (const intento of [{ exigir_metrica: false }, { metrica: false }, { metrica_requerida: null }, { compara_metrica: false }]) {
-  const r = caso(meta, { criterios: { ...PERMISIVO, ...intento } });
-  ok(r.clasificacion !== 'desacuerdo', `override ${JSON.stringify(intento)} no reactiva la alerta`, r.clasificacion);
-}
-
-console.log('y el libro: sin libro, sin umbral o con spread ancho, tampoco');
-const conMet = (extra) => evaluaDesacuerdo({ historico: hist, precio_mercado: 0.16, consenso_declarado: 6.31,
-  fecha_reporte: '2026-10-21', hoy: '2026-10-20', metrica_mercado: { metrica: 'eps_ajustado' }, ...extra });
-ok(conMet({ libro: libroAngosto }).motivo === 'umbral_spread_sin_congelar',
-  'con el umbral congelado en null, la alerta no dispara en NINGÚN mercado', conMet({ libro: libroAngosto }).motivo);
-ok(conMet({ libro: libroMeta, criterios: { ...CRITERIOS_DESACUERDO, spread_max_puntos: 10 } }).motivo === 'spread_ancho',
-  'spread de 24.3 contra un umbral de 10: spread ancho, no dispara');
-ok(conMet({ libro: null, criterios: PERMISIVO }).motivo === 'sin_libro', 'sin libro: no dispara');
-ok(conMet({ libro: libroDelYes({ bids: [], asks: [] }), criterios: PERMISIVO }).motivo === 'sin_libro', 'libro vacío: no dispara');
-
-// ═══════════════════ 5. lints de fuente ═══════════════════
-console.log('lints: el cierre de métrica está ANTES de cualquier dictamen');
-
-const lib = readFileSync(new URL('../api/_lib/earnings-beat.js', import.meta.url), 'utf8');
-const cuerpo = lib.slice(lib.indexOf('function evaluaDesacuerdo'), lib.indexOf('function dondeMirarInstrumento'));
-const iCierre = cuerpo.indexOf('if (!metrica.empata)');
-ok(iCierre > 0, 'evaluaDesacuerdo tiene el cierre de métrica');
-ok(iCierre < cuerpo.indexOf("clasificacion: 'desacuerdo'") && iCierre < cuerpo.indexOf("clasificacion: 'coincide'"),
-  'y va ANTES de cualquier "desacuerdo" o "coincide"');
-const lineaCierre = cuerpo.slice(iCierre, cuerpo.indexOf('\n', iCierre));
-ok(!/criterios/.test(lineaCierre), 'y no depende de `criterios`', lineaCierre);
-
-const api = readFileSync(new URL('../api/earnings-beat.js', import.meta.url), 'utf8');
-ok(/metrica_mercado: m\.metrica/.test(api) && /libro: m\.libro/.test(api),
-  'la vista en vivo le pasa la métrica y el libro a evaluaDesacuerdo');
+// ═══════════════════ 3. lints de fuente ═══════════════════
+console.log('lints: la tarjeta dice qué mide cada número');
 
 const app = readFileSync(new URL('../app.html', import.meta.url), 'utf8');
 const card = app.slice(app.indexOf('function ebLiveCard('), app.indexOf('\nfunction ebDiasHasta'));
-ok(/'El mercado pide: '/.test(card) && /'The market asks for: '/.test(card), 'la tarjeta dice qué métrica pide el mercado, en las dos lenguas');
-ok(/EPS AJUSTADO \(Alpha Vantage\), no GAAP/.test(card) && /ADJUSTED EPS \(Alpha Vantage\), not GAAP/.test(card),
-  'y cuál es la nuestra');
 ok(/precio_tipo==='mid'/.test(card) && /mid del libro/.test(card), 'dice de QUÉ precio se habla (mid / outcomePrices)');
 ok(/'volumen '/.test(card) && /'liquidez '/.test(card) && /spread/.test(card), 'volumen, liquidez y spread junto al precio');
-ok(/metrica_distinta/.test(card) && /no son comparables|not comparable/.test(card), 'y el aviso de métricas distintas, en vez de la alerta');
+// El track record SE QUEDA TAL CUAL (pedido explícito): titular, completo,
+// racha, sorpresa mediana y últimos trimestres.
+for (const [nombre, re] of [['titular N de M', /'Histórico: superó '/], ['histórico completo', /histórico completo: /], ['racha', /'Racha: '/],
+  ['sorpresa mediana', /'Sorpresa mediana: '/], ['últimos trimestres', /'ÚLTIMOS TRIMESTRES'/]]) {
+  ok(re.test(card), `el track record conserva: ${nombre}`);
+}
 
-// ═══════════════════ 6. de punta a punta: la vista con el caso META ═══════════════════
-console.log('vista en vivo, con Gamma + CLOB + Neon simulados');
+// ═══════════════════ 4. de punta a punta: la vista con el caso META ═══════════════════
+console.log('vista en vivo, con Gamma + CLOB + Finnhub + Neon simulados');
 
 process.env.DATABASE_URL = 'postgres://u:p@ep-x-1.us-east-2.aws.neon.tech/db';
+process.env.FINNHUB_API_KEY = 'fh-test';
 delete process.env.CRON_SECRET;
 const { default: handler } = await import('../api/earnings-beat.js');
 
 const enDias = (n) => new Date(Date.now() + n * 86400000).toISOString();
+const dia = (n) => enDias(n).slice(0, 10);
 const mercado = (o) => ({ outcomes: '["Yes","No"]', active: true, closed: false, endDate: enDias(10), ...o });
 const MERCADOS = [
   mercado({ id: 'm-meta', slug: SLUG_META, question: 'Will Meta Platforms (META) beat quarterly earnings?',
@@ -214,14 +166,27 @@ const MERCADOS = [
   mercado({ id: 'm-nvda', slug: 'nvda-beat-quarterly-earnings', question: 'Will NVIDIA (NVDA) beat quarterly earnings?',
     description: 'Resolves Yes if NVIDIA beats the consensus estimate of $1.20 EPS.',
     outcomePrices: '["0.81","0.19"]', clobTokenIds: '["tok-nvda-yes","tok-nvda-no"]', volumeNum: 90000, liquidityNum: 9000 }),
+  // La forma de los 20 "conflicto": slug nongaap + respaldo condicional GAAP.
+  mercado({ id: 'm-msft', slug: 'msft-quarterly-earnings-nongaap-eps-3pt10', question: 'Will Microsoft (MSFT) beat quarterly earnings?',
+    description: DESC_RESPALDO.replace(/Apple Inc\. \(AAPL\)|Apple/g, 'Microsoft').replace('$1.60', '$3.10'),
+    outcomePrices: '["0.70","0.30"]', clobTokenIds: '["tok-msft-yes","tok-msft-no"]', volumeNum: 120000, liquidityNum: 15000 }),
 ];
 const LIBROS = {
   'tok-meta-yes': { bids: [{ price: '0.037', size: '40' }], asks: [{ price: '0.28', size: '12' }] },
   'tok-aapl-yes': { bids: [{ price: '0.55', size: '800' }], asks: [{ price: '0.57', size: '700' }] },
-  // NVDA: el CLOB falla. Se dice, y la alerta no dispara.
+  'tok-msft-yes': { bids: [{ price: '0.69', size: '300' }], asks: [{ price: '0.71', size: '300' }] },
+  // NVDA: el CLOB falla. Se dice.
 };
+// Calendario de Finnhub: META con estimado, AAPL con la fila pero sin
+// estimado, MSFT con estimado, NVDA sin fila.
+const CALENDARIO = [
+  { symbol: 'META', date: dia(10), epsEstimate: 6.71, quarter: 3, year: 2026 },
+  { symbol: 'AAPL', date: dia(11), epsEstimate: null, quarter: 4, year: 2026 },
+  { symbol: 'MSFT', date: dia(9), epsEstimate: 3.12, quarter: 1, year: 2027 },
+  { symbol: 'META', date: dia(100), epsEstimate: 7.5 },   // otro trimestre: fuera de tolerancia
+];
 const historia = [];
-for (const s of ['META', 'AAPL', 'NVDA']) {
+for (const s of ['META', 'AAPL', 'NVDA', 'MSFT']) {
   for (let i = 0; i < 20; i++) {
     const anio = 2026 - Math.floor(i / 4);
     const mes = String(12 - (i % 4) * 3).padStart(2, '0');
@@ -232,16 +197,20 @@ for (const s of ['META', 'AAPL', 'NVDA']) {
 const NUM = 1700, TXT = 25;
 const CAMPOS = [['symbol', TXT], ['reported_date', TXT], ['reported_eps', NUM], ['estimated_eps', NUM], ['surprise_pct', NUM]];
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-let pedidosLibro = 0;
+let pedidosFinnhub = 0;
 global.fetch = async (url, opts) => {
   const u = new URL(String(url));
   if (u.hostname === 'gamma-api.polymarket.com' && u.pathname === '/public-search') {
     return json({ events: [{ slug: 'earnings', markets: MERCADOS }] });
   }
   if (u.hostname === 'clob.polymarket.com' && u.pathname === '/book') {
-    pedidosLibro++;
     const b = LIBROS[u.searchParams.get('token_id')];
     return b ? json({ market: 'x', asset_id: u.searchParams.get('token_id'), ...b }) : json({ error: 'boom' }, 500);
+  }
+  if (u.hostname === 'finnhub.io' && u.pathname === '/api/v1/calendar/earnings') {
+    pedidosFinnhub++;
+    const desde = u.searchParams.get('from'), hasta = u.searchParams.get('to');
+    return json({ earningsCalendar: CALENDARIO.filter((f) => f.date >= desde && f.date <= hasta) });
   }
   if (String(url).includes('/sql')) {
     const body = JSON.parse(opts.body);
@@ -259,50 +228,89 @@ function mockRes() {
     setHeader(k, v) { this.headers[k] = v; }, status(c) { this.code = c; return this; },
     json(o) { this.body = o; return this; }, send(s) { this.text = s; return this; }, end() { return this; } };
 }
+// Todas las claves de un objeto, a cualquier profundidad.
+function claves(o, out = new Set()) {
+  if (Array.isArray(o)) { for (const x of o) claves(x, out); return out; }
+  if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) { out.add(k); claves(v, out); }
+  return out;
+}
 
 const res = mockRes();
 await handler({ method: 'GET', query: { vista: 'live' }, headers: {} }, res);
 ok(res.code === 200, 'la vista contesta 200', res.code + ' ' + JSON.stringify(res.body).slice(0, 200));
 const emp = Object.fromEntries((res.body.empresas || []).map((e) => [e.symbol, e]));
-ok(emp.META && emp.AAPL && emp.NVDA, 'las tres empresas en la vista', Object.keys(emp).join(','));
+ok(emp.META && emp.AAPL && emp.NVDA && emp.MSFT, 'las cuatro empresas en la vista', Object.keys(emp).join(','));
+
+// LA ALERTA NO EXISTE en la respuesta: ni el dictamen, ni la brecha, ni "dónde mirar".
+const k = claves(res.body);
+for (const prohibida of ['desacuerdo', 'desacuerdos', 'gap_puntos', 'donde_mirar', 'clasificacion', 'instrumento_primero', 'destacado', 'lectura_codigo']) {
+  ok(!k.has(prohibida), `la respuesta no trae "${prohibida}"`);
+}
+ok(pedidosFinnhub === 1, 'el consenso cuesta UN request a Finnhub para toda la vista', pedidosFinnhub);
 
 const mMeta = emp.META.mercados[0];
 ok(mMeta.metrica.metrica === 'eps_gaap', 'META: el mercado pide GAAP EPS', mMeta.metrica.metrica);
 ok(mMeta.umbral_slug === 6.31 && mMeta.consenso_eps === 6.31, 'META: umbral 6.31, del slug y de la descripción');
-ok(mMeta.desacuerdo.clasificacion !== 'desacuerdo' && mMeta.desacuerdo.motivo === 'metrica_distinta',
-  'META: la alerta FALSA ya no dispara — métricas distintas', `${mMeta.desacuerdo.clasificacion}/${mMeta.desacuerdo.motivo}`);
-ok(emp.META.desacuerdos.destacado === null, 'META: nada destacado como desacuerdo');
+ok(mMeta.metrica_vs_historico.estado === 'distinta'
+  && mMeta.metrica_vs_historico.nota === 'El mercado mide GAAP EPS, el histórico cuenta EPS ajustado.',
+  'META: la línea neutral dice qué mide cada uno', mMeta.metrica_vs_historico.nota);
 ok(mMeta.precio_tipo === 'mid' && mMeta.polymarket_yes_pct === 16, 'META: el precio es el mid del libro (16%), dicho como mid', `${mMeta.precio_tipo} ${mMeta.polymarket_yes_pct}`);
 ok(mMeta.outcome_prices_yes === 0.07, 'y el 7% de outcomePrices queda aparte, para cotejar');
-ok(mMeta.libro.spread_puntos === 24.3 && mMeta.volumen === 4200 && mMeta.liquidez === 1300, 'META: spread, volumen y liquidez en la respuesta');
+ok(mMeta.libro.spread_puntos === 24.3 && mMeta.libro.bid === 0.037 && mMeta.libro.ask === 0.28, 'META: bid, ask y spread en la respuesta');
+ok(mMeta.volumen === 4200 && mMeta.liquidez === 1300, 'META: volumen y liquidez');
+ok(mMeta.consenso_analistas.valor === 6.71 && mMeta.consenso_analistas.metrica === 'no declarada por la fuente',
+  'META: consenso de analistas de Finnhub, del trimestre cercano (no el de 100 días)', JSON.stringify(mMeta.consenso_analistas));
+ok(emp.META.historico.ventana.total === 20 && emp.META.historico.ventana.beats === 15 && emp.META.historico.ultimos.length === 8,
+  'META: el track record intacto (15 de 20, últimos 8)');
+ok(emp.META.historico_metrica.codigo === 'eps_ajustado', 'y declarado como EPS ajustado');
 
 const mAapl = emp.AAPL.mercados[0];
-ok(mAapl.metrica.metrica === 'eps_ajustado' && mAapl.desacuerdo.motivo === 'umbral_spread_sin_congelar',
-  'AAPL: la métrica empata, pero el umbral de spread no está fijado → no dispara', mAapl.desacuerdo.motivo);
+ok(mAapl.metrica.metrica === 'eps_ajustado' && mAapl.metrica_vs_historico.nota === null, 'AAPL: misma métrica, sin línea que decir');
+ok(mAapl.consenso_analistas.valor === null && mAapl.consenso_analistas.motivo === 'sin_estimado', 'AAPL: la fila existe sin estimado → se dice');
 const mNvda = emp.NVDA.mercados[0];
-ok(mNvda.metrica.metrica === 'indeterminada' && mNvda.desacuerdo.motivo === 'metrica_indeterminada',
-  'NVDA: no se sabe qué EPS pide → no dispara', mNvda.desacuerdo.motivo);
+ok(mNvda.metrica.metrica === 'indeterminada' && mNvda.metrica_vs_historico.nota === 'Métrica del mercado: no determinada.',
+  'NVDA: métrica no determinada, dicho así');
 ok(mNvda.libro.estado === 'clob_httperror' && mNvda.precio_tipo === 'outcome_prices',
   'NVDA: el CLOB falló, se dice, y el precio se nombra outcomePrices', `${mNvda.libro.estado} ${mNvda.precio_tipo}`);
-const disparadas = (res.body.empresas || []).flatMap((e) => e.mercados).filter((m) => m.desacuerdo.clasificacion === 'desacuerdo');
-ok(disparadas.length === 0, 'ninguna alerta de desacuerdo en toda la vista', disparadas.length);
+ok(mNvda.consenso_analistas.motivo === 'sin_fila_en_el_calendario', 'NVDA: sin fila en el calendario → se dice', mNvda.consenso_analistas.motivo);
+const mMsft = emp.MSFT.mercados[0];
+ok(mMsft.metrica.metrica === 'eps_ajustado', 'MSFT (forma de los 20): con el arreglo, ajustado', mMsft.metrica.metrica);
+ok(mMsft.metrica_lector_viejo === undefined, 'la lectura vieja NO viaja en la vista pública: es solo del censo');
 ok(res.body.empresas.every((e) => e.probabilidad_quantdesk === null), 'y QuantDesk sigue sin probabilidad propia');
 
 console.log('el censo del instrumento');
 const rd = mockRes();
 await handler({ method: 'GET', query: { vista: 'live', diag: 'instrumento' }, headers: {} }, rd);
 ok(rd.code === 200 && rd.body.diag === 'instrumento', 'diag=instrumento contesta', rd.code);
-ok(rd.body.metrica.por_metrica.eps_gaap === 1 && rd.body.metrica.por_metrica.eps_ajustado === 1 && rd.body.metrica.por_metrica.indeterminada === 1,
-  'cuenta GAAP / ajustado / indeterminada', JSON.stringify(rd.body.metrica.por_metrica));
-ok(rd.body.libro.con_spread === 2 && rd.body.libro.spread_puntos.max === 24.3, 'la distribución de spreads sale de los libros que contestaron');
-ok(rd.body.libro.umbral_congelado === null, 'y reporta que el umbral no está fijado');
-const c10 = rd.body.libro.candidatos.find((c) => c.spread_max_puntos === 10);
-ok(c10.pasan === 1 && c10.pasan_y_empatan_metrica === 1, 'con 10¢: pasa AAPL, no META', JSON.stringify(c10));
+ok(JSON.stringify(rd.body.metrica.por_metrica) === JSON.stringify({ eps_gaap: 1, eps_ajustado: 2, indeterminada: 1 }),
+  'cuenta GAAP / ajustado / no determinada', JSON.stringify(rd.body.metrica.por_metrica));
+const ac = rd.body.arreglo_condicionales;
+ok(ac.eran_conflicto === 1 && ac.de_esas_cambian === 1 && ac.de_esas_a.eps_ajustado === 1 && ac.de_esas_siguen_indeterminadas.length === 0,
+  'el arreglo: 1 era conflicto, cambia a ajustado, ninguna sigue no determinada', JSON.stringify(ac));
+ok(ac.cambian === 1, 'y solo cambia ESA: el resto lee igual que antes', ac.cambian);
+const filaMsft = rd.body.filas.find((f) => f.symbol === 'MSFT');
+ok(filaMsft.lector_viejo === 'indeterminada' && filaMsft.cambia_con_el_arreglo && filaMsft.clausulas_condicionales_ignoradas.length === 1,
+  'la fila de MSFT muestra el veredicto viejo y la cláusula ignorada');
+ok(rd.body.libro.con_spread === 3 && rd.body.libro.spread_puntos.max === 24.3, 'el spread se describe con los libros que contestaron');
+ok(!('candidatos' in rd.body.libro) && !('umbral_congelado' in rd.body.libro), 'y no hay umbral de spread: ya no condiciona nada');
 const rm = mockRes();
 await handler({ method: 'GET', query: { vista: 'live', diag: 'instrumento', format: 'md' }, headers: {} }, rm);
 ok(rm.code === 200 && /censo del instrumento/.test(rm.text) && /meta-quarterly-earnings-gaap-eps/.test(rm.text),
   'y en markdown, con la fila de META', (rm.text || '').slice(0, 120));
+ok(/Eran "no determinada por conflicto": \*\*1\*\* → cambian \*\*1\*\*/.test(rm.text), 'el markdown reporta cuántas cambian', (rm.text.match(/Eran.*$/m) || [])[0]);
+ok(/ignorada \(condicional\): «If Microsoft releases earnings/.test(rm.text), 'y cita la cláusula ignorada');
 ok(/no se auto-aprueba/.test(rm.text), 'el censo reporta; no se auto-aprueba');
+
+const rr = mockRes();
+await handler({ method: 'GET', query: { vista: 'live', diag: 'desacuerdos' }, headers: {} }, rr);
+ok(rr.body && rr.body.retirado === true, 'diag=desacuerdos dice que se retiró, no cae al diag por símbolo', JSON.stringify(rr.body).slice(0, 120));
+
+console.log('sin key de Finnhub: se dice');
+delete process.env.FINNHUB_API_KEY;
+const rs = mockRes();
+await handler({ method: 'GET', query: { vista: 'live' }, headers: {} }, rs);
+ok(rs.body.empresas[0].mercados[0].consenso_analistas.motivo === 'sin_key' && rs.body.consenso_analistas.estado === 'sin_key',
+  'consenso no disponible, con el motivo "sin_key"');
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');
 process.exit(failures ? 1 : 0);
