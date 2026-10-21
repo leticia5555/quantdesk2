@@ -66,7 +66,7 @@ const FILAS = [
 // Una compra grande, para que "compras destacadas" tenga qué mostrar.
 FILAS.push({
   ...FILAS[0], id: 'grande#0', accession: '0000999-26-000333', ticker: 'BIGC',
-  emisora: 'Big Corp', quien: 'Garza Luis', cargo: 'Chief Executive Officer',
+  emisora: 'Big Corp', quien: 'Garza Luis', cargo: 'EVP, CFO & COO',
   codigo: 'P', tipo: 'compra', nombre: 'Compra en mercado abierto',
   acciones: 20000, precio: 40, valor: 800000, le_quedan: 120000, le_quedan_motivo: null,
   salio_del_todo: false, fecha: '2026-10-17', filing_en: '2026-10-18T10:00:00-04:00',
@@ -499,6 +499,23 @@ try {
   await d.screenshot({ path: join(OUT, 'insiders-1440.png') });
   console.log(`  → ${join(OUT, 'insiders-1440.png')}`);
   await esc2.close();
+// ── NINGUNA ENTIDAD XML LLEGA A LA PANTALLA ──────────────────────────────
+// Lety, contra producción (2026-10-20): el cargo salía "EVP, CFO &amp; COO".
+// El Form 4 trae `&amp;` —es XML— y se escapaba otra vez al pintar. El
+// fixture ahora trae un cargo con `&`, y esto vigila que lo que SE LEE sea
+// el texto y no la segunda capa de escape.
+{
+  const esc = await (await browser.newContext({ viewport: { width: 1440, height: 1000 } })).newPage();
+  await esc.goto(`${BASE}/mercado/insiders`, { waitUntil: 'networkidle' });
+  await esc.waitForSelector('tbody tr, .vacio');
+  const texto = await esc.evaluate(() => document.body.innerText);
+  chequeo('ninguna entidad XML cruda en pantalla (&amp;, &lt;, &quot;)',
+    !/&(amp|lt|gt|quot|apos|#\d+);/.test(texto),
+    (texto.match(/&(amp|lt|gt|quot|apos|#\d+);[^\n]{0,40}/g) || []).slice(0, 3).join(' | '));
+  chequeo('y el cargo con `&` se lee como `&`',
+    /EVP, CFO & COO/.test(texto) && !/EVP, CFO &amp; COO/.test(texto));
+  await esc.close();
+}
 } finally {
   await browser.close();
   server.close();

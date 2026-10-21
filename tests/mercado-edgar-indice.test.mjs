@@ -408,3 +408,46 @@ test('un listado vacío o roto no inventa días', () => {
   assert.equal(diasPublicados({}).size, 0);
   assert.equal(diasPublicados({ directory: { item: [] } }).size, 0);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// "NO PUBLICÓ" ≠ "TODAVÍA NO PUBLICÓ"
+//
+// Lety, mirando `/mercado/insiders` (2026-10-20): *"Cobertura del día de hoy:
+// dice «EDGAR no publicó índice ese día». Si es el día en curso, debe decir
+// «todavía no publicado», no lo mismo que un festivo."*
+//
+// Son dos estados distintos y se actúa distinto: un festivo no va a aparecer
+// nunca; el día en curso aparece en unas horas y hay que volver a pedirlo.
+// ═══════════════════════════════════════════════════════════════════════
+
+import { estadoDelDia } from '../api/_lib/edgar-indice.js';
+
+test('el día en curso está "en curso", no "no publicado"', () => {
+  const e = estadoDelDia('2026-10-20', new Date('2026-10-20T23:50:00Z'));
+  assert.equal(e.estado, 'en_curso');
+  assert.match(e.motivo, /todavía no se publica/);
+});
+
+test('EL BORDE QUE IMPORTA: medianoche UTC no es la hora de publicación', () => {
+  // EDGAR acepta presentaciones hasta las 22:00 ET y publica el índice del
+  // día DESPUÉS, o sea cerca de las 02:00 UTC del día siguiente. Con un corte
+  // a medianoche UTC, a las 00:30 del 21 el día 20 ya contaría como "pasado"
+  // y, al no estar en el listado, se llamaría festivo. Es exactamente la hora
+  // a la que Lety corrió los jobs.
+  const e = estadoDelDia('2026-10-20', new Date('2026-10-21T00:30:00Z'));
+  assert.equal(e.estado, 'en_curso', 'a las 00:30 UTC el índice de ayer todavía no existe');
+  // Y al otro día a media mañana, si no está, YA es un festivo.
+  assert.equal(estadoDelDia('2026-10-20', new Date('2026-10-21T14:00:00Z')).estado, 'cerrado');
+});
+
+test('un festivo pasado sí queda cerrado, que es lo que lo hace festivo', () => {
+  const e = estadoDelDia('2026-10-12', new Date('2026-10-21T14:00:00Z'));
+  assert.equal(e.estado, 'cerrado');
+  assert.equal(e.motivo, null, 'el motivo del festivo lo pone quien consultó el listado, no esta función');
+});
+
+test('un día futuro no se confunde con un festivo', () => {
+  const e = estadoDelDia('2026-12-25', new Date('2026-10-21T14:00:00Z'));
+  assert.equal(e.estado, 'futuro');
+  assert.match(e.motivo, /todavía no ocurrió/);
+});

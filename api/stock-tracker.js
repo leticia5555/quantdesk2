@@ -132,7 +132,7 @@ import { beat } from './_lib/heartbeat.js';
 import { crearCliente } from './_lib/edgar.js';
 import {
   urlIndiceDiario, diasHabiles, parseIndiceEdgar, form4DelIndice, coberturaDeDia,
-  ownershipDeEnvio, urlDeArchivo, urlListadoTrimestre, diasPublicados,
+  ownershipDeEnvio, urlDeArchivo, urlListadoTrimestre, diasPublicados, estadoDelDia,
 } from './_lib/edgar-indice.js';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -157,7 +157,7 @@ import {
 //     alcanzando, y mientras tanto la cobertura DICE cuántos faltan en vez
 //     de fingir que están.
 // ═══════════════════════════════════════════════════════════════════════
-const SCHEMA_FORM4 = [
+export const SCHEMA_FORM4 = [
   // Lo que el índice dice que existe. El `primary key` es el accession, así
   // que correr el job dos veces sobre el mismo día no duplica nada.
   `create table if not exists mercado_form4_indice (
@@ -197,6 +197,17 @@ const SCHEMA_FORM4 = [
    )`,
   `create index if not exists mercado_form4_tx_fecha_idx
      on mercado_form4_tx (filing_fecha desc)`,
+  // ── LA MARCA DE LA LIMPIEZA ÚNICA DE ENTIDADES ──────────────────────
+  // La idempotencia NO puede salir de la forma del dato, y la prueba contra
+  // Postgres lo demostró: `&amp;lt;` decodifica a `&lt;`, que sigue
+  // pareciendo "sucio", así que un segundo pase lo volvería `<` e inventaría
+  // la etiqueta que el filing no tenía. Justo lo que había que evitar.
+  //
+  // Entonces la idempotencia sale de una MARCA: la fila que ya pasó por la
+  // migración queda sellada y no se vuelve a tocar, sin importar qué parezca
+  // su contenido. Y de paso queda auditable cuándo se limpió cada una.
+  `alter table mercado_form4_tx add column if not exists entidades_limpias_en timestamptz`,
+  `alter table mercado_form4_indice add column if not exists entidades_limpias_en timestamptz`,
 ];
 
 let esquemaListo = false;
@@ -498,16 +509,24 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
     const publicados = listados.get(urlListado);
     const falloListado = fallosDeListado.get(urlListado);
 
-    // ── EL DÍA NO EXISTE EN EDGAR: ESO NO ES UN ERROR ─────────────────
+    // ── EL DÍA NO ESTÁ EN EL LISTADO: DOS CAUSAS DISTINTAS ────────────
+    // Un festivo no va a aparecer nunca; el día en curso aparece en unas
+    // horas. Decirles igual hace que no se sepa si hay que volver a pedirlo
+    // (Lety, 2026-10-20). `estadoDelDia` sabe que EDGAR cierra el índice
+    // después de las 22:00 ET, así que el corte no es medianoche.
     if (publicados && !publicados.has(fecha)) {
+      const est = estadoDelDia(fecha, hoy);
+      const motivoAusente = est.estado === 'cerrado'
+        ? 'EDGAR no publicó índice ese día (no está en el listado del trimestre)'
+        : est.motivo;
       await sqlBatch([[
         `insert into mercado_form4_dias (fecha, lineas_form4, enmiendas, indice_leido_en, motivo)
          values ($1, null, null, now(), $2)
          on conflict (fecha) do update set indice_leido_en = now(), motivo = excluded.motivo`,
-        [fecha, 'EDGAR no publicó índice ese día (no está en el listado del trimestre)'],
+        [fecha, motivoAusente],
       ]]);
       resumen.push({ fecha, lineas: null, publicado: false, error: false,
-        motivo: 'EDGAR no publicó índice ese día (no está en el listado del trimestre)' });
+        estado: est.estado, motivo: motivoAusente });
       continue;
     }
 
@@ -711,12 +730,25 @@ async function coberturaForm4({ dias = 10, hoy = new Date() } = {}) {
     fecha: f.fecha, enIndice: f.lineas_form4, guardados: Number(f.guardados), motivo: f.motivo,
   }));
   const medibles = dias_.filter((d) => d.en_indice > 0);
+  // ── EL DÍA EN CURSO SE REPORTA, NO SE TIRA ──────────────────────────
+  // `cerrados` lo saca de la medición —su índice todavía crece y el
+  // porcentaje bajaría solo—, pero sacarlo de la medición no es razón para
+  // no DECIRLO: la pantalla tiene que poder mostrar "hoy: todavía no
+  // publicado" en vez de no mostrar nada o, peor, lo mismo que un festivo.
+  const abiertos = filas.filter((f) => f.fecha >= hoyIso).map((f) => ({
+    fecha: f.fecha, estado: estadoDelDia(f.fecha, hoy).estado,
+    texto: f.motivo || estadoDelDia(f.fecha, hoy).motivo || 'el día todavía no cierra',
+  }));
   return {
     dias: dias_,
+    abiertos,
     // El último día cerrado con índice es el que va al chip de la pantalla.
     ultimo: medibles[0] || null,
     completa: medibles.length > 0 && medibles.every((d) => d.completa),
     medidos: medibles.length,
+    // Estado crudo para que el aviso se arme de hechos y no de un default.
+    filas_dias: filas.length,
+    cerrados_con_error: dias_.filter((d) => d.en_indice === 0 || d.en_indice == null).length,
   };
 }
 
@@ -1116,18 +1148,134 @@ async function buildForm4() {
     cobertura_dias: cobertura ? cobertura.dias : [],
     cobertura_ultimo: cobertura ? cobertura.ultimo : null,
     cobertura_completa: completa,
+    // ── EL AVISO SE ARMA DE HECHOS, NO DE UN DEFAULT ──────────────────
+    // Decía "todavía no se ha leído el índice diario de EDGAR" en CUALQUIER
+    // caso en que no hubiera un día medible, incluido el caso en que el
+    // índice sí se había leído (Lety, 2026-10-20). Era el `else` de una
+    // cadena, no una afirmación verificada — y afirmaba algo falso sobre
+    // nuestro propio estado, que es lo que la regla 2 prohíbe.
+    //
+    // Ahora cada rama dice lo que efectivamente pasó: sin filas, con filas
+    // pero ningún día cerrado medible, o con medición.
     cobertura: completa
       ? (cobertura.ultimo ? cobertura.ultimo.texto : 'Cobertura: completa')
       : (errorNeon
         ? `no se pudo leer nuestra base de datos: lo que se ve es lo que esta instancia alcanzó a escanear (${errorNeon})`
         : (cobertura && cobertura.ultimo
           ? cobertura.ultimo.texto
-          : 'todavía no se ha leído el índice diario de EDGAR: lo que se ve es la ventana de lo recién presentado')),
+          : (!cobertura || !cobertura.filas_dias
+            ? 'todavía no se ha leído el índice diario de EDGAR: lo que se ve es la ventana de lo recién presentado'
+            : `el índice está leído (${cobertura.filas_dias} días en la tabla) pero ningún día cerrado se pudo medir todavía`
+              + (cobertura.dias && cobertura.dias[0] ? `: ${cobertura.dias[0].texto}` : '')))),
+    // Lo que pasa con el día en curso, dicho aparte: no es un festivo.
+    cobertura_abiertos: cobertura ? cobertura.abiertos : [],
     lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después de la operación',
     de_neon: deNeon.length,
     de_memoria: form4Accum.size,
     stale: false,
     generated_at: new Date().toISOString(),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// LIMPIEZA ÚNICA: EL `&` QUE YA QUEDÓ GUARDADO
+//
+// El arreglo de `xval` corrige lo que se parsea DE AHORA EN ADELANTE. Las
+// ~241 filas que se guardaron hoy ya tienen la entidad adentro (Lety,
+// 2026-10-21).
+//
+// POR QUÉ LIMPIEZA Y NO RE-LECTURA. Las dos opciones servían:
+//   (a) decodificar lo que ya está guardado;
+//   (b) marcar las filas como pendientes y que el cron las vuelva a bajar.
+//
+// Elegí (a) porque (b) tiene un costo visible: la cobertura se mide contando
+// `leido_en is not null and leido_ok`, así que marcar las filas pendientes
+// tira el porcentaje de la pantalla a 0 y lo deja subiendo de a ~240 por
+// corrida —media hora de una pantalla que dice menos de lo que sabe— y
+// encima le pide a la SEC 241 documentos que ya tenemos. La decodificación
+// es la inversa exacta de lo que hizo el doble escape: no pierde nada.
+//
+// IDEMPOTENTE POR CONSTRUCCIÓN, no por promesa: el `where` sólo alcanza
+// filas que TODAVÍA tienen una entidad, así que la segunda corrida encuentra
+// 0 y no escribe. Eso además lo hace verificable: correrla dos veces y ver 0
+// en la segunda ES la prueba de que es idempotente.
+//
+// El orden de los reemplazos es el mismo que en `desentidad`: el `&` AL
+// FINAL. Si fuera primero, un `&lt;` escrito como entidad doble terminaría
+// convertido en `<` y habríamos inventado una etiqueta que el filing no tenía.
+//
+// Se trabaja sobre `filas::text` y no columna por columna porque las
+// transacciones viven en un `jsonb`: el round-trip por texto alcanza todos
+// los campos de adentro de una vez —cargo, quien, emisora, nombre del
+// instrumento, notas al pie— y un `&` no necesita escape en JSON, así que el
+// reemplazo no puede romper el documento.
+// ═══════════════════════════════════════════════════════════════════════
+const ENT_LT = String.fromCharCode(38) + 'lt;';
+const ENT_GT = String.fromCharCode(38) + 'gt;';
+const ENT_QUOT = String.fromCharCode(38) + 'quot;';
+const ENT_APOS = String.fromCharCode(38) + 'apos;';
+const ENT_AMP = String.fromCharCode(38) + 'amp;';
+
+export const ENTIDADES_SQL = (col) => `
+  replace(replace(replace(replace(replace(
+    ${col},
+    '${ENT_LT}', '<'), '${ENT_GT}', '>'), '${ENT_QUOT}', '"'),
+    '${ENT_APOS}', ''''), '${ENT_AMP}', '&')`;
+
+/** Una fila "sucia" es la que todavía tiene alguna de las cinco entidades. */
+export const SUCIA_SQL = (col) => `(${col} like '%${ENT_AMP}%' or ${col} like '%${ENT_LT}%'
+  or ${col} like '%${ENT_GT}%' or ${col} like '%${ENT_QUOT}%' or ${col} like '%${ENT_APOS}%')`;
+
+async function jobLimpiaEntidades({ seco = false } = {}) {
+  await ensureSchemaForm4();
+
+  const [{ sucias: txSucias }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_tx
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}`);
+  const [{ sucias: ixSucias }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_indice
+      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}`);
+
+  if (seco) {
+    return { job: 'limpia-entidades', seco: true,
+      por_limpiar: { mercado_form4_tx: txSucias, mercado_form4_indice: ixSucias },
+      nota: 'nada se escribió; quitá seco=1 para aplicarlo' };
+  }
+
+  // `entidades_limpias_en is null` es lo que hace esto idempotente: la fila
+  // que ya pasó queda sellada, pase lo que pase con su contenido. El filtro
+  // de "sucia" se queda sólo como optimización —no tocar lo que no hace
+  // falta—, no como garantía.
+  const tx = await sql(
+    `update mercado_form4_tx
+        set filas = (${ENTIDADES_SQL('filas::text')})::jsonb, entidades_limpias_en = now()
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}
+      returning accession`);
+  const ix = await sql(
+    `update mercado_form4_indice
+        set empresa = ${ENTIDADES_SQL('empresa')}, entidades_limpias_en = now()
+      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}
+      returning accession`);
+
+  // VERIFICACIÓN EN LA MISMA CORRIDA: si algo quedó sucio DESPUÉS de
+  // escribir, es que hay una entidad fuera de la lista de cinco, y eso hay
+  // que saberlo acá y no por una captura dentro de tres días.
+  const [{ sucias: restanTx }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_tx
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}`);
+  const [{ sucias: restanIx }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_indice
+      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}`);
+
+  return {
+    job: 'limpia-entidades',
+    filas_tocadas: { mercado_form4_tx: tx.length, mercado_form4_indice: ix.length },
+    restantes: { mercado_form4_tx: restanTx, mercado_form4_indice: restanIx },
+    ok: restanTx === 0 && restanIx === 0,
+    idempotente: 'la segunda corrida tiene que devolver filas_tocadas en 0',
+    nota: restanTx || restanIx
+      ? 'quedaron filas con entidades: hay alguna fuera de la lista de cinco'
+      : 'ninguna fila quedó con entidades',
   };
 }
 
@@ -1166,7 +1314,10 @@ export default async function handler(req, res) {
       if (job === 'cobertura') {
         return res.status(200).json(await coberturaForm4({ dias: Math.min(Number(q.dias) || 10, 60) }));
       }
-      return res.status(400).json({ error: 'job must be indice | form4 | cobertura' });
+      if (job === 'limpia-entidades') {
+        return res.status(200).json(await jobLimpiaEntidades({ seco: q.seco === '1' || q.seco === 'true' }));
+      }
+      return res.status(400).json({ error: 'job must be indice | form4 | cobertura | limpia-entidades' });
     } catch (e) {
       return res.status(500).json({ job, error: String((e && e.message) || e), ms: Date.now() - t0 });
     }
