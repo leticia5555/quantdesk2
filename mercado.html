@@ -1263,6 +1263,16 @@
     if(cuantas){
       partes.push('de ' + (d.cuadros || []).length + ' emisoras: ' + f2.frases.join(' · '));
     }
+    // ── CUÁNTOS LLEGARON AL ÚLTIMO CIERRE ───────────────────────────
+    // La cosecha de 611 símbolos no cabe en una corrida (~416), así que se
+    // reparte en varias. Sin esta línea, un símbolo que se quedó con el
+    // cierre de ayer se ve idéntico a uno al día.
+    if(d.al_dia && d.al_dia.ultimo_cierre){
+      partes.push(d.al_dia.atrasados
+        ? d.al_dia.con_ultimo_cierre + ' con el cierre del ' + d.al_dia.ultimo_cierre
+          + ' · ' + d.al_dia.atrasados + ' con uno anterior'
+        : 'las ' + d.al_dia.con_ultimo_cierre + ' con el cierre del ' + d.al_dia.ultimo_cierre);
+    }
     // Regla 5 + regla 3: si la pantalla está en pesos, el pie declara con qué
     // se convirtió. El FIX es diario, así que la fecha es parte del dato: "el
     // FIX de Banxico" sin fecha no dice qué número se usó.

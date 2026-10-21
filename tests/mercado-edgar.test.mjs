@@ -194,8 +194,17 @@ test('cada descarte se cuenta por su causa: un cero tiene que poder depurarse', 
     universoPorSymbol: new Map(),
   });
   assert.deepEqual(r.candidatos, ['MNST']);
+  // La forma del diagnóstico se fija entera a propósito: es lo que permite
+  // depurar un cero. Ahora trae además `excluidos`, que dice POR SÍMBOLO por
+  // qué quedó fuera — con 52 candidatos y SPCX gris, "N sin acciones" no
+  // alcanzaba para saber si SPCX era uno de ellos (Lety, 2026-10-22).
   assert.deepEqual(r.diagnostico, {
     filas: 5, sin_precio: 1, sin_acciones: 1, verificadas: 1, no_usd: 1, ya_con_edgar: 0, candidatos: 1,
+    excluidos: [
+      { symbol: 'SINPX', motivo: 'sin precio en USD' },
+      { symbol: 'SINACC', motivo: 'sin conteo de acciones de Finnhub' },
+      { symbol: 'TSM', motivo: 'la cap declarada está en TWD' },
+    ],
   });
 });
 
