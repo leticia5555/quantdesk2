@@ -974,6 +974,100 @@ export function pickInfotableFile(indexJson) {
   return xmls.sort((a, b) => (parseInt(b.size, 10) || 0) - (parseInt(a.size, 10) || 0))[0].name;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// CUSIP → TICKER: EL PRIMERO DE LA LISTA NO ES EL BUENO
+//
+// Lety, en `?cat=13f` de Berkshire (2026-10-22): Constellation Brands salía
+// como `CB1A` —que es su cotización en Fráncfort— y una posición de $6.4 mil
+// millones salía como `TRL`, un ticker que nadie reconoce.
+//
+// La causa: `res.data[0].ticker`, el PRIMER resultado a ciegas. OpenFIGI
+// devuelve TODAS las cotizaciones del mundo para un CUSIP —la compuesta de
+// EE.UU., la de Fráncfort, la de México, las de cada plaza— y el orden no es
+// una promesa de la API. Para un 13F, que es un formulario de la SEC sobre
+// tenencias en bolsas de EE.UU., la que vale es la de EE.UU.
+//
+// LO QUE NO SE HACE: inventar. Si no hay una cotización de EE.UU., o si el
+// ticker que sale no existe en nuestro universo, la posición se muestra con
+// `nameOfIssuer` —que siempre viene en el filing— y el ticker queda en null
+// con su causa. Un ticker equivocado es peor que ningún ticker: manda a
+// mirar la empresa de otro.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** El orden de preferencia, declarado. `exchCode: 'US'` es la compuesta. */
+const PREFERENCIA_EXCH = ['US', 'UN', 'UW', 'UQ', 'UA', 'UR', 'UP'];
+
+/**
+ * El ticker de una respuesta de OpenFIGI, con su procedencia.
+ *
+ * Devuelve `{ ticker, exch, via }` o `{ ticker: null, motivo }`. Nunca una
+ * cadena suelta: quien lo use tiene que poder decir de dónde salió.
+ */
+export function tickerDeOpenFigi(data, { nombre = null } = {}) {
+  const filas = Array.isArray(data) ? data.filter((d) => d && d.ticker) : [];
+  if (!filas.length) {
+    return { ticker: null, exch: null, via: null,
+      motivo: `OpenFIGI no devolvió ninguna cotización con ticker${nombre ? ` para ${nombre}` : ''}` };
+  }
+  // Sólo acciones: un CUSIP puede traer también bonos y opciones de la misma
+  // emisora, y un bono no tiene ticker que sirva en una tarjeta de 13F.
+  const acciones = filas.filter((d) => !d.marketSector || String(d.marketSector) === 'Equity');
+  const candidatas = acciones.length ? acciones : filas;
+
+  for (const ex of PREFERENCIA_EXCH) {
+    const f = candidatas.find((d) => String(d.exchCode || '').toUpperCase() === ex);
+    if (f) return { ticker: String(f.ticker).toUpperCase(), exch: ex, via: `openfigi:${ex}` };
+  }
+  // ── UNA SOLA RESPUESTA SIN PLAZA DECLARADA ─────────────────────────
+  // Si OpenFIGI devuelve UNA sola cotización y no dice su `exchCode`, no hay
+  // ambigüedad que resolver: es la única respuesta que hay. Se acepta y la
+  // procedencia DICE que la plaza no se pudo verificar, en vez de callarlo.
+  //
+  // Lo que no se acepta es elegir entre VARIAS sin saber cuál es de EE.UU.
+  // —ése es el caso de CB1A— porque ahí sí hay que decidir y no tenemos con
+  // qué. Un ticker equivocado manda a mirar la empresa de otro.
+  const sinPlaza = candidatas.filter((d) => !d.exchCode);
+  if (candidatas.length === 1 && sinPlaza.length === 1) {
+    return { ticker: String(candidatas[0].ticker).toUpperCase(), exch: null,
+      via: 'openfigi:sin-plaza-declarada' };
+  }
+  // Sin plaza de EE.UU. no se elige por descarte: se dice. Un 13F declara
+  // tenencias en EE.UU., así que una CUSIP que sólo aparece en Fráncfort es
+  // una señal de que algo no cuadra, no un ticker alternativo.
+  return {
+    ticker: null, exch: null, via: null,
+    motivo: `OpenFIGI sólo devolvió plazas fuera de EE.UU. (${
+      [...new Set(candidatas.map((d) => String(d.exchCode || '?')))].slice(0, 6).join(', ')
+    })${nombre ? ` para ${nombre}` : ''}`,
+  };
+}
+
+/**
+ * El ticker, CONTRASTADO contra nuestro universo.
+ *
+ * Lety: *"que un ticker que no existe en el universo salga como «sin
+ * resolver», no inventado"*. Un ticker que resolvió bien pero que no
+ * cotizamos no se puede enlazar a ninguna ficha nuestra, así que mostrarlo
+ * promete una pantalla que no existe.
+ *
+ * `universo` es un Set de símbolos; si viene vacío —porque la consulta
+ * falló— NO se descarta nada: eso convertiría una caída de Neon en "ningún
+ * ticker se pudo resolver", que es una afirmación distinta y falsa.
+ */
+export function tickerValidado(resuelto, universo) {
+  if (!resuelto || !resuelto.ticker) return resuelto || { ticker: null, motivo: 'sin resolver' };
+  if (!universo || !universo.size) {
+    return { ...resuelto, en_universo: null,
+      nota: 'no se pudo contrastar contra el universo (la lista no cargó)' };
+  }
+  if (universo.has(resuelto.ticker)) return { ...resuelto, en_universo: true };
+  return {
+    ticker: null, exch: resuelto.exch, via: resuelto.via, en_universo: false,
+    motivo: `OpenFIGI devolvió "${resuelto.ticker}" y ese símbolo no está en nuestro universo: `
+      + 'se muestra el nombre del filing en vez de un ticker que no podemos abrir',
+  };
+}
+
 // CUSIP→ticker vía OpenFIGI (gratis; sin key = 10 jobs/request). Falla →
 // la card muestra nameOfIssuer, que siempre viene en el filing.
 async function mapCusipsToTickers(cusips) {
@@ -993,8 +1087,9 @@ async function mapCusipsToTickers(cusips) {
       const arr = tryJson(r.text);
       if (!Array.isArray(arr)) break;
       arr.forEach((res, j) => {
-        const ticker = res && Array.isArray(res.data) && res.data[0] ? res.data[0].ticker : null;
-        cusipTickerCache.set(chunk[j], ticker || null);
+        // `tickerDeOpenFigi` y no `data[0]`: el primero de la lista puede ser
+        // la cotización de Fráncfort (CB1A por STZ) o de cualquier plaza.
+        cusipTickerCache.set(chunk[j], tickerDeOpenFigi(res && res.data));
       });
     } catch { break; }
   }
@@ -1063,9 +1158,33 @@ async function build13F() {
   // Ticker solo para los CUSIP que salen en cards (≤20 por fondo).
   const shown = valid.flatMap((f) => Object.values(f.top).flat().map((p) => p.cusip));
   const tickers = await mapCusipsToTickers(shown);
+
+  // ── EL TICKER SE CONTRASTA CONTRA NUESTRO UNIVERSO ──────────────────
+  // Lety: *"que un ticker que no existe en el universo salga como «sin
+  // resolver», no inventado"*. Un símbolo que resolvió bien pero que no
+  // cotizamos no se puede abrir en ninguna ficha nuestra, así que mostrarlo
+  // promete una pantalla que no existe.
+  //
+  // Si la consulta falla, el Set queda VACÍO y `tickerValidado` no descarta
+  // nada: convertir una caída de Neon en "ningún ticker se pudo resolver"
+  // sería cambiar una causa por otra.
+  let universo = new Set();
+  try {
+    const filas = await sql('select symbol from mercado_universo_us');
+    universo = new Set(filas.map((f) => String(f.symbol).toUpperCase()));
+  } catch { /* sin universo no se descarta: lo dice `nota` */ }
+
   for (const f of valid) {
     for (const bucket of Object.values(f.top)) {
-      for (const p of bucket) p.ticker = tickers.get(p.cusip) || null;
+      for (const p of bucket) {
+        const v = tickerValidado(tickers.get(p.cusip), universo);
+        p.ticker = v.ticker || null;
+        // La procedencia y la causa viajan: un `ticker: null` sin motivo deja
+        // a la pantalla sin nada que decir (regla 2 y regla 3).
+        p.ticker_via = v.via || null;
+        p.ticker_motivo = v.ticker ? null : (v.motivo || 'sin resolver');
+        if (v.nota) p.ticker_nota = v.nota;
+      }
     }
   }
 
