@@ -237,27 +237,59 @@ export function avisosDeHerramientas(libros = []) {
 export const PUERTA_RELOJ_PCT = 90;
 export const PUERTA_LECTURA_MS = 90000;
 
-export function puertaDeCorrida(t) {
+// ── UN CORTE NUESTRO ES UN CORTE NUESTRO, CAIGA DONDE CAIGA (2026-10-21) ──
+// La fila 13 del 20-oct (deepseek, 255 s) salía con `cortes_nuestros: 0`: el
+// corte fue en el CIERRE, que no es una vuelta y no está en `vueltas_medidas`.
+// El cierre cortado por nuestro reloj queda journaleado en otro lado —
+// `context.llm_error.cuerpos_vacios`, con `vuelta: 'cierre'` y
+// `timeout_nuestro` (arena-shadow / arena-tool-loop)—, y se cuenta desde ahí.
+// La salida dice DÓNDE cayó (`cortes: {loop, cierre}`) y la puerta juzga la
+// SUMA.
+//
+// Lo que no se puede ver desde acá: un cierre cortado por nuestro reloj que
+// después se RESCATÓ con el reintento y la corrida terminó bien. Ese corte no
+// se journalea en ninguna parte (solo el camino de aborto escribe
+// `llm_error`), así que no hay de dónde contarlo.
+export function cortesDelCierre(ctx) {
+  const le = ctx && ctx.llm_error;
+  if (!le) return 0;
+  // Con `cuerpos_vacios` journaleado, manda la lista: cada vacío del cierre
+  // queda ahí con su intento (arena-tool-loop los empuja todos).
+  if (Array.isArray(le.cuerpos_vacios)) {
+    return le.cuerpos_vacios.filter((x) => x && x.vuelta === 'cierre' && x.timeout_nuestro).length;
+  }
+  // Filas sin `cuerpos_vacios`: si el error final fue nuestro reloj y el loop
+  // NO murió antes (si murió, esa vuelta ya está en `vueltas_medidas`), el
+  // corte fue el cierre.
+  const murioEnLoop = !!(ctx.murio_en || le.murio_en);
+  return le.timeout_nuestro && le.motivo === 'cuerpo_vacio_reloj_nuestro' && !murioEnLoop ? 1 : 0;
+}
+
+export function puertaDeCorrida(t, ctx = null) {
   if (!t || (!t.limites && !Array.isArray(t.vueltas_medidas))) return null;
   const v = Array.isArray(t.vueltas_medidas) ? t.vueltas_medidas : [];
   const lim = t.limites || {};
   const ms = v.map((x) => (x && x.ms != null ? Number(x.ms) : NaN)).filter(Number.isFinite);
   const reloj = (lim.reloj_ms && lim.reloj_ms.pct) ?? null;
   const lectura = ms.length ? Math.max(...ms) : null;
-  const cortes = v.filter((x) => x && x.reloj_nuestro).length;
+  const cortes = { loop: v.filter((x) => x && x.reloj_nuestro).length, cierre: cortesDelCierre(ctx) };
+  const total = cortes.loop + cortes.cierre;
   return {
     vueltas: t.turns ?? (v.length || null),
     cortó_por: t.stopped_by || null,
     reloj_pct: reloj,
     lectura_max_ms: lectura,
     vacias: v.filter((x) => x && x.vacio).length,
-    cortes_nuestros: cortes,
+    // La suma (lo que juzga la puerta) y el desglose (dónde cayó).
+    cortes_nuestros: total,
+    cortes,
     // El veredicto de ESTA corrida contra cada criterio físico. null = no se
-    // puede juzgar (dato no journaleado), que NO es lo mismo que verde.
+    // puede juzgar (dato no journaleado), que NO es lo mismo que verde. Un
+    // corte del cierre ya es rojo aunque no haya vueltas medidas.
     puertas: {
       reloj: reloj == null ? null : reloj < PUERTA_RELOJ_PCT,
       lectura: lectura == null ? null : lectura < PUERTA_LECTURA_MS,
-      cortes_nuestros: v.length ? cortes === 0 : null,
+      cortes_nuestros: total ? false : (v.length ? true : null),
     },
   };
 }
@@ -472,7 +504,7 @@ export function libroDeFila(row, fuente) {
     investigacion: secuenciaPublicable(ctx),
     // reloj_pct, lectura máxima por vuelta y cortes nuestros: los criterios
     // físicos de la puerta, por corrida. null si la corrida no los journaleó.
-    puerta: puertaDeCorrida(ctx.tools),
+    puerta: puertaDeCorrida(ctx.tools, ctx),
     // null cuando no hubo reintento, que es el caso normal: cuatro campos en
     // null se leerían como "hubo y no sabemos".
     reintento: reintentoPublicable(ctx),

@@ -104,10 +104,10 @@ console.log('\n── 5) libros reales del 20-oct ──');
   // una vuelta del loop. `vueltas_medidas` no lo registra, así que
   // `cortes_nuestros` da 0. El rojo lo pone el reloj; esto lo deja escrito
   // para que nadie lea el verde de cortes como "nuestro reloj no cortó".
-  ok(l13.puerta.cortes_nuestros === 0 && l13.puerta.puertas.cortes_nuestros === true,
-    'fila 13: el corte fue en el cierre, fuera de vueltas_medidas → cortes_nuestros no lo ve (el rojo viene del reloj)');
+  ok(l13.puerta.cortes.loop === 0, 'fila 13: ningún corte DENTRO del loop (las 4 vueltas volvieron)');
   ok(l13.estado === 'aborted_cuerpo_vacio' && l13.corrida_id === 'shadow-deepseek-2026-10-20T15:23:39.381Z', 'y la fila se nombra por su id');
 
+  ok(l17.puerta.cortes.loop === 0 && l17.puerta.cortes.cierre === 0, 'fila 17: cortes 0/0 (loop/cierre)', JSON.stringify(l17.puerta.cortes));
   ok(l17.puerta.reloj_pct === 75.6 && l17.puerta.lectura_max_ms === 42579 && l17.puerta.cortes_nuestros === 0,
     'fila 17 (deepseek, tope 165 s): 75.6% · 42.6 s · sin cortes', JSON.stringify(l17.puerta));
   ok(l17.puerta.puertas.reloj === true && l17.puerta.puertas.lectura === true && l17.puerta.puertas.cortes_nuestros === true,
@@ -116,13 +116,15 @@ console.log('\n── 5) libros reales del 20-oct ──');
   ok(l12.puerta.reloj_pct === 110.1 && l12.puerta.puertas.reloj === false
     && l12.puerta.cortes_nuestros === 1 && l12.puerta.puertas.cortes_nuestros === false && l12.puerta.vacias === 1,
     'fila 12 (qwen): reloj 110.1% y un corte de nuestro reloj DENTRO del loop → rojo en las dos', JSON.stringify(l12.puerta));
+  ok(l12.puerta.cortes.loop === 1 && l12.puerta.cortes.cierre === 0, 'fila 12: cortes loop 1 · cierre 0', JSON.stringify(l12.puerta.cortes));
 
   // La misma cuenta que la puerta, sobre datos reales.
   for (const [i, f] of filas.entries()) {
     const t = f.context.tools;
     const r = resumenDelLoop({ turns: t.turns, stopped_by: t.stopped_by, limites: t.limites, vueltas_medidas: t.vueltas_medidas }, { used: t.used });
-    ok(r.reloj_pct === libros[i].puerta.reloj_pct && r.lectura_max_ms === libros[i].puerta.lectura_max_ms && r.cortes_nuestros === libros[i].puerta.cortes_nuestros,
-      `fila ${f.id}: igual que resumenDelLoop`);
+    // resumenDelLoop cuenta solo el loop: se compara contra `cortes.loop`.
+    ok(r.reloj_pct === libros[i].puerta.reloj_pct && r.lectura_max_ms === libros[i].puerta.lectura_max_ms && r.cortes_nuestros === libros[i].puerta.cortes.loop,
+      `fila ${f.id}: igual que resumenDelLoop (cortes del loop)`);
   }
 
   // Lo que se filtra con jq: `.puerta_por_corrida[] | select(.puertas.reloj == false)`.
@@ -130,6 +132,47 @@ console.log('\n── 5) libros reales del 20-oct ──');
   ok(rojas.length === 2 && rojas.includes(l13.corrida_id) && rojas.includes(l12.corrida_id) && !rojas.includes(l17.corrida_id),
     'el filtro de jq devuelve la 13 y la 12, no la 17', JSON.stringify(rojas));
   ok(puertaPorCorrida(libros).every((p) => p.fuente === 'prueba'), 'y las marca como de prueba (sombra), no en vivo');
+}
+
+// ── 6) EL CORTE DEL CIERRE CUENTA (2026-10-21) ────────────────────────
+// La forma de `llm_error` es la que escribe arena-shadow en el camino de
+// aborto: `cuerpos_vacios` con `vuelta: 'cierre'` y `timeout_nuestro`.
+console.log('\n── 6) un corte nuestro en el cierre es un corte nuestro ──');
+{
+  const tl = { turns: 4, stopped_by: 'call_budget', limites: { reloj_ms: { pct: 70 } },
+    vueltas_medidas: [{ vuelta: 1, ms: 20000, reloj_nuestro: false }, { vuelta: 2, ms: 30000, reloj_nuestro: false }] };
+  const conCierre = (cuerpos_vacios, extra = {}) => ({ tools: tl, llm_error: { motivo: 'cuerpo_vacio_reloj_nuestro', timeout_nuestro: true, cuerpos_vacios, ...extra } });
+
+  const a = puertaDeCorrida(tl, conCierre([{ vuelta: 'cierre', intento: 1, timeout_nuestro: true }]));
+  ok(a.cortes.loop === 0 && a.cortes.cierre === 1 && a.cortes_nuestros === 1 && a.puertas.cortes_nuestros === false,
+    'cierre cortado por nuestro reloj → cortes {loop 0, cierre 1}, suma 1 → ROJO aunque el reloj (70%) pase', JSON.stringify(a));
+  ok(a.puertas.reloj === true, 'y el rojo es por cortes, no por reloj');
+
+  const b = puertaDeCorrida(tl, conCierre([{ vuelta: 'cierre', intento: 1, timeout_nuestro: true }, { vuelta: 'cierre', intento: 2, timeout_nuestro: true }]));
+  ok(b.cortes.cierre === 2, 'dos intentos del cierre cortados por nosotros → 2 (cada llamada cortada cuenta)');
+
+  const c = puertaDeCorrida(tl, conCierre([{ vuelta: 'cierre', intento: 1, timeout_nuestro: false }], { motivo: 'cuerpo_vacio_proveedor', timeout_nuestro: false }));
+  ok(c.cortes.cierre === 0 && c.puertas.cortes_nuestros === true, 'el PROVEEDOR cerró el cierre → no es corte nuestro');
+
+  const d = puertaDeCorrida(tl, conCierre([{ vuelta: 3, intento: 1, timeout_nuestro: true }]));
+  ok(d.cortes.cierre === 0, 'un vacío de una vuelta NUMÉRICA es del loop, no del cierre (ya está en vueltas_medidas)');
+
+  const e = puertaDeCorrida(tl, conCierre(null));
+  ok(e.cortes.cierre === 1, 'sin cuerpos_vacios, el motivo final "reloj nuestro" sin murio_en → fue el cierre');
+  const f = puertaDeCorrida(tl, { ...conCierre(null), murio_en: { vuelta: 2 } });
+  ok(f.cortes.cierre === 0, '…pero si el loop murió antes del cierre, no se cuenta dos veces');
+
+  const g = puertaDeCorrida({ limites: { reloj_ms: { pct: 50 } } }, conCierre([{ vuelta: 'cierre', intento: 1, timeout_nuestro: true }]));
+  ok(g.puertas.cortes_nuestros === false, 'sin vueltas medidas pero con el cierre cortado: rojo, no "no medido"');
+
+  const ok17 = puertaDeCorrida(tl, { tools: tl });
+  ok(ok17.cortes.cierre === 0 && ok17.puertas.cortes_nuestros === true, 'sin llm_error (la corrida terminó bien) → cierre 0');
+
+  // Y viaja por el libro: libroDeFila le pasa el context entero.
+  const l = libroDeFila({ id: 'x', agent_id: 'deepseek', status: 'aborted_cuerpo_vacio', context: conCierre([{ vuelta: 'cierre', intento: 1, timeout_nuestro: true }]) }, FUENTE_PRUEBA);
+  ok(l.puerta.cortes.cierre === 1 && puertaPorCorrida([l])[0].cortes.cierre === 1, 'libroDeFila y puerta_por_corrida llevan el desglose');
+  const html = readFileSync(new URL('../libros.html', import.meta.url), 'utf8');
+  ok(/l\.puerta\.cortes\.loop/.test(html) && /l\.puerta\.cortes\.cierre/.test(html), 'la tarjeta dice dónde cayó (loop · cierre)');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
