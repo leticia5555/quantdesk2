@@ -48,12 +48,14 @@ function form4AtomXml() {
 }
 function form4Xml({ code = 'P', ad = 'A', shares = 10000, price = 25, officer = true, ticker = 'ACME' } = {}) {
   return '<?xml version="1.0"?><ownershipDocument><aff10b5One>0</aff10b5One>' +
-    '<issuer><issuerCik>0001318605</issuerCik><issuerName>Acme Corp</issuerName>' +
+    // `&amp;` en el nombre y en el cargo: es cómo EDGAR escribe un `&`,
+    // y es lo que llegaba doble-escapado a la pantalla (Lety, 2026-10-21).
+    '<issuer><issuerCik>0001318605</issuerCik><issuerName>Acme &amp; Sons Corp</issuerName>' +
     `<issuerTradingSymbol>${ticker}</issuerTradingSymbol></issuer>` +
     '<reportingOwner><reportingOwnerId><rptOwnerCik>0009999999</rptOwnerCik>' +
     '<rptOwnerName>DOE JANE</rptOwnerName></reportingOwnerId>' +
     '<reportingOwnerRelationship>' +
-    (officer ? '<isOfficer>1</isOfficer><officerTitle>Chief Executive Officer</officerTitle>'
+    (officer ? '<isOfficer>1</isOfficer><officerTitle>EVP of R&amp;D &amp; Strategy</officerTitle>'
       : '<isOfficer>0</isOfficer><isTenPercentOwner>1</isTenPercentOwner>') +
     '</reportingOwnerRelationship></reportingOwner>' +
     '<nonDerivativeTable><nonDerivativeTransaction>' +
@@ -83,8 +85,9 @@ console.log('parseForm4Atom: dedupe Issuer/Reporting por accession');
 console.log('parseForm4Xml: valores anidados, filtro P+A, flags de owner');
 {
   const doc = parseForm4Xml(form4Xml());
-  ok(doc.issuer.name === 'Acme Corp' && doc.issuer.ticker === 'ACME', 'issuer + ticker', JSON.stringify(doc.issuer));
-  ok(doc.owners[0].isOfficer && doc.owners[0].officerTitle === 'Chief Executive Officer', 'cargo real del XML', JSON.stringify(doc.owners[0]));
+  ok(doc.issuer.name === 'Acme & Sons Corp' && doc.issuer.ticker === 'ACME', 'issuer + ticker', JSON.stringify(doc.issuer));
+  ok(doc.owners[0].isOfficer && doc.owners[0].officerTitle === 'EVP of R&D & Strategy',
+    'cargo real del XML, con el `&` decodificado una sola vez', JSON.stringify(doc.owners[0]));
   ok(doc.buys.length === 1 && doc.buys[0].shares === 10000 && doc.buys[0].price === 25,
     'solo la compra P+A entra (la venta S/D no)', JSON.stringify(doc.buys));
   ok(doc.planned10b5 === false, 'aff10b5One=0 → false');
@@ -97,7 +100,7 @@ console.log('extractNotableBuy: umbral, officer/director, lag');
   const meta = { accession: ACC, link: ATOM_LINK, updated: iso(1) + 'T18:00:00-04:00' };
   const notable = extractNotableBuy(parseForm4Xml(form4Xml()), meta);
   ok(!!notable && notable.value === 250000, '10k × $25 = $250k pasa el umbral', notable && notable.value);
-  ok(notable.role === 'Chief Executive Officer', 'cargo en el item', notable.role);
+  ok(notable.role === 'EVP of R&D & Strategy', 'cargo en el item', notable.role);
   ok(notable.lagDays === 2, 'lag trade→filing calculado (3d - 1d = 2)', notable.lagDays);
   ok(extractNotableBuy(parseForm4Xml(form4Xml({ shares: 100 })), meta) === null, '100 × $25 = $2.5k → null (bajo umbral)');
   ok(extractNotableBuy(parseForm4Xml(form4Xml({ officer: false })), meta) === null, '10%-owner sin cargo → null');
@@ -209,7 +212,7 @@ function infotableXml(rows) {
 console.log('parse13FInfotable: namespaces, agregación por CUSIP, sin opciones');
 {
   const m = parse13FInfotable(infotableXml([
-    { name: 'APPLE INC', cusip: '037833100', value: 5000, shares: 100 },
+    { name: 'APPLE &amp; CO INC', cusip: '037833100', value: 5000, shares: 100 },
     { name: 'APPLE INC', cusip: '037833100', value: 1000, shares: 20 },
     { name: 'SPY PUTS', cusip: '78462F103', value: 9999, shares: 50, putCall: 'Put' },
     { name: 'BOND', cusip: '191216100', value: 500, shares: 10, type: 'PRN' },
@@ -217,6 +220,9 @@ console.log('parse13FInfotable: namespaces, agregación por CUSIP, sin opciones'
   ok(m.size === 1, 'puts y PRN fuera; duplicados agregados', m.size);
   const aapl = m.get('037833100');
   ok(aapl.value === 6000 && aapl.shares === 120, 'suma de filas duplicadas', JSON.stringify(aapl));
+  // `nameOfIssuer` salía por `xtag`, que NO decodifica: 13F traía
+  // `Marsh &amp; McLennan` igual que el Form 4 (Lety, 2026-10-21).
+  ok(aapl.name === 'APPLE & CO INC', 'el nombre del 13F decodificado', aapl.name);
   ok(parse13FInfotable('').size === 0, 'vacío → mapa vacío');
 }
 
@@ -278,7 +284,7 @@ function routeFetch(url, opts) {
   if (u.includes('/edgar/data/1067983/000106798326000001/index.json')) return Promise.resolve(textResponse(IDX_13F, 200, 'application/json'));
   if (u.includes('/edgar/data/1067983/000106798326000001/infotable.xml')) {
     return Promise.resolve(textResponse(infotableXml([
-      { name: 'APPLE INC', cusip: '037833100', value: 5000, shares: 100 },
+      { name: 'APPLE &amp; CO INC', cusip: '037833100', value: 5000, shares: 100 },
       { name: 'KO', cusip: '191216100', value: 2000, shares: 50 },
     ])));
   }
@@ -307,7 +313,7 @@ console.log('handler: cat=insider end-to-end');
   ok(res.code === 200 && b.cat === 'insider', '200 con cat', res.code);
   ok(b.items.length === 1, '1 compra destacada', JSON.stringify(b.items));
   ok(b.items[0].insider === 'DOE JANE' && b.items[0].value === 250000, 'insider y valor', JSON.stringify(b.items[0]));
-  ok(b.items[0].role === 'Chief Executive Officer', 'cargo real');
+  ok(b.items[0].role === 'EVP of R&D & Strategy', 'cargo real', b.items[0].role);
   ok(typeof b.items[0].lagDays === 'number', 'lag por item (honestidad)');
   ok(b.scan.atom_entries === 1 && b.scan.accumulated === 1, 'scan flags honestos', JSON.stringify(b.scan));
   ok((res.headers['Cache-Control'] || '').includes('s-maxage=1800'), 'CDN cache insider', res.headers['Cache-Control']);
@@ -360,5 +366,74 @@ console.log('handler: cat inválida → 400 con uso');
 }
 
 global.fetch = realFetch;
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL ENDPOINT QUE PIDE LA PANTALLA, NO LA TABLA
+//
+// La limpieza de la base funcionó —79 filas, idempotente— y la pantalla
+// siguió con `&amp;`: 48 en el texto de `/mercado/insiders` y 55 en la
+// respuesta de `?cat=form4` (Lety, 2026-10-21).
+//
+// POR QUÉ. `buildForm4` mezcla DOS orígenes: lo que lee de
+// `mercado_form4_tx` —lo que se limpió— y `form4Accum`, un acumulador EN
+// MEMORIA que llena el escaneo vivo. Y había DOS `xval` idénticos, uno en
+// `api/_lib/form4.js` y una copia en `api/stock-tracker.js`. El arreglo del
+// doble escape se hizo en el primero; el escaneo vivo usaba la copia.
+//
+// Las pruebas de la tabla no podían verlo: medían la tabla. Esta pide el
+// endpoint, con la red fingida, y recorre la respuesta ENTERA. No busca un
+// campo: busca que no quede NINGUNA entidad en ningún valor, porque el
+// próximo campo doble-escapado va a ser uno que hoy no existe.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Cada string de la respuesta, a cualquier profundidad, con su ruta. */
+function cadenasDe(valor, ruta = '$') {
+  if (typeof valor === 'string') return [[ruta, valor]];
+  if (Array.isArray(valor)) return valor.flatMap((v, i) => cadenasDe(v, `${ruta}[${i}]`));
+  if (valor && typeof valor === 'object') {
+    return Object.entries(valor).flatMap(([k, v]) => cadenasDe(v, `${ruta}.${k}`));
+  }
+  return [];
+}
+const ENTIDAD = new RegExp(String.fromCharCode(38) + '(amp|lt|gt|quot|apos|#\\d+|#x[0-9a-fA-F]+);');
+
+console.log('handler: ninguna entidad XML sale por el endpoint de la pantalla');
+{
+  for (const cat of ['form4', 'insider', '13f']) {
+    global.fetch = routeFetch;
+    _resetTrackerCache();
+    const res = mockRes();
+    await handler({ method: 'GET', query: { cat } }, res);
+    const sucias = cadenasDe(res.body).filter(([, v]) => ENTIDAD.test(v));
+    ok(res.code === 200, `cat=${cat} contesta 200`, res.code);
+    ok(sucias.length === 0, `cat=${cat}: sin entidades XML en la respuesta`,
+      JSON.stringify(sucias.slice(0, 4)));
+  }
+}
+
+console.log('handler: y el `&` llega DECODIFICADO, no desaparecido');
+{
+  // "Sin entidades" se cumpliría también borrando el campo. Lo que se quiere
+  // es el texto real, así que se exige el `&` presente.
+  global.fetch = routeFetch;
+  _resetTrackerCache();
+  const res = mockRes();
+  await handler({ method: 'GET', query: { cat: 'form4' } }, res);
+  const todas = cadenasDe(res.body).map(([, v]) => v).join(' | ');
+  ok(/R&D/.test(todas), 'el cargo con `&` está y se lee como `&`',
+    todas.slice(0, 200));
+  ok(/Acme & Sons/.test(todas), 'el nombre de la emisora también');
+}
+
+console.log('handler: el 13F también (nameOfIssuer salía por `xtag`, no por `xval`)');
+{
+  global.fetch = routeFetch;
+  _resetTrackerCache();
+  const res = mockRes();
+  await handler({ method: 'GET', query: { cat: '13f' } }, res);
+  const todas = cadenasDe(res.body).map(([, v]) => v).join(' | ');
+  ok(/APPLE & CO/.test(todas), 'el nombre del 13F decodificado', todas.slice(0, 300));
+}
+
 if (failures) { console.error(`\n${failures} FALLAS`); process.exit(1); }
 console.log('\nTODOS LOS TESTS PASAN');

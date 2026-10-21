@@ -126,7 +126,7 @@ const FUNDS = [
 // porque es otra lectura, no un filtro más flojo: la tarjeta de TRACKER se
 // queda con las compras destacadas y la pantalla nueva ve todo. Se parsea en
 // la MISMA pasada del escaneo para no pedirle a la SEC dos veces lo mismo.
-import { form4Completo, filasDeForm4, desentidad } from './_lib/form4.js';
+import { form4Completo, filasDeForm4, desentidad, xtag, xval } from './_lib/form4.js';
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import { beat } from './_lib/heartbeat.js';
 import { crearCliente } from './_lib/edgar.js';
@@ -309,16 +309,9 @@ function sample200(text) {
 }
 
 // Tags XML con o sin prefijo de namespace (13F suele venir como ns1:cusip).
-function xtag(block, tag) {
-  const m = new RegExp('<(?:\\w+:)?' + tag + '(?:\\s[^>]*)?>([\\s\\S]*?)</(?:\\w+:)?' + tag + '>', 'i').exec(block);
-  return m ? m[1].trim() : '';
-}
-// Form 4 anida los valores: <transactionDate><value>2026-01-02</value>…
-function xval(block, tag) {
-  const inner = xtag(block, tag);
-  const v = xtag(inner, 'value');
-  return (v || inner).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-}
+// `xtag` y `xval` viven en `api/_lib/form4.js`, una sola vez. Acá había una
+// COPIA idéntica, y es la que dejó el doble escape en pie: el arreglo se hizo
+// en una y el escaneo vivo seguía usando la otra.
 
 function lagDays(fromIso, toIso) {
   const a = new Date(fromIso), b = new Date(toIso);
@@ -338,7 +331,7 @@ export function parseForm4Atom(text) {
     const acc = (/(\d{10}-\d{2}-\d{6})/.exec(href) || /(\d{10}-\d{2}-\d{6})/.exec(e) || [])[1];
     const cik = (/\/edgar\/data\/(\d+)\//i.exec(href) || [])[1];
     if (!acc || !cik || out.has(acc)) continue;
-    out.set(acc, { accession: acc, cik, link: href.replace(/&amp;/g, '&'), updated: xtag(e, 'updated') || null });
+    out.set(acc, { accession: acc, cik, link: desentidad(href), updated: xtag(e, 'updated') || null });
   }
   return [...out.values()];
 }
@@ -851,7 +844,9 @@ export function parse13FInfotable(xml) {
     if (!cusip) continue;
     const value = parseFloat(xtag(b, 'value')) || 0; // dólares completos (post-2023)
     const shares = parseFloat(xtag(b, 'sshPrnamt')) || 0;
-    const prev = byCusip.get(cusip) || { cusip, name: xtag(b, 'nameOfIssuer') || null, value: 0, shares: 0 };
+    // `xval` y no `xtag`: el nombre de la emisora es texto para leer, y 13F
+    // trae `Marsh &amp; McLennan` igual que el Form 4.
+    const prev = byCusip.get(cusip) || { cusip, name: xval(b, 'nameOfIssuer') || null, value: 0, shares: 0 };
     prev.value += value;
     prev.shares += shares;
     byCusip.set(cusip, prev);
