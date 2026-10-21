@@ -243,26 +243,32 @@ export const PUERTA_LECTURA_MS = 90000;
 // El cierre cortado por nuestro reloj queda journaleado en otro lado —
 // `context.llm_error.cuerpos_vacios`, con `vuelta: 'cierre'` y
 // `timeout_nuestro` (arena-shadow / arena-tool-loop)—, y se cuenta desde ahí.
-// La salida dice DÓNDE cayó (`cortes: {loop, cierre}`) y la puerta juzga la
-// SUMA.
+// La salida dice DÓNDE cayó (`cortes: {loop, cierre: {cortado,
+// intentos_cortados}}`) y la puerta juzga la SUMA: loop + (cierre ? 1 : 0).
 //
 // Lo que no se puede ver desde acá: un cierre cortado por nuestro reloj que
 // después se RESCATÓ con el reintento y la corrida terminó bien. Ese corte no
 // se journalea en ninguna parte (solo el camino de aborto escribe
 // `llm_error`), así que no hay de dónde contarlo.
+// Una corrida tiene UN cierre: o lo cortamos o no. `cortado` es lo que suma a
+// la puerta (0 o 1, nunca 2); `intentos_cortados` es el detalle (el cierre se
+// reintenta una vez, y los dos intentos pueden morir por nuestro reloj).
 export function cortesDelCierre(ctx) {
   const le = ctx && ctx.llm_error;
-  if (!le) return 0;
+  if (!le) return { cortado: false, intentos_cortados: 0 };
   // Con `cuerpos_vacios` journaleado, manda la lista: cada vacío del cierre
-  // queda ahí con su intento (arena-tool-loop los empuja todos).
+  // queda ahí con su intento (arena-tool-loop los empuja todos; un intento
+  // OMITIDO —sin reloj, sin proveedor— no trae `timeout_nuestro` y no cuenta).
   if (Array.isArray(le.cuerpos_vacios)) {
-    return le.cuerpos_vacios.filter((x) => x && x.vuelta === 'cierre' && x.timeout_nuestro).length;
+    const n = le.cuerpos_vacios.filter((x) => x && x.vuelta === 'cierre' && x.timeout_nuestro).length;
+    return { cortado: n > 0, intentos_cortados: n };
   }
   // Filas sin `cuerpos_vacios`: si el error final fue nuestro reloj y el loop
   // NO murió antes (si murió, esa vuelta ya está en `vueltas_medidas`), el
   // corte fue el cierre.
   const murioEnLoop = !!(ctx.murio_en || le.murio_en);
-  return le.timeout_nuestro && le.motivo === 'cuerpo_vacio_reloj_nuestro' && !murioEnLoop ? 1 : 0;
+  const cortado = !!(le.timeout_nuestro && le.motivo === 'cuerpo_vacio_reloj_nuestro' && !murioEnLoop);
+  return { cortado, intentos_cortados: cortado ? 1 : 0 };
 }
 
 export function puertaDeCorrida(t, ctx = null) {
@@ -273,7 +279,7 @@ export function puertaDeCorrida(t, ctx = null) {
   const reloj = (lim.reloj_ms && lim.reloj_ms.pct) ?? null;
   const lectura = ms.length ? Math.max(...ms) : null;
   const cortes = { loop: v.filter((x) => x && x.reloj_nuestro).length, cierre: cortesDelCierre(ctx) };
-  const total = cortes.loop + cortes.cierre;
+  const total = cortes.loop + (cortes.cierre.cortado ? 1 : 0);
   return {
     vueltas: t.turns ?? (v.length || null),
     cortó_por: t.stopped_by || null,
