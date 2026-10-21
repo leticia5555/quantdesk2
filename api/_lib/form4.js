@@ -46,11 +46,20 @@ function xtag(block, tag) {
  * —que es la forma de escribir un `&lt;` literal— terminaría convertido en
  * `<` y habríamos inventado una etiqueta que el filing no tenía.
  */
-function desentidad(s) {
+export function desentidad(s) {
   return String(s)
     .replace(/&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|lt|gt|quot|apos|nbsp);/g, (m, dec, hex) => {
-      if (dec) return String.fromCodePoint(Number(dec));
-      if (hex) return String.fromCodePoint(parseInt(hex, 16));
+      // UNA NUMÉRICA QUE DA UN CARÁCTER DE CONTROL SE QUEDA COMO TEXTO.
+      // `&#0;` decodificado es un NUL, y un NUL no se puede guardar en un
+      // `jsonb` de Postgres —"unsupported Unicode escape sequence"—: la
+      // escritura entera falla. Dejarlo como el texto que vino es la opción
+      // que no pierde nada y no rompe nada.
+      const cp = dec ? Number(dec) : (hex ? parseInt(hex, 16) : NaN);
+      if (Number.isFinite(cp)) {
+        if (cp === 9 || cp === 10 || cp === 13) return String.fromCodePoint(cp);
+        if (cp < 32 || cp === 127 || cp > 0x10ffff) return m;
+        return String.fromCodePoint(cp);
+      }
       return { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&nbsp;': ' ' }[m] || m;
     })
     .replace(/&amp;/g, '&');

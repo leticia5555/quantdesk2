@@ -126,7 +126,7 @@ const FUNDS = [
 // porque es otra lectura, no un filtro más flojo: la tarjeta de TRACKER se
 // queda con las compras destacadas y la pantalla nueva ve todo. Se parsea en
 // la MISMA pasada del escaneo para no pedirle a la SEC dos veces lo mismo.
-import { form4Completo, filasDeForm4 } from './_lib/form4.js';
+import { form4Completo, filasDeForm4, desentidad } from './_lib/form4.js';
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import { beat } from './_lib/heartbeat.js';
 import { crearCliente } from './_lib/edgar.js';
@@ -1178,104 +1178,175 @@ async function buildForm4() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// LIMPIEZA ÚNICA: EL `&` QUE YA QUEDÓ GUARDADO
+// LIMPIEZA ÚNICA DEL `&` YA GUARDADO — POR VALOR, NO POR TEXTO
 //
-// El arreglo de `xval` corrige lo que se parsea DE AHORA EN ADELANTE. Las
-// ~241 filas que se guardaron hoy ya tienen la entidad adentro (Lety,
-// 2026-10-21).
+// LA VERSIÓN ANTERIOR REVENTÓ EN PRODUCCIÓN: 500 con
+// "invalid input syntax for type json" (Lety, 2026-10-21, 79 filas por
+// limpiar, ninguna escrita).
 //
-// POR QUÉ LIMPIEZA Y NO RE-LECTURA. Las dos opciones servían:
-//   (a) decodificar lo que ya está guardado;
-//   (b) marcar las filas como pendientes y que el cron las vuelva a bajar.
+// Hacía los reemplazos sobre `filas::text` —el JSON entero como cadena— con
+// este argumento escrito en el comentario: *"un `&` no necesita escape en
+// JSON, así que el reemplazo no puede romper el documento"*. Eso es cierto
+// para `&amp;` y FALSO para `&quot;`: decodificarlo adentro de un string JSON
+// mete una comilla sin escapar y parte el string en dos. El documento deja de
+// ser JSON y Postgres rechaza la escritura entera.
 //
-// Elegí (a) porque (b) tiene un costo visible: la cobertura se mide contando
-// `leido_en is not null and leido_ok`, así que marcar las filas pendientes
-// tira el porcentaje de la pantalla a 0 y lo deja subiendo de a ~240 por
-// corrida —media hora de una pantalla que dice menos de lo que sabe— y
-// encima le pide a la SEC 241 documentos que ya tenemos. La decodificación
-// es la inversa exacta de lo que hizo el doble escape: no pierde nada.
+// Y la prueba contra Postgres no lo vio porque la fila sucia del fixture
+// tenía `&amp;` y `&apos;`, y el apóstrofo SÍ es válido suelto en JSON. El
+// fixture no cubría el único caso que rompía.
 //
-// IDEMPOTENTE POR CONSTRUCCIÓN, no por promesa: el `where` sólo alcanza
-// filas que TODAVÍA tienen una entidad, así que la segunda corrida encuentra
-// 0 y no escribe. Eso además lo hace verificable: correrla dos veces y ver 0
-// en la segunda ES la prueba de que es idempotente.
+// AHORA: se recorre el documento por VALOR. Cada string se decodifica con
+// `desentidad` —el MISMO decodificador que usa el parser, importado, no una
+// segunda copia— y el documento se vuelve a serializar con `JSON.stringify`,
+// que escapa lo que haya que escapar. El texto del JSON no se toca nunca.
 //
-// El orden de los reemplazos es el mismo que en `desentidad`: el `&` AL
-// FINAL. Si fuera primero, un `&lt;` escrito como entidad doble terminaría
-// convertido en `<` y habríamos inventado una etiqueta que el filing no tenía.
-//
-// Se trabaja sobre `filas::text` y no columna por columna porque las
-// transacciones viven en un `jsonb`: el round-trip por texto alcanza todos
-// los campos de adentro de una vez —cargo, quien, emisora, nombre del
-// instrumento, notas al pie— y un `&` no necesita escape en JSON, así que el
-// reemplazo no puede romper el documento.
+// Que sea el mismo decodificador no es prolijidad: es lo que garantiza que
+// una fila limpiada quede IDÉNTICA a una fila recién parseada. Dos
+// implementaciones del mismo decodificado se separan, y entonces "ya se
+// limpió" dejaría de significar "está como si lo hubiéramos parseado bien".
 // ═══════════════════════════════════════════════════════════════════════
+
+// ── QUIÉN ES CANDIDATA A LIMPIEZA ───────────────────────────────────────
+// Esto SÓLO selecciona: busca filas cuyo texto contenga alguna de las cinco
+// entidades. Es un `like`, no una mutación — el bug anterior fue mutar sobre
+// el texto del JSON, y de eso ya no queda nada.
+//
+// La garantía de idempotencia NO sale de acá sino de `entidades_limpias_en`:
+// una entidad doble (`&amp;lt;`) decodifica a `&lt;`, que sigue pareciendo
+// sucio, así que un filtro por contenido no tiene punto fijo.
 const ENT_LT = String.fromCharCode(38) + 'lt;';
 const ENT_GT = String.fromCharCode(38) + 'gt;';
 const ENT_QUOT = String.fromCharCode(38) + 'quot;';
 const ENT_APOS = String.fromCharCode(38) + 'apos;';
 const ENT_AMP = String.fromCharCode(38) + 'amp;';
+const ENT_NUM = String.fromCharCode(38) + '#';
 
-export const ENTIDADES_SQL = (col) => `
-  replace(replace(replace(replace(replace(
-    ${col},
-    '${ENT_LT}', '<'), '${ENT_GT}', '>'), '${ENT_QUOT}', '"'),
-    '${ENT_APOS}', ''''), '${ENT_AMP}', '&')`;
-
-/** Una fila "sucia" es la que todavía tiene alguna de las cinco entidades. */
 export const SUCIA_SQL = (col) => `(${col} like '%${ENT_AMP}%' or ${col} like '%${ENT_LT}%'
-  or ${col} like '%${ENT_GT}%' or ${col} like '%${ENT_QUOT}%' or ${col} like '%${ENT_APOS}%')`;
+  or ${col} like '%${ENT_GT}%' or ${col} like '%${ENT_QUOT}%' or ${col} like '%${ENT_APOS}%'
+  or ${col} like '%${ENT_NUM}%')`;
+
+/**
+ * El documento con cada string decodificado, y cuántos cambiaron.
+ *
+ * Recorre objetos y arreglos a cualquier profundidad. Lo que no es string
+ * —números, booleanos, null— se devuelve tal cual: no hay nada que decodificar
+ * y convertirlo a texto cambiaría el tipo en la base.
+ *
+ * LAS LLAVES TAMBIÉN se decodifican. Un `&` en una llave es raro, pero si
+ * existiera y no se tocara, la llave y su valor contarían historias distintas.
+ */
+export function limpiaDocumento(valor) {
+  let cambios = 0;
+  const anda = (v) => {
+    if (typeof v === 'string') {
+      const d = desentidad(v);
+      if (d !== v) cambios++;
+      return d;
+    }
+    if (Array.isArray(v)) return v.map(anda);
+    if (v && typeof v === 'object') {
+      const out = {};
+      for (const [k, val] of Object.entries(v)) {
+        const kl = desentidad(k);
+        if (kl !== k) cambios++;
+        out[kl] = anda(val);
+      }
+      return out;
+    }
+    return v;
+  };
+  return { limpio: anda(valor), cambios };
+}
+
+/**
+ * Limpia fila por fila, y EL ERROR DE UNA NO TUMBA A LAS DEMÁS.
+ *
+ * Lety: *"que el error de una fila no tumbe a las demás: limpia por fila y
+ * reporta cuáles fallaron"*. La versión anterior hacía un `update` masivo: una
+ * fila mala y las 79 se quedaban sin escribir, que es exactamente lo que pasó.
+ *
+ * `escribe` se inyecta para poder probar el aislamiento con una escritura que
+ * falla a propósito; en producción es la que escribe en Neon.
+ */
+export async function limpiaFilas(filas, escribe) {
+  const limpias = [];
+  const sinCambio = [];
+  const fallidas = [];
+  for (const f of filas || []) {
+    try {
+      const { limpio, cambios } = limpiaDocumento(f.valor);
+      if (!cambios) { sinCambio.push(f.id); continue; }
+      await escribe(f.id, limpio);
+      limpias.push(f.id);
+    } catch (e) {
+      // La fila que falla se reporta CON su causa y sin marca, así que la
+      // próxima corrida la vuelve a intentar. No se pierde ni se oculta.
+      fallidas.push({ id: f.id, error: String((e && e.message) || e) });
+    }
+  }
+  return { limpias, sin_cambio: sinCambio, fallidas };
+}
 
 async function jobLimpiaEntidades({ seco = false } = {}) {
   await ensureSchemaForm4();
 
-  const [{ sucias: txSucias }] = await sql(
-    `select count(*)::int as sucias from mercado_form4_tx
-      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}`);
-  const [{ sucias: ixSucias }] = await sql(
-    `select count(*)::int as sucias from mercado_form4_indice
+  const candidatasTx = await sql(
+    `select accession, filas from mercado_form4_tx
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}
+      order by filing_fecha desc`);
+  const candidatasIx = await sql(
+    `select accession, empresa from mercado_form4_indice
       where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}`);
 
   if (seco) {
     return { job: 'limpia-entidades', seco: true,
-      por_limpiar: { mercado_form4_tx: txSucias, mercado_form4_indice: ixSucias },
+      por_limpiar: { mercado_form4_tx: candidatasTx.length, mercado_form4_indice: candidatasIx.length },
       nota: 'nada se escribió; quitá seco=1 para aplicarlo' };
   }
 
-  // `entidades_limpias_en is null` es lo que hace esto idempotente: la fila
-  // que ya pasó queda sellada, pase lo que pase con su contenido. El filtro
-  // de "sucia" se queda sólo como optimización —no tocar lo que no hace
-  // falta—, no como garantía.
-  const tx = await sql(
-    `update mercado_form4_tx
-        set filas = (${ENTIDADES_SQL('filas::text')})::jsonb, entidades_limpias_en = now()
-      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}
-      returning accession`);
-  const ix = await sql(
-    `update mercado_form4_indice
-        set empresa = ${ENTIDADES_SQL('empresa')}, entidades_limpias_en = now()
-      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}
-      returning accession`);
+  const tx = await limpiaFilas(
+    candidatasTx.map((r) => ({ id: r.accession, valor: r.filas })),
+    async (id, limpio) => {
+      // Parametrizado y serializado por `JSON.stringify`: el escape lo hace
+      // el serializador, no un `replace` sobre el texto del documento.
+      await sql(
+        `update mercado_form4_tx set filas = $2::jsonb, entidades_limpias_en = now()
+          where accession = $1`, [id, JSON.stringify(limpio)]);
+    });
 
-  // VERIFICACIÓN EN LA MISMA CORRIDA: si algo quedó sucio DESPUÉS de
-  // escribir, es que hay una entidad fuera de la lista de cinco, y eso hay
-  // que saberlo acá y no por una captura dentro de tres días.
-  const [{ sucias: restanTx }] = await sql(
-    `select count(*)::int as sucias from mercado_form4_tx
-      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}`);
-  const [{ sucias: restanIx }] = await sql(
-    `select count(*)::int as sucias from mercado_form4_indice
-      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}`);
+  const ix = await limpiaFilas(
+    candidatasIx.map((r) => ({ id: r.accession, valor: r.empresa })),
+    async (id, limpio) => {
+      await sql(
+        `update mercado_form4_indice set empresa = $2, entidades_limpias_en = now()
+          where accession = $1`, [id, limpio]);
+    });
+
+  // Las que no tenían nada que cambiar se sellan igual: la marca significa
+  // "esta fila ya pasó por la migración", no "esta fila tenía algo".
+  for (const lote of [
+    ['mercado_form4_tx', tx.sin_cambio], ['mercado_form4_indice', ix.sin_cambio],
+  ]) {
+    if (!lote[1].length) continue;
+    await sql(`update ${lote[0]} set entidades_limpias_en = now()
+                where accession = any($1::text[])`, [lote[1]]);
+  }
+
+  const fallidas = [...tx.fallidas.map((f) => ({ tabla: 'mercado_form4_tx', ...f })),
+    ...ix.fallidas.map((f) => ({ tabla: 'mercado_form4_indice', ...f }))];
 
   return {
     job: 'limpia-entidades',
-    filas_tocadas: { mercado_form4_tx: tx.length, mercado_form4_indice: ix.length },
-    restantes: { mercado_form4_tx: restanTx, mercado_form4_indice: restanIx },
-    ok: restanTx === 0 && restanIx === 0,
+    filas_tocadas: { mercado_form4_tx: tx.limpias.length, mercado_form4_indice: ix.limpias.length },
+    sin_cambio: { mercado_form4_tx: tx.sin_cambio.length, mercado_form4_indice: ix.sin_cambio.length },
+    // CUÁLES fallaron y por qué, no sólo cuántas: una fila que falla sin
+    // nombre no se puede ir a mirar.
+    fallidas,
+    ok: fallidas.length === 0,
     idempotente: 'la segunda corrida tiene que devolver filas_tocadas en 0',
-    nota: restanTx || restanIx
-      ? 'quedaron filas con entidades: hay alguna fuera de la lista de cinco'
-      : 'ninguna fila quedó con entidades',
+    nota: fallidas.length
+      ? `${fallidas.length} fila(s) no se pudieron limpiar; quedaron SIN marca, así que la próxima corrida las reintenta`
+      : 'todas las filas candidatas quedaron limpias y marcadas',
   };
 }
 
