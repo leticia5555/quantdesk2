@@ -14,6 +14,9 @@
 //                                               símbolos (solo DB), con los
 //                                               3 trimestres más extremos
 //   GET /api/earnings-beat?vista=live&diag=escala
+//   GET /api/earnings-beat?vista=live&diag=instrumento&format=md
+//       → censo del instrumento: qué EPS pide cada mercado abierto (GAAP /
+//         ajustado / no se sabe) y la distribución de spreads del libro del Yes
 //   GET /api/earnings-beat?vista=live&diag=desacuerdos   → la fila en la mano:
 //       pregunta literal del mercado, umbral declarado, nivel de EPS y dictamen
 //                                             → cuántos de los 99 tienen
@@ -72,6 +75,7 @@ import {
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
   estadisticasHistoricas, evaluaDesacuerdo, CRITERIOS_DESACUERDO, indiceYes, num, escalaDelEstimado, PISO_ESCALA,
+  extraeMetricaMercado, comparaMetricas, libroDelYes, METRICA_HISTORICO, umbralDelSlug,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -196,6 +200,9 @@ async function diagDesacuerdos() {
         url: m.url,
         fecha_resolucion: m.fecha_resolucion,
         precio_yes_pct: m.polymarket_yes_pct,
+        precio_tipo: m.precio_tipo,
+        spread_puntos: m.libro ? m.libro.spread_puntos ?? null : null,
+        metrica_mercado: m.metrica ? m.metrica.metrica : null,
         umbral_declarado: m.consenso_eps,
         nivel_eps_reciente: d.instrumento ? d.instrumento.nivel_eps_reciente : null,
         desvio_umbral_pct: d.instrumento ? d.instrumento.desvio_umbral_pct : null,
@@ -233,6 +240,194 @@ async function diagDesacuerdos() {
       'Nada de esto es señal de compra ni de venta. Es dónde mirar.',
     ],
   };
+}
+
+// ── Diag del INSTRUMENTO (?vista=live&diag=instrumento) ───────────────────
+// El censo que se pidió ANTES de decidir nada, tras la alerta falsa de META:
+//
+//   1. MÉTRICA — de los mercados abiertos, cuántos piden GAAP, cuántos
+//      ajustado (non-GAAP) y cuántos no se puede determinar. Con la fila en la
+//      mano (slug, pregunta, el fragmento que decidió) para auditar la lectura.
+//   2. PROFUNDIDAD — la distribución de spreads del libro del Yes, para
+//      proponer el umbral con datos. El umbral NO se fija acá: se reporta la
+//      distribución y cuántos pasarían con cada candidato. Lo decide quien lee.
+//
+// Corre la vista completa: mismos mercados, mismos libros que la pantalla.
+const CANDIDATOS_SPREAD = [2, 3, 5, 10, 15, 20];
+
+function percentil(ordenados, q) {
+  if (!ordenados.length) return null;
+  return ordenados[Math.min(ordenados.length - 1, Math.floor(q * ordenados.length))];
+}
+
+async function diagInstrumento() {
+  const live = await vistaLive({});
+  const filas = [];
+  for (const e of live.empresas || []) {
+    for (const m of e.mercados || []) {
+      const met = m.metrica || {};
+      const pf = met.por_fuente || {};
+      const lb = m.libro || {};
+      filas.push({
+        symbol: e.symbol,
+        slug: m.slug,
+        pregunta: m.titulo,
+        url: m.url,
+        fecha_resolucion: m.fecha_resolucion,
+        metrica: met.metrica || 'indeterminada',
+        metrica_motivo: met.motivo || null,
+        leida_de: met.leida_de || null,
+        slug_lee: pf.slug ? pf.slug.lee : null,
+        pregunta_lee: pf.pregunta ? pf.pregunta.lee : null,
+        descripcion_lee: pf.descripcion ? pf.descripcion.lee : null,
+        fragmento_descripcion: pf.descripcion ? pf.descripcion.fragmento : null,
+        empata_con_historico: comparaMetricas(m.metrica).empata,
+        umbral_descripcion: m.consenso_eps,
+        umbral_slug: m.umbral_slug,
+        volumen: m.volumen,
+        liquidez: m.liquidez,
+        libro_estado: lb.estado || null,
+        bid: lb.bid ?? null, ask: lb.ask ?? null, mid: lb.mid ?? null,
+        spread_puntos: lb.spread_puntos ?? null,
+        niveles_bid: lb.niveles_bid ?? null, niveles_ask: lb.niveles_ask ?? null,
+        outcome_prices_yes: m.outcome_prices_yes,
+        gamma_libro: m.gamma_libro || null,
+        // Hueco entre outcomePrices y el mid: dice cuánto se equivocaba la
+        // tarjeta cuando mostraba outcomePrices sin decir qué era.
+        outcome_prices_vs_mid_puntos: (lb.mid != null && m.outcome_prices_yes != null)
+          ? +((m.outcome_prices_yes - lb.mid) * 100).toFixed(1) : null,
+        dictamen: m.desacuerdo ? m.desacuerdo.clasificacion : null,
+        motivo: m.desacuerdo ? m.desacuerdo.motivo : null,
+      });
+    }
+  }
+
+  const porMetrica = { eps_gaap: 0, eps_ajustado: 0, indeterminada: 0 };
+  const indeterminadas = { sin_mencion: 0, conflicto: 0 };
+  for (const f of filas) {
+    porMetrica[f.metrica] = (porMetrica[f.metrica] || 0) + 1;
+    if (f.metrica === 'indeterminada') indeterminadas[f.metrica_motivo || 'sin_mencion']++;
+  }
+  const porEstadoLibro = {};
+  for (const f of filas) porEstadoLibro[f.libro_estado || 'sin_dato'] = (porEstadoLibro[f.libro_estado || 'sin_dato'] || 0) + 1;
+
+  const spreads = filas.map((f) => f.spread_puntos).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  const spreadsEmpatan = filas.filter((f) => f.empata_con_historico && Number.isFinite(f.spread_puntos)).map((f) => f.spread_puntos);
+  const tramos = [[0, 2], [2, 5], [5, 10], [10, 15], [15, 20], [20, 30], [30, 100]];
+  const huecosPrecio = filas.map((f) => f.outcome_prices_vs_mid_puntos).filter((x) => Number.isFinite(x));
+
+  filas.sort((a, b) => (a.metrica === b.metrica ? (b.spread_puntos ?? 999) - (a.spread_puntos ?? 999) : a.metrica.localeCompare(b.metrica)));
+
+  return {
+    diag: 'instrumento',
+    pregunta: 'De los mercados abiertos: ¿qué EPS pide cada uno (GAAP, ajustado, no se sabe), y qué tan ancho es su libro?',
+    generado_en: live.generado_en,
+    mercados: filas.length,
+    cobertura: live.cobertura,
+    metrica_historico: METRICA_HISTORICO,
+    metrica: {
+      por_metrica: porMetrica,
+      indeterminadas_por_motivo: indeterminadas,
+      empatan_con_historico: filas.filter((f) => f.empata_con_historico).length,
+    },
+    libro: {
+      pedidos: live.libros ? live.libros.pedidos : null,
+      por_estado: porEstadoLibro,
+      con_spread: spreads.length,
+      spread_puntos: {
+        min: spreads.length ? spreads[0] : null,
+        p10: percentil(spreads, 0.10), p25: percentil(spreads, 0.25), mediana: percentil(spreads, 0.50),
+        p75: percentil(spreads, 0.75), p90: percentil(spreads, 0.90),
+        max: spreads.length ? spreads[spreads.length - 1] : null,
+      },
+      histograma: tramos.map(([a, b]) => ({ tramo: a === 0 ? `[0, ${b}]` : b === 100 ? `> ${a}` : `(${a}, ${b}]`, n: spreads.filter((x) => (a === 0 ? x >= 0 : x > a) && x <= b).length })),
+      // Cuántos pasarían con cada umbral candidato, en total y entre los que
+      // además EMPATAN en métrica (los únicos donde la alerta podría disparar).
+      candidatos: CANDIDATOS_SPREAD.map((c) => ({
+        spread_max_puntos: c,
+        pasan: spreads.filter((x) => x <= c).length,
+        pasan_y_empatan_metrica: spreadsEmpatan.filter((x) => x <= c).length,
+      })),
+      umbral_congelado: CRITERIOS_DESACUERDO.spread_max_puntos,
+    },
+    precio: {
+      que_se_muestra: 'mid del libro del Yes (CLOB). Sin libro: outcomePrices de Gamma, dicho como tal.',
+      outcome_prices_vs_mid_puntos: {
+        con_los_dos: huecosPrecio.length,
+        mas_de_5_puntos: huecosPrecio.filter((x) => Math.abs(x) > 5).length,
+        max_abs: huecosPrecio.length ? Math.max(...huecosPrecio.map(Math.abs)) : null,
+      },
+    },
+    filas,
+    como_leerlo: [
+      '`metrica` sale de leer el slug, la pregunta y la descripción por separado (`slug_lee`, `pregunta_lee`, `descripcion_lee`). Si ninguna dice nada → indeterminada (sin_mencion). Si se contradicen → indeterminada (conflicto). No se adivina.',
+      'La alerta de desacuerdo SOLO puede disparar si `empata_con_historico` es true: el histórico cuenta EPS AJUSTADO de Alpha Vantage.',
+      '`spread_puntos` = ask − bid del Yes, en centavos. `candidatos` dice cuántos mercados pasarían con cada umbral. El umbral NO está fijado (`umbral_congelado: null`): mientras tanto la alerta no dispara en ningún mercado.',
+      '`gamma_libro` es lo que Gamma trae crudo (bestBid/bestAsk/spread/lastTradePrice) sin declarar a qué outcome se refiere: está para cotejar contra el libro del CLOB, no se usa.',
+      'Nada de esto es señal de compra ni de venta, y la Fase 2 sigue en NO-GO: QuantDesk no emite probabilidad propia.',
+    ],
+  };
+}
+
+// Markdown del censo del instrumento: para pegarlo y leerlo sin abrir un JSON.
+function instrumentoMd(d) {
+  const L = [];
+  const fmt = (x, dec = 1) => (x === null || x === undefined ? '—' : Number(x).toFixed(dec));
+  L.push('# earnings-beat · censo del instrumento (métrica + profundidad)');
+  L.push('');
+  L.push(`Generado: ${d.generado_en} · mercados abiertos: **${d.mercados}**${d.cobertura && d.cobertura.parcial ? ' · ⚠ cobertura parcial: ' + d.cobertura.nota : ''}`);
+  L.push('');
+  L.push(`Histórico: **${d.metrica_historico.etiqueta}** — ${d.metrica_historico.fuente}.`);
+  L.push('');
+  L.push('## 1. Métrica que pide el mercado');
+  L.push('');
+  const pm = d.metrica.por_metrica;
+  L.push(`| GAAP EPS | EPS ajustado (non-GAAP) | indeterminada | de ellas: sin mención | de ellas: conflicto |`);
+  L.push('|---|---|---|---|---|');
+  L.push(`| ${pm.eps_gaap} | ${pm.eps_ajustado} | ${pm.indeterminada} | ${d.metrica.indeterminadas_por_motivo.sin_mencion} | ${d.metrica.indeterminadas_por_motivo.conflicto} |`);
+  L.push('');
+  L.push(`Empatan con el histórico (los únicos donde la alerta podría disparar): **${d.metrica.empatan_con_historico}**.`);
+  L.push('');
+  L.push('## 2. Spread del libro del Yes (CLOB)');
+  L.push('');
+  L.push(`Libros pedidos: ${d.libro.pedidos ?? '—'} · por estado: ${Object.entries(d.libro.por_estado).map(([k, v]) => `${k}=${v}`).join(' · ') || '—'}`);
+  L.push('');
+  const sp = d.libro.spread_puntos;
+  L.push('| con spread | min | p10 | p25 | mediana | p75 | p90 | max |');
+  L.push('|---|---|---|---|---|---|---|---|');
+  L.push(`| ${d.libro.con_spread} | ${fmt(sp.min)} | ${fmt(sp.p10)} | ${fmt(sp.p25)} | ${fmt(sp.mediana)} | ${fmt(sp.p75)} | ${fmt(sp.p90)} | ${fmt(sp.max)} |`);
+  L.push('');
+  L.push('| tramo (¢) | mercados |');
+  L.push('|---|---|');
+  for (const h of d.libro.histograma) L.push(`| ${h.tramo} | ${h.n} |`);
+  L.push('');
+  L.push('| umbral candidato (¢) | pasan | pasan y empatan métrica |');
+  L.push('|---|---|---|');
+  for (const c of d.libro.candidatos) L.push(`| ${c.spread_max_puntos} | ${c.pasan} | ${c.pasan_y_empatan_metrica} |`);
+  L.push('');
+  L.push(`Umbral congelado: **${d.libro.umbral_congelado === null ? 'ninguno todavía — la alerta no dispara hasta fijarlo' : d.libro.umbral_congelado}**.`);
+  L.push('');
+  const hp = d.precio.outcome_prices_vs_mid_puntos;
+  L.push(`outcomePrices vs mid: ${hp.con_los_dos} con los dos · ${hp.mas_de_5_puntos} separados por más de 5 puntos · máximo ${fmt(hp.max_abs)}.`);
+  L.push('');
+  L.push('## 3. Fila por fila');
+  L.push('');
+  L.push('| símbolo | resuelve | métrica | motivo | slug / pregunta / descripción | umbral desc · slug | vol | liq | bid | ask | spread | outcomePrices | dictamen |');
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const f of d.filas) {
+    L.push(`| ${f.symbol} | ${f.fecha_resolucion || '—'} | ${f.metrica} | ${f.metrica_motivo || ''} | ${f.slug_lee || '·'} / ${f.pregunta_lee || '·'} / ${f.descripcion_lee || '·'} | ${fmt(f.umbral_descripcion, 2)} · ${fmt(f.umbral_slug, 2)} | ${fmt(f.volumen, 0)} | ${fmt(f.liquidez, 0)} | ${fmt(f.bid, 3)} | ${fmt(f.ask, 3)} | ${fmt(f.spread_puntos)} | ${fmt(f.outcome_prices_yes, 3)} | ${f.dictamen || '—'}${f.motivo ? ' (' + f.motivo + ')' : ''} |`);
+  }
+  L.push('');
+  L.push('### Slugs y fragmentos (para auditar la lectura de la métrica)');
+  L.push('');
+  for (const f of d.filas) {
+    L.push(`- **${f.symbol}** \`${f.slug}\` → ${f.metrica}${f.fragmento_descripcion ? ' · descripción: «' + f.fragmento_descripcion + '»' : ''}`);
+  }
+  L.push('');
+  for (const c of d.como_leerlo) L.push(`- ${c}`);
+  L.push('');
+  L.push('**El umbral de spread y el trato de las indeterminadas los decide quien lee esto.** El censo reporta; no se auto-aprueba.');
+  return L.join('\n');
 }
 
 // ── Diagnóstico por símbolo (?vista=live&diag=MU,COST) ────────────────────
@@ -349,14 +544,59 @@ async function vistaLive(ctx) {
       symbol: simbolo.symbol,
       fecha_resolucion: isoDia(m.fin),
       consenso_eps: consenso ? consenso.valor : null,
-      // Precio ACTUAL del Yes, tal como lo publica Gamma en `outcomePrices`.
-      // La fuente se cita en la respuesta y en la tarjeta: es el precio de
-      // Polymarket, no una opinión nuestra.
-      polymarket_yes: precioYes,
-      polymarket_yes_pct: precioYes === null ? null : Math.round(precioYes * 100),
-      fuente_precio: 'Polymarket · Gamma outcomePrices',
+      // El umbral que trae el slug ("…-6pt31" → 6.31), aparte: sirve para
+      // cotejar el que se leyó de la descripción, no lo reemplaza.
+      umbral_slug: umbralDelSlug(m.slug),
+      // QUÉ EPS pide el mercado (GAAP, ajustado o no se sabe), leído del slug
+      // y del texto. Es la mitad de la pregunta "¿esto se puede comparar?".
+      metrica: extraeMetricaMercado(m),
+      // `outcomePrices` de Gamma, crudo. Gamma no documenta si es el último
+      // trade o el mid — en META dio 7% con el mid en ~16% — así que NO es el
+      // precio que se compara: queda para cotejar.
+      outcome_prices_yes: precioYes,
+      token_yes: tokenYes(m),
+      // Lo que Gamma trae del libro, CRUDO y sin interpretar: Gamma no declara
+      // a qué outcome se refieren. El libro que cuenta es el del CLOB, abajo.
+      gamma_libro: {
+        best_bid: num(raw.bestBid), best_ask: num(raw.bestAsk),
+        spread: num(raw.spread), last_trade: num(raw.lastTradePrice),
+      },
       volumen: m.volumen,
+      liquidez: m.liquidez,
     });
+  }
+
+  // ── El libro del Yes, del CLOB ──
+  // Es el único lugar que dice bid y ask SIN ambigüedad de outcome: se pide
+  // por el token del Yes. Si el CLOB no contesta, se dice — y la alerta no
+  // dispara, porque sin libro no se sabe de qué precio se habla.
+  let librosPedidos = 0;
+  const fallosLibro = {};
+  for (let i = 0; i < abiertos.length; i += CONCURRENCIA_CLOB) {
+    const tanda = abiertos.slice(i, i + CONCURRENCIA_CLOB);
+    await Promise.all(tanda.map(async (a) => {
+      if (!a.token_yes) { a.libro = { estado: 'sin_token_yes' }; return; }
+      if (restante() < 8000) { a.libro = { estado: 'sin_presupuesto' }; return; }
+      librosPedidos++;
+      const r = await clob('/book', { token_id: a.token_yes });
+      if (r.status !== 'ok') {
+        a.libro = { estado: 'clob_' + r.status, http: r.http ?? null };
+        fallosLibro[r.status] = (fallosLibro[r.status] || 0) + 1;
+        return;
+      }
+      a.libro = { ...libroDelYes(r.body), fuente: 'Polymarket · CLOB /book (token del Yes)' };
+    }));
+  }
+  // EL precio que se muestra y se compara, con su TIPO dicho: el mid del libro
+  // cuando hay libro; si no, outcomePrices declarado como tal.
+  for (const a of abiertos) {
+    const conLibro = a.libro && a.libro.estado === 'ok';
+    a.polymarket_yes = conLibro ? a.libro.mid : a.outcome_prices_yes;
+    a.polymarket_yes_pct = a.polymarket_yes === null || a.polymarket_yes === undefined ? null : Math.round(a.polymarket_yes * 100);
+    a.precio_tipo = conLibro ? 'mid' : a.outcome_prices_yes !== null ? 'outcome_prices' : null;
+    a.fuente_precio = conLibro
+      ? 'Polymarket · mid del libro del Yes (CLOB)'
+      : 'Polymarket · Gamma outcomePrices (Gamma no dice si es último o mid)';
   }
 
   // Más próximo a reportar primero: es el orden en que la información caduca.
@@ -416,6 +656,8 @@ async function vistaLive(ctx) {
         consenso_declarado: m.consenso_eps,
         fecha_reporte: m.fecha_resolucion,
         hoy,
+        metrica_mercado: m.metrica,
+        libro: m.libro,
       }),
     }));
     // Varios mercados abiertos de la misma empresa = varios umbrales sobre el
@@ -485,9 +727,12 @@ async function vistaLive(ctx) {
       descartes,
     },
     historico_error: errorHistorico,
+    libros: { pedidos: librosPedidos, fallos: fallosLibro },
     fuentes: {
-      mercados_y_precio: 'Polymarket (Gamma API, pública)',
+      mercados_y_precio: 'Polymarket (Gamma API, pública) · libro del Yes del CLOB',
+      precio_comparado: 'mid del libro del Yes (CLOB /book). Sin libro: outcomePrices de Gamma, declarado como tal, y la alerta no dispara.',
       historico_eps: 'Alpha Vantage EARNINGS vía pead_earnings',
+      metrica_historico: METRICA_HISTORICO,
     },
     aviso: {
       es: 'El histórico es un conteo de trimestres pasados, NO una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.',
@@ -954,6 +1199,15 @@ export default async function handler(req, res) {
       // ?diag=MU,COST → base histórica de esos símbolos, sin pasar por Gamma.
       if (q.diag) {
         const cual = String(q.diag).toLowerCase();
+        if (cual === 'instrumento') {
+          const d = await diagInstrumento();
+          res.setHeader('Cache-Control', 'no-store');
+          if (['md', 'markdown'].includes(String(q.format || '').toLowerCase())) {
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            return res.status(200).send(instrumentoMd(d));
+          }
+          return res.status(200).json(d);
+        }
         const out = cual === 'escala' ? await censoDeEscala()
           : cual === 'desacuerdos' ? await diagDesacuerdos()
           : await diagnosticoSimbolos(String(q.diag).split(','));
@@ -1036,5 +1290,5 @@ export default async function handler(req, res) {
   }
 }
 
-export { corre, ESTRATEGIAS };
+export { corre, ESTRATEGIAS, diagInstrumento, instrumentoMd, vistaLive };
 export { filasDe, aplanaMercados, cosechaDeBusqueda, formaDe } from './_lib/earnings-beat-descubrir.js';

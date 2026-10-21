@@ -2550,10 +2550,24 @@ function ebLiveCard(e){
     : smL('histórico completo: '+comp.beats+' de '+comp.total+' ('+comp.pct+'%)',
           'full history: '+comp.beats+' of '+comp.total+' ('+comp.pct+'%)');
 
-  // "Polymarket hoy: 68%" — con la fuente citada.
+  // "Polymarket hoy: 16% (mid del libro)" — con el TIPO de precio dicho. En
+  // META la tarjeta mostró 7% (outcomePrices), Polymarket 16% (mid) y entrar
+  // costaba 28¢ (ask): tres números para lo mismo, y no se sabía cuál era el
+  // nuestro. El tipo lo decide el endpoint (`precio_tipo`); acá se nombra.
+  const tipoTxt = m.precio_tipo==='mid' ? smL(' (mid del libro)',' (order-book mid)')
+    : m.precio_tipo==='outcome_prices' ? smL(' (outcomePrices de Gamma: no se sabe si es último o mid)',' (Gamma outcomePrices: last or mid is unknown)')
+    : '';
   const pmTxt = (m.polymarket_yes_pct===null||m.polymarket_yes_pct===undefined)
     ? smL('Polymarket hoy: sin precio','Polymarket today: no price')
-    : smL('Polymarket hoy: '+m.polymarket_yes_pct+'%','Polymarket today: '+m.polymarket_yes_pct+'%');
+    : smL('Polymarket hoy: '+m.polymarket_yes_pct+'%','Polymarket today: '+m.polymarket_yes_pct+'%')+tipoTxt;
+  // Profundidad AL LADO del precio: bid, ask y spread del Yes, volumen y
+  // liquidez. Un precio de un libro de $1.3K no pesa lo mismo que uno de $1M.
+  const lb=m.libro||{};
+  const cts=x=>(x===null||x===undefined)?'—':(Number(x)*100).toFixed(1)+'¢';
+  const libroTxt = lb.estado==='ok'
+    ? 'bid '+cts(lb.bid)+' · ask '+cts(lb.ask)+' · spread '+Number(lb.spread_puntos).toFixed(1)+'¢'
+    : smL('sin libro del Yes','no Yes order book')+(lb.estado?' ('+lb.estado+')':'');
+  const profTxt = smL('volumen ','volume ')+ebUsdCorto(m.volumen)+' · '+smL('liquidez ','liquidity ')+ebUsdCorto(m.liquidez);
 
   // La racha se cuenta sobre LA MISMA ventana del titular. Si el titular mira
   // 20 trimestres y la racha mira 121, la tarjeta se contradice sola. `tope`
@@ -2597,8 +2611,15 @@ function ebLiveCard(e){
       +'<span style="color:#555;">'+smL('est ','est ')+est+' → '+rep+'</span></div>';
   }).join('');
 
-  const consenso=(m.consenso_eps===null||m.consenso_eps===undefined)?'' :
-    '<div style="font-size:9px;color:#666;margin-top:2px;">'+smL('Consenso del mercado: ','Market consensus: ')+Number(m.consenso_eps).toFixed(2)+'</div>';
+  // QUÉ pide el mercado: la métrica (GAAP / ajustado / no se sabe) JUNTO al
+  // umbral. Es lo que la alerta falsa de META no decía: el mercado pedía GAAP
+  // EPS > $6.31 y el histórico cuenta EPS ajustado.
+  const met=(m.metrica&&m.metrica.metrica)||'indeterminada';
+  const metTxt=smL(m.metrica&&m.metrica.etiqueta||'no se pudo determinar',EB_METRICA_EN[met]||EB_METRICA_EN.indeterminada);
+  const umbral=(m.consenso_eps!==null&&m.consenso_eps!==undefined)?m.consenso_eps:m.umbral_slug;
+  const umbralTxt=(umbral===null||umbral===undefined)?smL('umbral no declarado','threshold not declared')
+    : smL('umbral ','threshold ')+'$'+Number(umbral).toFixed(2);
+  const consenso='<div style="font-size:9px;color:#666;margin-top:2px;">'+smL('El mercado pide: ','The market asks for: ')+metTxt+' · '+umbralTxt+'</div>';
 
   // ── BLOQUE DE DESACUERDO ────────────────────────────────────────
   // LA CAUSA LA DECIDE EL ENDPOINT. Acá solo se TRADUCE por código: la nota de
@@ -2621,13 +2642,15 @@ function ebLiveCard(e){
       +'<span style="font-family:var(--mono);font-size:9px;color:#666;">'+(e.fecha_resolucion||'—')+(dias!==null?' · '+dias:'')+'</span>'
     +'</div>'
     +'<div style="font-family:var(--mono);font-size:11px;color:#ff6600;">'+pmTxt+'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#888;">'+libroTxt+'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#666;">'+profTxt+'</div>'
     +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(m.fuente_precio||'Polymarket')+'</div>'
     +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">'+historicoTxt+'</div>'
     +(completoTxt?'<div style="font-size:9px;color:#666;">'+completoTxt+'</div>':'')
     +(racha?'<div style="font-size:9px;color:#888;margin-top:2px;">'+racha+'</div>':'')
     +(sorpresa?'<div style="font-size:9px;color:#888;">'+sorpresa+'</div>':'')
     +(sorpresaNota?'<div style="font-size:8px;color:#7a6a45;line-height:1.3;">'+sorpresaNota+'</div>':'')
-    +'<div style="font-size:8px;color:#444;margin-bottom:6px;">'+smL('fuente: historial de EPS (Alpha Vantage)','source: EPS history (Alpha Vantage)')+'</div>'
+    +'<div style="font-size:8px;color:#444;margin-bottom:6px;">'+smL('fuente: EPS AJUSTADO (Alpha Vantage), no GAAP','source: ADJUSTED EPS (Alpha Vantage), not GAAP')+'</div>'
     +desacuerdoTxt
     +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
       +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')
@@ -2657,6 +2680,11 @@ const EB_DONDE_MIRAR_EN = {
   ocho_k: "the company's latest 8-Ks (EDGAR)",
   pares: 'what its sector peers reported this quarter',
 };
+const EB_METRICA_EN = {
+  eps_gaap: 'GAAP EPS',
+  eps_ajustado: 'adjusted EPS (non-GAAP)',
+  indeterminada: 'could not be determined',
+};
 const EB_LECTURA_EN = {
   instrumento_primero: 'A gap this size is produced more easily by a market asking something ELSE than by new information: check the instrument before the news.',
   ambas_causas: 'It could be information the track record does not contain, or the two figures not measuring the same thing. There is no telling which without opening the market.',
@@ -2674,6 +2702,33 @@ function ebDesacuerdoBloque(e, m){
       +smL(ds.cuantos_mercados+' mercados abiertos de esta empresa, con umbrales distintos sobre el mismo reporte. La tasa histórica solo es comparable con el que pregunta por el consenso.',
            ds.cuantos_mercados+' open markets for this company, with different thresholds on the same report. The track record is only comparable with the one asking about consensus.')
       +'</div>');
+  }
+
+  // Por qué NO hay comparación, cuando no la hay por el INSTRUMENTO. Estos
+  // cierres los decide el endpoint (`d.motivo`); acá solo se nombran.
+  // Métricas distintas o no determinadas: en lugar de la alerta, el aviso.
+  if(d&&(d.motivo==='metrica_distinta'||d.motivo==='metrica_indeterminada')&&d.metrica){
+    const mEn=EB_METRICA_EN[d.metrica.mercado]||EB_METRICA_EN.indeterminada;
+    const en=d.motivo==='metrica_distinta'
+      ? 'Different metrics: the market asks for '+mEn+', the track record counts adjusted EPS — not comparable.'
+      : 'Could not read which EPS the market asks for (GAAP or adjusted). The track record counts adjusted EPS: without the market\'s metric, they are not compared.';
+    partes.push('<div style="border-top:1px solid #2a2118;margin-top:6px;padding-top:6px;font-size:9px;color:#b89a5e;line-height:1.35;">'
+      +'⚠ '+smL(d.metrica.aviso||'',en)+'</div>');
+  }
+  if(d&&d.motivo==='spread_ancho'&&d.libro){
+    partes.push('<div style="font-size:9px;color:#7a6a45;line-height:1.35;margin-top:4px;">'
+      +smL('Libro delgado: spread de '+Number(d.libro.spread_puntos).toFixed(1)+'¢ entre bid y ask. Con un libro así no hay UN precio que comparar con el histórico.',
+           'Thin book: '+Number(d.libro.spread_puntos).toFixed(1)+'¢ bid-ask spread. With a book like this there is no single price to compare with the track record.')+'</div>');
+  }
+  if(d&&d.motivo==='sin_libro'){
+    partes.push('<div style="font-size:9px;color:#666;line-height:1.35;margin-top:4px;">'
+      +smL('Sin libro del Yes: no se sabe de qué precio se habla, así que no se compara con el histórico.',
+           'No Yes order book: it is unclear which price this is, so it is not compared with the track record.')+'</div>');
+  }
+  if(d&&d.motivo==='umbral_spread_sin_congelar'){
+    partes.push('<div style="font-size:8px;color:#555;line-height:1.35;margin-top:4px;">'
+      +smL('Comparación con el histórico en pausa: el spread máximo se fija con datos antes de volver a alertar.',
+           'Comparison with the track record paused: the maximum spread is being set from data before alerting again.')+'</div>');
   }
 
   if(d&&d.clasificacion==='desacuerdo'&&d.gap_puntos!==null){
@@ -2707,6 +2762,16 @@ function ebDesacuerdoBloque(e, m){
   }
 
   return partes.join('');
+}
+
+// Monto AGREGADO en dólares, corto: $4.2K, $1.3M. No es un precio (el lint de
+// precios lo deja fuera a propósito): es volumen o liquidez de un mercado.
+function ebUsdCorto(n){
+  if(n===null||n===undefined||!isFinite(Number(n))) return '—';
+  const x=Number(n);
+  if(x>=1e6) return '$'+(x/1e6).toFixed(1)+'M';
+  if(x>=1e3) return '$'+(x/1e3).toFixed(1)+'K';
+  return '$'+x.toFixed(0);
 }
 
 // Días hasta la fecha, calculados en runtime (nunca una fecha tatuada).
