@@ -157,7 +157,7 @@ import {
 //     alcanzando, y mientras tanto la cobertura DICE cuántos faltan en vez
 //     de fingir que están.
 // ═══════════════════════════════════════════════════════════════════════
-const SCHEMA_FORM4 = [
+export const SCHEMA_FORM4 = [
   // Lo que el índice dice que existe. El `primary key` es el accession, así
   // que correr el job dos veces sobre el mismo día no duplica nada.
   `create table if not exists mercado_form4_indice (
@@ -197,6 +197,17 @@ const SCHEMA_FORM4 = [
    )`,
   `create index if not exists mercado_form4_tx_fecha_idx
      on mercado_form4_tx (filing_fecha desc)`,
+  // ── LA MARCA DE LA LIMPIEZA ÚNICA DE ENTIDADES ──────────────────────
+  // La idempotencia NO puede salir de la forma del dato, y la prueba contra
+  // Postgres lo demostró: `&amp;lt;` decodifica a `&lt;`, que sigue
+  // pareciendo "sucio", así que un segundo pase lo volvería `<` e inventaría
+  // la etiqueta que el filing no tenía. Justo lo que había que evitar.
+  //
+  // Entonces la idempotencia sale de una MARCA: la fila que ya pasó por la
+  // migración queda sellada y no se vuelve a tocar, sin importar qué parezca
+  // su contenido. Y de paso queda auditable cuándo se limpió cada una.
+  `alter table mercado_form4_tx add column if not exists entidades_limpias_en timestamptz`,
+  `alter table mercado_form4_indice add column if not exists entidades_limpias_en timestamptz`,
 ];
 
 let esquemaListo = false;
@@ -1166,6 +1177,108 @@ async function buildForm4() {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// LIMPIEZA ÚNICA: EL `&` QUE YA QUEDÓ GUARDADO
+//
+// El arreglo de `xval` corrige lo que se parsea DE AHORA EN ADELANTE. Las
+// ~241 filas que se guardaron hoy ya tienen la entidad adentro (Lety,
+// 2026-10-21).
+//
+// POR QUÉ LIMPIEZA Y NO RE-LECTURA. Las dos opciones servían:
+//   (a) decodificar lo que ya está guardado;
+//   (b) marcar las filas como pendientes y que el cron las vuelva a bajar.
+//
+// Elegí (a) porque (b) tiene un costo visible: la cobertura se mide contando
+// `leido_en is not null and leido_ok`, así que marcar las filas pendientes
+// tira el porcentaje de la pantalla a 0 y lo deja subiendo de a ~240 por
+// corrida —media hora de una pantalla que dice menos de lo que sabe— y
+// encima le pide a la SEC 241 documentos que ya tenemos. La decodificación
+// es la inversa exacta de lo que hizo el doble escape: no pierde nada.
+//
+// IDEMPOTENTE POR CONSTRUCCIÓN, no por promesa: el `where` sólo alcanza
+// filas que TODAVÍA tienen una entidad, así que la segunda corrida encuentra
+// 0 y no escribe. Eso además lo hace verificable: correrla dos veces y ver 0
+// en la segunda ES la prueba de que es idempotente.
+//
+// El orden de los reemplazos es el mismo que en `desentidad`: el `&` AL
+// FINAL. Si fuera primero, un `&lt;` escrito como entidad doble terminaría
+// convertido en `<` y habríamos inventado una etiqueta que el filing no tenía.
+//
+// Se trabaja sobre `filas::text` y no columna por columna porque las
+// transacciones viven en un `jsonb`: el round-trip por texto alcanza todos
+// los campos de adentro de una vez —cargo, quien, emisora, nombre del
+// instrumento, notas al pie— y un `&` no necesita escape en JSON, así que el
+// reemplazo no puede romper el documento.
+// ═══════════════════════════════════════════════════════════════════════
+const ENT_LT = String.fromCharCode(38) + 'lt;';
+const ENT_GT = String.fromCharCode(38) + 'gt;';
+const ENT_QUOT = String.fromCharCode(38) + 'quot;';
+const ENT_APOS = String.fromCharCode(38) + 'apos;';
+const ENT_AMP = String.fromCharCode(38) + 'amp;';
+
+export const ENTIDADES_SQL = (col) => `
+  replace(replace(replace(replace(replace(
+    ${col},
+    '${ENT_LT}', '<'), '${ENT_GT}', '>'), '${ENT_QUOT}', '"'),
+    '${ENT_APOS}', ''''), '${ENT_AMP}', '&')`;
+
+/** Una fila "sucia" es la que todavía tiene alguna de las cinco entidades. */
+export const SUCIA_SQL = (col) => `(${col} like '%${ENT_AMP}%' or ${col} like '%${ENT_LT}%'
+  or ${col} like '%${ENT_GT}%' or ${col} like '%${ENT_QUOT}%' or ${col} like '%${ENT_APOS}%')`;
+
+async function jobLimpiaEntidades({ seco = false } = {}) {
+  await ensureSchemaForm4();
+
+  const [{ sucias: txSucias }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_tx
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}`);
+  const [{ sucias: ixSucias }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_indice
+      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}`);
+
+  if (seco) {
+    return { job: 'limpia-entidades', seco: true,
+      por_limpiar: { mercado_form4_tx: txSucias, mercado_form4_indice: ixSucias },
+      nota: 'nada se escribió; quitá seco=1 para aplicarlo' };
+  }
+
+  // `entidades_limpias_en is null` es lo que hace esto idempotente: la fila
+  // que ya pasó queda sellada, pase lo que pase con su contenido. El filtro
+  // de "sucia" se queda sólo como optimización —no tocar lo que no hace
+  // falta—, no como garantía.
+  const tx = await sql(
+    `update mercado_form4_tx
+        set filas = (${ENTIDADES_SQL('filas::text')})::jsonb, entidades_limpias_en = now()
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}
+      returning accession`);
+  const ix = await sql(
+    `update mercado_form4_indice
+        set empresa = ${ENTIDADES_SQL('empresa')}, entidades_limpias_en = now()
+      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}
+      returning accession`);
+
+  // VERIFICACIÓN EN LA MISMA CORRIDA: si algo quedó sucio DESPUÉS de
+  // escribir, es que hay una entidad fuera de la lista de cinco, y eso hay
+  // que saberlo acá y no por una captura dentro de tres días.
+  const [{ sucias: restanTx }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_tx
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')}`);
+  const [{ sucias: restanIx }] = await sql(
+    `select count(*)::int as sucias from mercado_form4_indice
+      where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')}`);
+
+  return {
+    job: 'limpia-entidades',
+    filas_tocadas: { mercado_form4_tx: tx.length, mercado_form4_indice: ix.length },
+    restantes: { mercado_form4_tx: restanTx, mercado_form4_indice: restanIx },
+    ok: restanTx === 0 && restanIx === 0,
+    idempotente: 'la segunda corrida tiene que devolver filas_tocadas en 0',
+    nota: restanTx || restanIx
+      ? 'quedaron filas con entidades: hay alguna fuera de la lista de cinco'
+      : 'ninguna fila quedó con entidades',
+  };
+}
+
 // ── Handler (patrón vc-feed: cache doble, stale-on-fail, nunca 500) ──
 const BUILDERS = { insider: buildInsider, form4: buildForm4, '13f': build13F };
 
@@ -1201,7 +1314,10 @@ export default async function handler(req, res) {
       if (job === 'cobertura') {
         return res.status(200).json(await coberturaForm4({ dias: Math.min(Number(q.dias) || 10, 60) }));
       }
-      return res.status(400).json({ error: 'job must be indice | form4 | cobertura' });
+      if (job === 'limpia-entidades') {
+        return res.status(200).json(await jobLimpiaEntidades({ seco: q.seco === '1' || q.seco === 'true' }));
+      }
+      return res.status(400).json({ error: 'job must be indice | form4 | cobertura | limpia-entidades' });
     } catch (e) {
       return res.status(500).json({ job, error: String((e && e.message) || e), ms: Date.now() - t0 });
     }

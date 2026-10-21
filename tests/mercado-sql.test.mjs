@@ -36,6 +36,7 @@ import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
 import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS, SQL_PAGINA } from '../api/noticias.js';
 import { tickersDeFila } from '../api/_lib/noticias.js';
 import { SQL_NOTICIAS_LOCALES_TICKER, SQL_NOTICIAS_LOCALES_PALABRAS } from '../api/_lib/arena-tools.js';
+import { SCHEMA_FORM4, ENTIDADES_SQL, SUCIA_SQL } from '../api/stock-tracker.js';
 
 const PUERTO = 55433;
 
@@ -420,5 +421,93 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
       `hacia adelante: ${alrededorDel10[alrededorDel10.length - 1]}`,
     );
   });
+
+
+  // ═════════════════════════════════════════════════════════════════════
+  // LA LIMPIEZA DEL `&` DOBLE-ESCAPADO, CONTRA POSTGRES DE VERDAD
+  //
+  // Esto hace un UPDATE sobre datos de producción, así que el SQL no se manda
+  // sin correrlo. Y lo que importa medir no es que la sintaxis pase: es que
+  // (a) el `jsonb` siga siendo `jsonb` después del round-trip por texto,
+  // (b) el orden de los reemplazos no invente etiquetas, y
+  // (c) la SEGUNDA corrida no toque nada — que es lo que Lety pidió.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('la limpieza de entidades: decodifica, no rompe el jsonb, y es idempotente', () => {
+    psql(SCHEMA_FORM4.map((q) => q + ';').join('\n'));
+
+    const A = String.fromCharCode(38);  // el `&`, sin escribirlo literal acá
+    // Dos filas sucias y una limpia. La sucia trae el caso de Lety en el
+    // cargo, un nombre con `&`, y una entidad DOBLE (`&amp;lt;`), que es la
+    // que delata si el orden de los reemplazos está mal.
+    const filasSucias = JSON.stringify([{
+      ticker: 'BIGC', emisora: `Marsh ${A}amp; McLennan`,
+      quien: `O${A}apos;Brien`, cargo: `EVP, CFO ${A}amp; COO`,
+      nota: `Jefe de ${A}amp;lt;cosas${A}amp;gt;`,
+    }]).replace(/'/g, "''");
+    const filasLimpias = JSON.stringify([{ ticker: 'CLEAN', cargo: 'Chief Executive Officer' }]);
+
+    psql(`
+      insert into mercado_form4_tx (accession, filing_fecha, filas) values
+        ('0000000000-26-000001', '2026-10-19', '${filasSucias}'::jsonb),
+        ('0000000000-26-000002', '2026-10-19', '${filasLimpias}'::jsonb);
+      insert into mercado_form4_indice (accession, cik, empresa, fecha_filing, archivo) values
+        ('0000000000-26-000001', '1', 'AT${A}amp;T Inc', '2026-10-19', 'edgar/data/1/a.txt'),
+        ('0000000000-26-000002', '2', 'Clean Corp', '2026-10-19', 'edgar/data/2/b.txt');
+    `);
+
+    // ── PRIMERA CORRIDA ────────────────────────────────────────────────
+    const tocadas1 = psql(`
+      with t as (
+        update mercado_form4_tx
+           set filas = (${ENTIDADES_SQL('filas::text')})::jsonb, entidades_limpias_en = now()
+         where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')} returning 1),
+           i as (
+        update mercado_form4_indice
+           set empresa = ${ENTIDADES_SQL('empresa')}, entidades_limpias_en = now()
+         where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')} returning 1)
+      select (select count(*) from t) || '|' || (select count(*) from i);
+    `).trim();
+    assert.equal(tocadas1, '1|1', 'toca exactamente la fila sucia de cada tabla, no la limpia');
+
+    // El jsonb sigue siendo jsonb y se puede consultar por campo.
+    const leido = psql(`select filas->0->>'cargo' || '~' || (filas->0->>'emisora')
+        || '~' || (filas->0->>'quien') || '~' || (filas->0->>'nota')
+      from mercado_form4_tx where accession='0000000000-26-000001';`).trim();
+    const [cargo, emisora, quien, nota] = leido.split('~');
+    assert.equal(cargo, 'EVP, CFO & COO');
+    assert.equal(emisora, 'Marsh & McLennan');
+    assert.equal(quien, "O'Brien");
+    // EL ORDEN: la entidad doble queda como un `<` LITERAL de texto, no como
+    // una etiqueta. Si el `&` se reemplazara primero, acá habría `<cosas>`.
+    assert.equal(nota, `Jefe de ${A}lt;cosas${A}gt;`,
+      'el `&` se reemplaza AL FINAL; si no, se inventa una etiqueta');
+
+    assert.equal(psql(`select empresa from mercado_form4_indice where accession='0000000000-26-000001';`).trim(),
+      'AT&T Inc');
+    // La fila que estaba limpia no se tocó.
+    assert.equal(psql(`select filas->0->>'cargo' from mercado_form4_tx where accession='0000000000-26-000002';`).trim(),
+      'Chief Executive Officer');
+
+    // ── SEGUNDA CORRIDA: NO TOCA NADA ─────────────────────────────────
+    // Es la prueba de idempotencia, y es estructural: el `where` sólo alcanza
+    // filas que todavía tienen una entidad, así que no queda ninguna.
+    const tocadas2 = psql(`
+      with t as (
+        update mercado_form4_tx
+           set filas = (${ENTIDADES_SQL('filas::text')})::jsonb, entidades_limpias_en = now()
+         where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')} returning 1),
+           i as (
+        update mercado_form4_indice
+           set empresa = ${ENTIDADES_SQL('empresa')}, entidades_limpias_en = now()
+         where entidades_limpias_en is null and empresa is not null and ${SUCIA_SQL('empresa')} returning 1)
+      select (select count(*) from t) || '|' || (select count(*) from i);
+    `).trim();
+    assert.equal(tocadas2, '0|0', 'correrla dos veces no cambia nada (Lety)');
+
+    // Y el contenido quedó igual que después de la primera.
+    assert.equal(psql(`select filas->0->>'cargo' from mercado_form4_tx where accession='0000000000-26-000001';`).trim(),
+      'EVP, CFO & COO');
+  });
+
 
 });
