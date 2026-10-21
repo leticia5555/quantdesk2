@@ -192,6 +192,97 @@ export function candidatasCapUs({ declarada, moneda, acciones, precio_usd }) {
  * mismo concepto es cómo se terminan teniendo dos opiniones sobre qué está
  * verificado — el bug que #241 y #245 ya costaron.
  */
+// ═══════════════════════════════════════════════════════════════════════
+// VARIAS CLASES DE ACCIONES: LA CAP ES LA SUMA, CLASE POR CLASE
+//
+// BRK.B salía con un múltiplo de 1,482× (148,156% de error) por mezclar
+// clases: acciones de una clase por el precio de la otra (Lety, 2026-10-22).
+// 1,482 es casi exactamente la razón de conversión A→B, que es la huella del
+// defecto.
+//
+// Y NO SE PUEDE RESOLVER CON `companyconcept`: esa API devuelve los conteos
+// de portada SIN ETIQUETAR LA CLASE —la clase vive en el contexto XBRL, que
+// no viaja—, así que tenemos "540 mil y 1,290 millones" sin saber cuál es A y
+// cuál es B. Hay un comentario de eso desde el caso de BX.
+//
+// Lety eligió la captura manual (2026-10-22), igual que los cuatro ADR. Y
+// encaja con el mismo razonamiento: lo que se captura es ESTRUCTURAL.
+//
+//   · La EQUIVALENCIA entre clases está en el estatuto —1 BRK.A son 1,500
+//     BRK.B— y no cambia porque pase un trimestre.
+//   · Los CONTEOS por clase se leen de la portada del 10-Q, que los nombra
+//     ("Class A Common Stock… shares", "Class B Common Stock… shares"): ahí
+//     la atribución es explícita y no hay que adivinarla por magnitud.
+//
+// Lo que se pinta es `(Σ acciones_clase × equivalencia_clase) × NUESTRO
+// cierre de la clase cotizada`. Así el cuadro sigue al mercado todos los
+// días en vez de quedarse clavado en la captura — el mismo principio que la
+// razón del ADR.
+//
+// LOS CONTEOS SÍ ENVEJECEN (Berkshire recompra), a diferencia de la razón de
+// un ADR. Un trimestre de recompra mueve ~1%, muy dentro del 5% de
+// tolerancia, así que vencer es una TAREA y no apaga el cuadro: aparece en
+// `referencias_a_recapturar` como las demás.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * La cap de una emisora de varias clases, con su procedencia.
+ *
+ * `entrada.clases` es un arreglo de `{ nombre, acciones, equivalencia_en_cotizada }`.
+ * `cierre` es NUESTRO cierre de la clase cotizada.
+ *
+ * Devuelve `{ cap_usd, acciones_equivalentes, via, detalle }` o
+ * `{ cap_usd: null, motivo }`. Nunca un número sin poder decir de dónde sale.
+ */
+export function capPorClases(entrada, cierre) {
+  const clases = entrada && Array.isArray(entrada.clases) ? entrada.clases : null;
+  const px = Number(cierre);
+  if (!clases || !clases.length) {
+    return { cap_usd: null, motivo: 'la referencia no declara clases' };
+  }
+  if (!Number.isFinite(px) || px <= 0) {
+    return { cap_usd: null, motivo: 'sin cierre nuestro de la clase cotizada, no hay con qué multiplicar' };
+  }
+  let equivalentes = 0;
+  const detalle = [];
+  for (const c of clases) {
+    const n = Number(c && c.acciones);
+    const eq = Number(c && c.equivalencia_en_cotizada);
+    // Una clase sin conteo o sin equivalencia INVALIDA la suma entera: con
+    // una clase de menos el tamaño sale corto y nadie lo nota. Es la misma
+    // razón por la que la suma de `companyconcept` no se pinta sola.
+    if (!Number.isFinite(n) || n <= 0) {
+      return { cap_usd: null,
+        motivo: `la clase "${(c && c.nombre) || '?'}" no declara un conteo de acciones utilizable: con una clase incompleta la suma sale corta` };
+    }
+    if (!Number.isFinite(eq) || eq <= 0) {
+      return { cap_usd: null,
+        motivo: `la clase "${(c && c.nombre) || '?'}" no declara su equivalencia en la clase cotizada` };
+    }
+    equivalentes += n * eq;
+    detalle.push({ nombre: c.nombre || null, acciones: n, equivalencia_en_cotizada: eq, equivalentes: n * eq });
+  }
+  return {
+    cap_usd: equivalentes * px,
+    acciones_equivalentes: equivalentes,
+    via: 'clases_declaradas',
+    // La cuenta entera, para que el número se pueda rehacer a mano.
+    detalle,
+    cotizada: entrada.cotizada || entrada.clave || null,
+    precio_usado: px,
+  };
+}
+
+/**
+ * ¿Esta referencia es de varias clases, o de un ADR?
+ *
+ * Las dos viven en el mismo registro y se usan distinto, así que la pregunta
+ * tiene que tener UNA respuesta y no depender de qué campo mire quien lea.
+ */
+export function esReferenciaDeClases(ref) {
+  return !!(ref && Array.isArray(ref.clases) && ref.clases.length);
+}
+
 export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   const { symbol, moneda, referencia, edgar, hoy } = entrada || {};
   const cand = candidatasCapUs(entrada || {});

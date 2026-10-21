@@ -1129,6 +1129,18 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
     // debería ser 25 también hay que poder explicarlo.
     diagnostico: diag,
     simbolos_candidatos: candidatos.slice(0, 30),
+    // ── QUIÉNES TIENEN VARIAS CLASES, SEGÚN LOS DATOS ─────────────────
+    // Lety pidió incluir "las otras de dos clases que estén en el universo".
+    // Mi memoria no es una fuente: la lista sale de las filas que EDGAR
+    // reportó con más de un conteo de portada, que es exactamente la
+    // condición. Con esto se sabe a quién hay que capturar a mano en vez de
+    // adivinar nombres.
+    varias_clases: await sql(
+      `select symbol, acciones_edgar_clases as clases,
+              acciones_edgar_suma_millones as suma_millones
+         from mercado_universo_us
+        where acciones_edgar_clases > 1
+        order by market_cap desc nulls last`).catch(() => []),
     intentados: pendientes.length,
     escritos: escrituras.length,
     cuenta,

@@ -86,28 +86,25 @@ test('sin respuesta no se inventa nada', () => {
 
 // ── Y CONTRA NUESTRO UNIVERSO ──────────────────────────────────────────
 
-test('un ticker que no está en el universo sale SIN RESOLVER, no inventado', () => {
-  // Lety: *"que un ticker que no existe en el universo salga como «sin
-  // resolver», no inventado"*. Un símbolo que no cotizamos no se puede abrir
-  // en ninguna ficha nuestra, así que mostrarlo promete una pantalla que no
-  // existe.
-  const r = tickerValidado({ ticker: 'XYZ', exch: 'US', via: 'openfigi:US' }, new Set(['STZ', 'NVDA']));
-  assert.equal(r.ticker, null);
-  assert.equal(r.en_universo, false);
-  assert.match(r.motivo, /no está en nuestro universo/);
-  assert.match(r.motivo, /XYZ/, 'el motivo dice cuál era, para poder investigarlo');
-});
+// ESTAS DOS PRUEBAS FIJABAN EL COMPORTAMIENTO EQUIVOCADO, y las escribí yo
+// en la misma ronda: exigían que un ticker fuera del universo saliera "sin
+// resolver". Eso es lo que hizo que NYT y ALLY mostraran su CUSIP. Quedan
+// reescritas con la promesa correcta, que vive en el bloque de abajo:
+// existir y poder abrirse son dos preguntas distintas.
 
-test('el que sí está pasa, con su marca', () => {
-  const r = tickerValidado({ ticker: 'STZ', exch: 'US', via: 'openfigi:US' }, new Set(['STZ']));
+test('el que está en el mapa pasa y es enlazable', () => {
+  const r = tickerValidado({ ticker: 'STZ', exch: 'US', via: 'openfigi:US' },
+    { sec: new Set(['STZ']), universo: new Set(['STZ']) });
   assert.equal(r.ticker, 'STZ');
   assert.equal(r.en_universo, true);
+  assert.equal(r.enlazable, true);
 });
 
 test('si el universo no cargó, NO se descarta nada: sería cambiar una causa por otra', () => {
   // Convertir una caída de Neon en "ningún ticker se pudo resolver" es
   // afirmar algo distinto y falso.
-  const r = tickerValidado({ ticker: 'STZ', exch: 'US', via: 'openfigi:US' }, new Set());
+  const r = tickerValidado({ ticker: 'STZ', exch: 'US', via: 'openfigi:US' },
+    { sec: new Set(['STZ']), universo: new Set() });
   assert.equal(r.ticker, 'STZ');
   assert.equal(r.en_universo, null);
   assert.match(r.nota, /no se pudo contrastar/);
@@ -210,4 +207,136 @@ test('el cuerpo que no es JSON se recorta y viaja: un HTML de error dice de qué
     assert.match(r.intentos[0].cuerpo, /Unauthorized/);
     assert.equal(r.intentos[0].bytes, html.length, 'y el tamaño real, por si el recorte engaña');
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA CORRECCIÓN: "EXISTE" Y "LO PODEMOS ABRIR" SON DOS PREGUNTAS
+//
+// Mi primera versión contrastaba contra el universo del mapa, y con eso NYT y
+// ALLY —tickers perfectamente reales, fuera del mapa por tamaño— salieron
+// como "no está en nuestro universo" y la tarjeta mostró su CUSIP (Lety,
+// 2026-10-22). Peor que antes del arreglo: antes al menos salía el ticker.
+//
+// El error fue conceptual: confundí existir con poder abrirle una ficha.
+// Lety: *"si existe pero no tiene ficha, muestra el ticker sin link"*.
+// ═══════════════════════════════════════════════════════════════════════
+
+const SEC = new Set(['STZ', 'NYT', 'ALLY', 'NVDA', 'DVA']);
+const MAPA = new Set(['STZ', 'NVDA', 'DVA']);
+
+test('NYT existe y no está en el mapa: se muestra, sin enlace', () => {
+  const r = tickerValidado({ ticker: 'NYT', exch: 'US', via: 'openfigi:US' }, { sec: SEC, universo: MAPA });
+  assert.equal(r.ticker, 'NYT', 'el ticker se muestra');
+  assert.equal(r.existe, true);
+  assert.equal(r.en_universo, false);
+  assert.equal(r.enlazable, false, 'pero sin enlace: no hay ficha que abrir');
+  assert.match(r.nota, /sin enlace/);
+});
+
+test('STZ existe y está en el mapa: se muestra y es enlazable', () => {
+  const r = tickerValidado({ ticker: 'STZ', exch: 'US', via: 'openfigi:US' }, { sec: SEC, universo: MAPA });
+  assert.equal(r.ticker, 'STZ');
+  assert.equal(r.enlazable, true);
+  assert.equal(r.nota, null, 'sin nota: no hay nada que advertir');
+});
+
+test('un ticker que la SEC no conoce SÍ se rechaza: el CUSIP resolvió mal', () => {
+  const r = tickerValidado({ ticker: 'ZZZZ', exch: 'US', via: 'openfigi:US' }, { sec: SEC, universo: MAPA });
+  assert.equal(r.ticker, null);
+  assert.equal(r.existe, false);
+  assert.match(r.motivo, /company_tickers\.json/);
+  assert.match(r.motivo, /ZZZZ/, 'el motivo dice cuál era');
+});
+
+test('si la lista de la SEC no cargó, NO se descarta nada', () => {
+  // Convertir una caída de la SEC en "este ticker no existe" es cambiar una
+  // causa por otra: el mismo error que esta prueba vino a corregir.
+  const r = tickerValidado({ ticker: 'NYT', exch: 'US', via: 'openfigi:US' },
+    { sec: new Set(), universo: MAPA });
+  assert.equal(r.ticker, 'NYT');
+  assert.equal(r.existe, null);
+  assert.match(r.nota, /no se pudo contrastar contra company_tickers/);
+});
+
+test('sin ninguna de las dos listas, el ticker pasa tal cual', () => {
+  const r = tickerValidado({ ticker: 'NYT', exch: 'US', via: 'openfigi:US' }, {});
+  assert.equal(r.ticker, 'NYT');
+  assert.equal(r.existe, null);
+  assert.equal(r.en_universo, null);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// VARIAS CLASES: LA CAP ES LA SUMA, CLASE POR CLASE
+// ═══════════════════════════════════════════════════════════════════════
+
+import { capPorClases, esReferenciaDeClases } from '../api/_lib/mercado-cap-us.js';
+
+// Los conteos son de EJEMPLO, no los reales: los reales los captura Lety de
+// la portada del 10-Q, y este archivo no es el lugar para números inventados.
+const BRK = {
+  clave: 'BRK.B', cotizada: 'BRK.B',
+  clases: [
+    { nombre: 'Class A', acciones: 540_000, equivalencia_en_cotizada: 1500 },
+    { nombre: 'Class B', acciones: 1_290_000_000, equivalencia_en_cotizada: 1 },
+  ],
+};
+
+test('la cap suma cada clase llevada a la clase cotizada', () => {
+  const r = capPorClases(BRK, 470.25);
+  // 540.000 × 1500 = 810 millones en equivalentes B, más 1,290 millones.
+  assert.equal(r.acciones_equivalentes, 2_100_000_000);
+  assert.equal(r.cap_usd, 2_100_000_000 * 470.25);
+  assert.equal(r.via, 'clases_declaradas');
+});
+
+test('la equivalencia es lo que evita el ×1,482: sin ella, la clase A se cuenta como B', () => {
+  // El defecto que Lety vio tenía un múltiplo de 1,482, que es casi
+  // exactamente la razón A→B. Si la equivalencia fuera 1 para las dos, la
+  // clase A aportaría 540 mil en vez de 810 millones.
+  const sinEquivalencia = { ...BRK, clases: BRK.clases.map((c) => ({ ...c, equivalencia_en_cotizada: 1 })) };
+  const r = capPorClases(sinEquivalencia, 470.25);
+  assert.equal(r.acciones_equivalentes, 1_290_540_000);
+  assert.ok(r.acciones_equivalentes < 2_100_000_000, 'cuenta de menos, que es el otro lado del mismo error');
+});
+
+test('el detalle permite rehacer la cuenta a mano', () => {
+  const r = capPorClases(BRK, 100);
+  assert.equal(r.detalle.length, 2);
+  assert.deepEqual(r.detalle[0],
+    { nombre: 'Class A', acciones: 540_000, equivalencia_en_cotizada: 1500, equivalentes: 810_000_000 });
+  assert.equal(r.precio_usado, 100, 'y con qué precio se multiplicó');
+});
+
+test('una clase sin conteo INVALIDA la suma entera, no se salta', () => {
+  // Con una clase de menos el tamaño sale corto y nadie lo nota: es la misma
+  // razón por la que la suma de `companyconcept` no se pinta sola.
+  const incompleta = { ...BRK, clases: [BRK.clases[0], { nombre: 'Class B', equivalencia_en_cotizada: 1 }] };
+  const r = capPorClases(incompleta, 470.25);
+  assert.equal(r.cap_usd, null);
+  assert.match(r.motivo, /Class B/);
+  assert.match(r.motivo, /la suma sale corta/);
+});
+
+test('sin cierre nuestro no se pinta nada', () => {
+  assert.equal(capPorClases(BRK, null).cap_usd, null);
+  assert.match(capPorClases(BRK, 0).motivo, /sin cierre nuestro/);
+});
+
+test('una referencia de ADR no se confunde con una de clases', () => {
+  assert.equal(esReferenciaDeClases(BRK), true);
+  assert.equal(esReferenciaDeClases({ clave: 'TSM', market_cap_usd: 2.3e12 }), false);
+  assert.equal(esReferenciaDeClases(null), false);
+});
+
+test('el registro documenta qué capturar y no inventa los números', async () => {
+  const { readFileSync } = await import('node:fs');
+  const reg = JSON.parse(readFileSync(
+    new URL('../api/_lib/mercado-cap-us-referencia.json', import.meta.url), 'utf8'));
+  assert.ok(reg._clases_de_acciones, 'la sección que explica la cuenta');
+  assert.match(reg._clases_de_acciones.la_cuenta, /Σ acciones_clase × equivalencia/);
+  // BRK.B está en pendientes y NO en `referencias`: escribir conteos de
+  // memoria en un archivo que se pinta es justo lo que la regla 2 prohíbe.
+  assert.ok(reg._pendientes_de_captura.some((x) => x.clave === 'BRK.B'));
+  assert.ok(!(reg.referencias || []).some((x) => x.clave === 'BRK.B'),
+    'BRK.B no entra al registro hasta que sus conteos sean reales');
 });
