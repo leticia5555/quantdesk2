@@ -184,6 +184,12 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
       symbol: sym,
       nombre: u.nombre || sym,
       sector: u.sector_etf || null,
+      // La fecha del cierre que este cuadro está pintando. Viaja para que el
+      // pie pueda decir cuántos llegaron al último cierre y cuántos se
+      // quedaron con el de antes: la cosecha son 611 símbolos y una corrida
+      // alcanza ~416, así que el reparto en varias corridas es la norma y
+      // hace falta poder verlo (Lety, 2026-10-22).
+      fecha_precio: paq.fecha_precio || null,
       cap: cap.estado === 'verificada' ? cap.cap_usd : null,
       // La fuente la declara el VEREDICTO cuando la cap no salió de Finnhub:
       // `calc: edgar×neon` o `calc: acciones÷5:1×neon` dicen de dónde viene el

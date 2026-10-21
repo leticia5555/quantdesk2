@@ -171,3 +171,155 @@ test('los conteos por motivo no se suman en un total engañoso', () => {
   assert.equal(r.sin_cap_verificada, 43);
   assert.ok(!r.frases.some((x) => /^335/.test(x)), 'nunca una frase con la suma');
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA SEGUNDA RONDA (Lety, 2026-10-22, contra producción con #315 puesto)
+// ═══════════════════════════════════════════════════════════════════════
+
+import { cikDe, REGLA_EDGAR_VERSION, candidatosParaEdgar } from '../api/_lib/mercado-edgar.js';
+import { frescuraPorSimbolo } from '../api/mercado-mapa.js';
+
+// ── BRK.B: LA SEC USA GUION, NOSOTROS PUNTO ────────────────────────────
+
+test('BRK.B encuentra su CIK con la ortografía de la SEC', () => {
+  // `company_tickers.json` escribe `BRK-B`. La búsqueda era directa, así que
+  // BRK.B salía `sin_cik` y nunca llegaba a consultar sus acciones.
+  //
+  // Y de paso: en el PR anterior escribí que el punto era "la forma de la
+  // SEC". Es al revés — la SEC usa guion, igual que Yahoo.
+  const mapa = new Map([['BRK-B', '0001067983'], ['NVDA', '0001045810']]);
+  const r = cikDe(mapa, 'BRK.B');
+  assert.equal(r.cik, '0001067983');
+  assert.equal(r.como, 'BRK-B', 'y dice con qué ortografía casó');
+});
+
+test('un símbolo normal casa directo, sin rodeos', () => {
+  const mapa = new Map([['NVDA', '0001045810']]);
+  assert.deepEqual(cikDe(mapa, 'NVDA'), { cik: '0001045810', como: 'NVDA' });
+});
+
+test('también al revés: un universo con guion y una SEC con punto', () => {
+  const mapa = new Map([['BRK.B', '0001067983']]);
+  assert.equal(cikDe(mapa, 'BRK-B').cik, '0001067983');
+});
+
+test('lo que EDGAR no conoce sigue sin CIK, no se inventa', () => {
+  assert.deepEqual(cikDe(new Map(), 'XXXX'), { cik: null, como: null });
+  assert.deepEqual(cikDe(null, 'NVDA'), { cik: null, como: null });
+});
+
+// ── AAL: UNA PORTADA DEL FUTURO NO EXISTE ──────────────────────────────
+
+test('AAL: una portada posterior a hoy se rechaza con su causa', () => {
+  // `portada: 2027-07-17` en un 10-Q presentado el 2026-07-23. Un conteo
+  // fechado un año adelante por el cierre de hoy es un tamaño inventado con
+  // dos datos reales: el mismo modo de falla que la portada de 2009 de
+  // CMCSA, por el otro extremo.
+  const aal = { units: { shares: [
+    { val: 662_000_000, end: '2027-07-17', filed: '2026-07-23', form: '10-Q' },
+  ] } };
+  const r = accionesDeCompanyConcept(aal, { hoy: HOY });
+  assert.equal(r.acciones, null);
+  assert.match(r.motivo, /POSTERIOR a hoy/);
+  assert.match(r.motivo, /2027-07-17/, 'el motivo trae la fecha, para poder ir a ver el filing');
+});
+
+test('y si hay una portada buena además de la futura, gana la buena', () => {
+  const mixto = { units: { shares: [
+    { val: 999_000_000, end: '2027-07-17', filed: '2026-07-23', form: '10-Q' },
+    { val: 662_000_000, end: '2026-06-30', filed: '2026-07-23', form: '10-Q' },
+  ] } };
+  const r = accionesDeCompanyConcept(mixto, { hoy: HOY });
+  assert.equal(r.acciones, 662_000_000, 'descartar la futura no descarta el filing entero');
+  assert.equal(r.fecha_portada, '2026-06-30');
+});
+
+// ── SPCX: CUANDO CAMBIA LA REGLA, SE VUELVE A PREGUNTAR ────────────────
+
+const entrada = (symbol, extra = {}) => ({ symbol, precio_usd: 100, acciones: 1e9, ...extra });
+const veredicto = (symbol, extra = {}) => ({ symbol, estado: 'gris_punteado', moneda: 'USD', ...extra });
+
+test('una fila decidida con la regla VIEJA vuelve a ser candidata', () => {
+  // SPCX quedó marcado "EDGAR consultado el 2026-09-29, sin dato" con la
+  // regla que sólo aceptaba informes periódicos. Al agregar las formas de IPO
+  // el arreglo no le llegaba: nadie vuelve a preguntar algo que ya tiene
+  // respuesta. Ahora la respuesta lleva la VERSIÓN de la regla que la produjo.
+  const { candidatos, diagnostico } = candidatosParaEdgar({
+    entradas: [entrada('SPCX')],
+    veredictos: [veredicto('SPCX')],
+    universoPorSymbol: new Map([['SPCX', {
+      acciones_edgar_millones: null,
+      edgar_consultada_en: '2026-09-29T00:00:00Z',
+      edgar_regla: REGLA_EDGAR_VERSION - 1,
+    }]]),
+  });
+  assert.deepEqual(candidatos, ['SPCX']);
+  assert.equal(diagnostico.repregunta_por_regla, 1);
+});
+
+test('una fila YA decidida con la regla de ahora no se vuelve a preguntar', () => {
+  // La repregunta es por cambio de criterio, no un "reintentar todo": pedirle
+  // a la SEC lo mismo cada corrida gasta su cuota y no agrega nada.
+  const { candidatos, diagnostico } = candidatosParaEdgar({
+    entradas: [entrada('ACME')],
+    veredictos: [veredicto('ACME')],
+    universoPorSymbol: new Map([['ACME', {
+      acciones_edgar_millones: 500,
+      edgar_consultada_en: '2026-10-20T00:00:00Z',
+      edgar_regla: REGLA_EDGAR_VERSION,
+    }]]),
+  });
+  assert.deepEqual(candidatos, []);
+  assert.equal(diagnostico.ya_con_edgar, 1);
+});
+
+test('el diagnóstico dice POR SÍMBOLO por qué quedó fuera, no sólo cuántos', () => {
+  // Con SPCX gris y 52 candidatos, "N sin acciones" no permite saber si SPCX
+  // es uno de ellos: hubo que inferirlo, y la inferencia podía estar mal.
+  const { diagnostico } = candidatosParaEdgar({
+    entradas: [entrada('SINPRECIO', { precio_usd: 0 }), entrada('SINACC', { acciones: 0 })],
+    veredictos: [veredicto('SINPRECIO'), veredicto('SINACC')],
+    universoPorSymbol: new Map(),
+  });
+  assert.deepEqual(diagnostico.excluidos, [
+    { symbol: 'SINPRECIO', motivo: 'sin precio en USD' },
+    { symbol: 'SINACC', motivo: 'sin conteo de acciones de Finnhub' },
+  ]);
+});
+
+// ── CUÁNTOS LLEGARON AL ÚLTIMO CIERRE ──────────────────────────────────
+
+test('el pie puede decir cuántos tienen el último cierre y cuántos no', () => {
+  // La cosecha son 611 símbolos y una corrida alcanza ~416: el reparto en
+  // varias corridas es la norma. Sin este conteo, un símbolo que se quedó con
+  // el cierre de ayer se ve idéntico a uno al día.
+  const r = frescuraPorSimbolo([
+    { symbol: 'NVDA', fecha_precio: '2026-10-21' },
+    { symbol: 'AAPL', fecha_precio: '2026-10-21' },
+    { symbol: 'HOLX', fecha_precio: '2026-10-14' },
+  ], '2026-10-21');
+  assert.equal(r.con_ultimo_cierre, 2);
+  assert.equal(r.atrasados, 1);
+  assert.deepEqual(r.ejemplos, [{ symbol: 'HOLX', hasta: '2026-10-14' }],
+    'con nombre, para poder ir a mirar');
+});
+
+test('un cuadro sin serie no cuenta como atrasado: ya se dice aparte', () => {
+  const r = frescuraPorSimbolo([{ symbol: 'SINSERIE', fecha_precio: null }], '2026-10-21');
+  assert.equal(r.con_ultimo_cierre, 0);
+  assert.equal(r.atrasados, 0, 'dos motivos para una causa inflan el conteo');
+});
+
+test('se mide contra el último cierre que hay, no contra "hoy"', () => {
+  // Un feriado no es un atraso. Comparar contra el calendario pondría las 611
+  // en rojo cada día que la bolsa no abre.
+  const r = frescuraPorSimbolo([{ symbol: 'NVDA', fecha_precio: '2026-10-21' }], '2026-10-21');
+  assert.equal(r.atrasados, 0);
+  assert.equal(r.ultimo_cierre, '2026-10-21');
+});
+
+test('sin último cierre no se afirma nada', () => {
+  const r = frescuraPorSimbolo([{ symbol: 'NVDA', fecha_precio: '2026-10-21' }], null);
+  assert.equal(r.ultimo_cierre, null);
+  assert.equal(r.con_ultimo_cierre, 0);
+});

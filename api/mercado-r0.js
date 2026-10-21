@@ -69,6 +69,7 @@ import {
 import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
 import {
   accionesDeCompanyConcept, mapaCik, rutaCompanyConcept, UMBRAL_EDGAR_PCT, candidatosParaEdgar,
+  cikDe, REGLA_EDGAR_VERSION,
   formaDeUnits, muestraCruda, UMBRAL_ACUERDO_ACCIONES_PCT, MAX_MESES_PORTADA,
 } from './_lib/mercado-edgar.js';
 
@@ -121,6 +122,10 @@ export const SCHEMA_UNIVERSO_US = [
   // preguntó y no había", y el mapa acaba inventando la causa (#260).
   `alter table mercado_universo_us add column if not exists edgar_consultada_en timestamptz`,
   `alter table mercado_universo_us add column if not exists edgar_consulta_motivo text`,
+  // Con qué versión de la regla de extracción se decidió lo de EDGAR. Una
+  // fila decidida con una versión anterior vuelve a ser candidata una vez:
+  // ver `REGLA_EDGAR_VERSION` en `_lib/mercado-edgar.js`.
+  `alter table mercado_universo_us add column if not exists edgar_regla int not null default 0`,
   `create index if not exists mercado_universo_us_cap_idx
      on mercado_universo_us (market_cap desc nulls last)`,
   `create index if not exists mercado_universo_us_sector_idx
@@ -784,6 +789,10 @@ export const SQL_CAP_US = {
         set acciones_edgar_millones = $2, acciones_edgar_portada = $3::date,
             acciones_edgar_presentada = $4::date, acciones_edgar_form = $5, edgar_cik = $6,
             edgar_consultada_en = now(), edgar_consulta_motivo = null,
+            -- La versión de la regla con la que se extrajo este conteo. Sin
+            -- esto, el día que la regla cambie no se sabría qué filas se
+            -- decidieron con la vieja.
+            edgar_regla = $7,
             -- Un conteo limpio BORRA la suma de clases de una corrida anterior:
             -- si la emisora dejó de reportar varias, la suma vieja seguiría ahí
             -- contestando una pregunta que ya no existe.
@@ -808,7 +817,7 @@ export const SQL_CAP_US = {
        select u.symbol, u.nombre, u.industria, u.sector_etf, u.market_cap, u.cap_fuente, u.cap_moneda,
               u.acciones_millones, u.acciones_edgar_millones, u.acciones_edgar_portada::text as acciones_edgar_portada,
               u.acciones_edgar_clases, u.acciones_edgar_suma_millones,
-              u.edgar_consultada_en::text as edgar_consultada_en, u.edgar_consulta_motivo,
+              u.edgar_consultada_en::text as edgar_consultada_en, u.edgar_consulta_motivo, u.edgar_regla,
               p.cierre as precio_usd, p.fecha::text as fecha_precio
          from mercado_universo_us u
          left join ultimo p using (symbol)
@@ -1013,13 +1022,20 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
   const registroConsulta = (sym, motivo, cik = null) => [
     `update mercado_universo_us
         set edgar_consultada_en = now(), edgar_consulta_motivo = $2,
-            edgar_cik = coalesce($3, edgar_cik)
+            edgar_cik = coalesce($3, edgar_cik),
+            edgar_regla = $4
       where symbol = $1`,
-    [sym, motivo, cik],
+    // La versión queda SELLADA en la fila: es lo que permite saber, el día
+    // que la regla vuelva a cambiar, qué respuestas se decidieron con la
+    // regla vieja y hay que volver a preguntar.
+    [sym, motivo, cik, REGLA_EDGAR_VERSION],
   ];
 
   for (const sym of pendientes) {
-    const cik = CIKS.get(sym);
+    // Las DOS ortografías: la SEC usa guion (`BRK-B`) y nuestro universo
+    // punto (`BRK.B`). La búsqueda directa dejaba a BRK.B en `sin_cik`.
+    const { cik, como } = cikDe(CIKS, sym);
+    if (como && como !== sym) cuenta.cik_por_otra_ortografia = (cuenta.cik_por_otra_ortografia || 0) + 1;
     if (!cik) {
       cuenta.sin_cik++; sinCik.push(sym);
       // No tener CIK ES una respuesta: se buscó en el índice de la SEC y no
@@ -1035,9 +1051,14 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
       if (!r.ok) {
         if (r.red) { cuenta.red++; continue; }
         cuenta.sin_dato++;
+        // EL CIK VA EN EL MOTIVO. "EDGAR no reporta el concepto para este CIK"
+        // sin decir cuál es un callejón sin salida: Accenture Ltd (Bermudas) y
+        // Accenture plc (Irlanda) son entidades distintas con CIKs distintos,
+        // y pegarle a la vieja da exactamente esta respuesta (Lety, ACN,
+        // 2026-10-22). Con el número se puede abrir EDGAR y ver cuál es.
         const motivo = r.status === 404
-          ? 'EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (404)'
-          : `EDGAR contestó HTTP ${r.status}${r.noJson ? ' y el cuerpo no era JSON' : ''}`;
+          ? `EDGAR no reporta dei:EntityCommonStockSharesOutstanding para el CIK ${cik} (404)`
+          : `EDGAR contestó HTTP ${r.status} para el CIK ${cik}${r.noJson ? ' y el cuerpo no era JSON' : ''}`;
         resultados.push({ symbol: sym, motivo });
         // Un 404 es una respuesta —EDGAR no tiene el concepto— y se registra.
         // Un 5xx o un cuerpo raro NO lo es: se vuelve a intentar la próxima.
@@ -1077,7 +1098,8 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
         presentada: acc.presentado_en, form: acc.form, unidad: acc.unidad || null,
       });
       escrituras.push([SQL_CAP_US.edgar_conteo,
-        [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik]]);
+        [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik,
+          REGLA_EDGAR_VERSION]]);
     } catch (e) {
       // UN SÍMBOLO NO SE LLEVA EL JOB. El 2026-09-26 el primero de los 21 tiró
       // `TypeError: unidades.filter is not a function` y los otros 20 nunca se
