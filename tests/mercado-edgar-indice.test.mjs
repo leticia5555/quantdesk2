@@ -451,3 +451,38 @@ test('un día futuro no se confunde con un festivo', () => {
   assert.equal(e.estado, 'futuro');
   assert.match(e.motivo, /todavía no ocurrió/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL CRON NO PUEDE CORRER ANTES DE QUE EXISTA LO QUE VA A LEER
+//
+// Corría a las 23:20 UTC y EDGAR publica el índice del día después de las
+// 22:00 ET: 02:00 UTC en horario de verano, 03:00 en invierno. O sea que el
+// cron pedía el archivo entre tres y cuatro horas ANTES de que existiera, y
+// el día quedaba en 0/null (Lety, contra producción, 2026-10-21).
+// ═══════════════════════════════════════════════════════════════════════
+
+test('el cron del índice corre DESPUÉS de que EDGAR publica, los doce meses', async () => {
+  const { readFileSync } = await import('node:fs');
+  const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+  const c = (vercel.crons || []).find((x) => x.path === '/api/stock-tracker?job=indice&dias=3');
+  assert.ok(c, 'falta el cron del índice');
+  const [min, hora] = c.schedule.split(' ');
+  // 22:00 ET son 02:00 UTC en EDT y 03:00 UTC en EST. El cron tiene que caer
+  // después del caso MÁS TARDÍO, o seis meses del año lee un archivo que
+  // todavía no está.
+  assert.ok(Number(hora) >= 4,
+    `a las ${hora}:${min} UTC el índice de invierno (publicado 03:00 UTC) todavía no existe`);
+  assert.ok(Number(hora) < 12, `${hora}:00 UTC es innecesariamente tarde`);
+  // Y no en el minuto 0, donde se acumulan todos los crons del mundo.
+  assert.notEqual(Number(min), 0, 'un minuto corrido reparte la carga');
+});
+
+test('`estadoDelDia` usa el MISMO corte que el cron', () => {
+  // Si el corte de "ya cerró" fuera antes que la publicación, un día sin
+  // archivo todavía se llamaría festivo. Los dos números tienen que ser el
+  // mismo, y 04:00 UTC cubre invierno y verano.
+  assert.equal(estadoDelDia('2026-10-20', new Date('2026-10-21T03:30:00Z')).estado, 'en_curso',
+    'a las 03:30 UTC el índice de ayer puede no estar (EST publica a las 03:00)');
+  assert.equal(estadoDelDia('2026-10-20', new Date('2026-10-21T04:30:00Z')).estado, 'cerrado',
+    'a las 04:30 UTC ya tuvo su publicación en cualquier época del año');
+});
