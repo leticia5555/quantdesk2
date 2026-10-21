@@ -206,6 +206,16 @@ export const SCHEMA_FORM4 = [
   // Entonces la idempotencia sale de una MARCA: la fila que ya pasó por la
   // migración queda sellada y no se vuelve a tocar, sin importar qué parezca
   // su contenido. Y de paso queda auditable cuándo se limpió cada una.
+  // ── CUÁNTAS VECES SE INTENTÓ LEER ESTE FILING ───────────────────────
+  // Sin esto, "pendiente" era `leido_en is null` y el job marcaba `leido_en`
+  // TAMBIÉN cuando fallaba: la fila dejaba de ser pendiente para siempre y
+  // tampoco contaba como guardada, así que desaparecía de los dos lados del
+  // quebrado. La cobertura se congeló en ~48% con 0 pendientes y 14.000
+  // filings invisibles (Lety, 2026-10-21).
+  //
+  // Con el contador, "pendiente" pasa a ser "no guardada y todavía con
+  // intentos", y lo que agota sus intentos se REPORTA en vez de evaporarse.
+  `alter table mercado_form4_indice add column if not exists intentos int not null default 0`,
   `alter table mercado_form4_tx add column if not exists entidades_limpias_en timestamptz`,
   `alter table mercado_form4_indice add column if not exists entidades_limpias_en timestamptz`,
 ];
@@ -224,6 +234,12 @@ async function ensureSchemaForm4() {
 const DIAS_RELLENO = 30;
 const XML_POR_CORRIDA = 400;
 const XML_PRESUPUESTO_MS = 40_000;
+// Cuántas veces se reintenta un filing que falló. No es infinito a propósito:
+// hay envíos que no tienen un Form 4 legible y reintentarlos cada diez
+// minutos para siempre se come el presupuesto de los que sí se pueden leer.
+// Al cuarto fallo la fila pasa a "agotada" — y agotada SE DICE, con su causa,
+// que es lo que no pasaba antes.
+const XML_MAX_INTENTOS = 4;
 
 const SOURCES = {
   edgar_form4_atom: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&company=&dateb=&owner=include&count=100&output=atom',
@@ -621,20 +637,70 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
  * baja es lo primero que se ve. El relleno de los días viejos va quedando
  * atrás, y la cobertura dice exactamente cuánto falta de cada día.
  */
+// Exportadas para poder correrlas contra un Postgres de verdad: lo que falló
+// acá fue una CONSULTA, y una consulta no se prueba leyéndola.
+export const SQL_FORM4_PENDIENTES = `
+    select accession, cik, archivo, fecha_filing::text as fecha, intentos
+      from mercado_form4_indice
+     where leido_ok is not true and intentos < $2
+     order by (intentos > 0), fecha_filing desc, accession desc
+     limit $1`;
+
+export const SQL_FORM4_CUBOS = `
+    select count(*)::int as en_indice,
+           count(*) filter (where leido_ok is true)::int as guardados,
+           count(*) filter (where leido_ok is not true and intentos < $1)::int as pendientes,
+           count(*) filter (where leido_ok is not true and intentos >= $1)::int as agotados
+      from mercado_form4_indice`;
+
+export const FORM4_MAX_INTENTOS = XML_MAX_INTENTOS;
+
+/**
+ * LOS TRES CUBOS DEL ÍNDICE, Y QUE SUMEN.
+ *
+ * `en_indice = guardados + pendientes + agotados`. Esa identidad es lo que se
+ * rompió: la fila fallida se marcaba como leída y no era ni guardada ni
+ * pendiente, así que la suma daba menos que el total y nadie se enteraba —el
+ * cron reportaba `pendientes: 0` con 14.000 filings afuera (Lety, 2026-10-21)—.
+ *
+ * Ahora los tres se cuentan juntos y en la misma consulta, así que no pueden
+ * desincronizarse, y `agotados` existe para que lo que se da por perdido TENGA
+ * un número en vez de desaparecer.
+ */
+async function cubosDelIndice() {
+  const [f] = await sql(SQL_FORM4_CUBOS, [XML_MAX_INTENTOS]);
+  return f || { en_indice: 0, guardados: 0, pendientes: 0, agotados: 0 };
+}
+
 async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
   await ensureSchemaForm4();
-  const pendientes = await sql(`
-    select accession, cik, archivo, fecha_filing::text as fecha
-      from mercado_form4_indice
-     where leido_en is null
-     order by fecha_filing desc, accession desc
-     limit $1`, [tope]);
+  // ── PENDIENTE ES "NO GUARDADA", NO "NO INTENTADA" ──────────────────
+  // Decía `leido_en is null`, y el job ponía `leido_en` también al fallar:
+  // la fila fallida salía de la lista de pendientes para siempre sin haberse
+  // guardado nunca. 14.000 filings quedaron así, y el cron reportaba
+  // `pendientes: 0` mientras faltaba la mitad.
+  //
+  // Las que NUNCA se intentaron van PRIMERO: si los reintentos fueran al
+  // frente, una tanda vieja de fallos se comería el presupuesto de cada
+  // corrida y los filings nuevos no entrarían nunca.
+  const pendientes = await sql(SQL_FORM4_PENDIENTES, [tope, XML_MAX_INTENTOS]);
   if (!pendientes.length) {
-    // Cero pendientes es el estado BUENO: quiere decir que la cobertura está
-    // al día. Late igual, porque un cron que sólo late cuando hay trabajo no
-    // se distingue de un cron muerto.
-    await beat('mercado:form4-xml', 'ok', { pendientes: 0, leidos: 0 }).catch(() => {});
-    return { job: 'form4', pendientes: 0, leidos: 0, ok: 0, fallidos: 0, ms: Date.now() - t0 };
+    // ── CERO PENDIENTES NO ES, POR SÍ SOLO, BUENA NOTICIA ─────────────
+    // Decía "cero pendientes es el estado BUENO: la cobertura está al día" y
+    // latía `ok` con ceros. Eso fue exactamente lo que escondió el defecto
+    // durante 120 corridas: no quedaban pendientes porque las filas fallidas
+    // habían salido de la lista, no porque estuvieran guardadas.
+    //
+    // Ahora se mira el quebrado antes de cantar victoria: cero pendientes
+    // CON agotados es la fuente rota, y baja el semáforo.
+    const c = await cubosDelIndice();
+    const completo = c.agotados === 0 && c.guardados >= c.en_indice;
+    await beat('mercado:form4-xml', completo ? 'ok' : 'error', {
+      pendientes: 0, leidos: 0, ...c,
+      faltan: c.en_indice - c.guardados,
+    }).catch(() => {});
+    return { job: 'form4', pendientes: 0, leidos: 0, ok: 0, fallidos: 0,
+      ...c, faltan: c.en_indice - c.guardados, completo, ms: Date.now() - t0 };
   }
 
   const cli = crearCliente({ kind: 'form4-xml' });
@@ -673,7 +739,12 @@ async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
   const lotes = [];
   for (const r of resultados) {
     lotes.push([
-      `update mercado_form4_indice set leido_en = now(), leido_ok = $2, motivo = $3 where accession = $1`,
+      // `leido_en` es "cuándo se intentó por última vez", no "cuándo se
+      // guardó": lo que dice si se guardó es `leido_ok`. Y el intento se
+      // cuenta siempre, que es lo que acota los reintentos.
+      `update mercado_form4_indice
+          set leido_en = now(), leido_ok = $2, motivo = $3, intentos = intentos + 1
+        where accession = $1`,
       [r.accession, !!r.ok, r.motivo],
     ]);
     if (r.ok && (r.filas || []).length) {
@@ -690,12 +761,18 @@ async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
   const buenos = resultados.filter((r) => r.ok).length;
   // Que algunos filings fallen es normal (un envío sin Form 4 legible). Que
   // fallen TODOS es la SEC caída o un formato que cambió.
+  const cubos = await cubosDelIndice();
   await beat('mercado:form4-xml', buenos ? 'ok' : 'error', {
     pendientes: pendientes.length, leidos: resultados.length, ok: buenos,
+    ...cubos, faltan: cubos.en_indice - cubos.guardados,
   }).catch(() => {});
   return {
     job: 'form4',
     pendientes: pendientes.length,
+    // Los tres cubos van en la respuesta: con `pendientes` sólo, "0" no
+    // distingue "ya está todo" de "lo que falta se volvió invisible".
+    ...cubos,
+    faltan: cubos.en_indice - cubos.guardados,
     leidos: resultados.length,
     ok: resultados.filter((r) => r.ok).length,
     fallidos: resultados.filter((r) => !r.ok).length,
@@ -711,16 +788,25 @@ async function coberturaForm4({ dias = 10, hoy = new Date() } = {}) {
   const filas = await sql(`
     select d.fecha::text as fecha, d.lineas_form4, d.motivo,
            (select count(*) from mercado_form4_indice i
-             where i.fecha_filing = d.fecha and i.leido_en is not null and i.leido_ok) as guardados
+             where i.fecha_filing = d.fecha and i.leido_ok is true) as guardados,
+           -- LO QUE SE DA POR PERDIDO TIENE SU NÚMERO. Sin esto, un filing
+           -- que agotó sus intentos sólo aparecía como un hueco en el
+           -- quebrado, sin decir si falta por leer o porque no se pudo leer.
+           -- Son dos cosas distintas: la primera se arregla esperando, la
+           -- segunda no se arregla nunca y hay que mirarla.
+           (select count(*) from mercado_form4_indice i
+             where i.fecha_filing = d.fecha and i.leido_ok is not true
+               and i.intentos >= $2) as agotados
       from mercado_form4_dias d
      order by d.fecha desc
-     limit $1`, [dias]);
+     limit $1`, [dias, XML_MAX_INTENTOS]);
   // El día de HOY no se mide: EDGAR acepta presentaciones hasta las 22:00 ET,
   // así que su índice todavía crece y el porcentaje bajaría solo.
   const hoyIso = hoy.toISOString().slice(0, 10);
   const cerrados = filas.filter((f) => f.fecha < hoyIso);
   const dias_ = cerrados.map((f) => coberturaDeDia({
-    fecha: f.fecha, enIndice: f.lineas_form4, guardados: Number(f.guardados), motivo: f.motivo,
+    fecha: f.fecha, enIndice: f.lineas_form4, guardados: Number(f.guardados),
+    agotados: Number(f.agotados), motivo: f.motivo,
   }));
   const medibles = dias_.filter((d) => d.en_indice > 0);
   // ── EL DÍA EN CURSO SE REPORTA, NO SE TIRA ──────────────────────────

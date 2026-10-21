@@ -119,8 +119,18 @@ export const EXPECTED = [
   //
   // Una vez al día: el índice de un día cerrado ya no cambia. `dias=3` es el
   // de ayer más margen por si una corrida falló.
+  // ── A LAS 04:10 UTC, NO A LAS 23:20 ─────────────────────────────────
+  // A las 23:20 UTC el índice del día NO EXISTE todavía: EDGAR acepta
+  // presentaciones hasta las 22:00 ET y publica después, o sea a las 02:00
+  // UTC en horario de verano y a las 03:00 en invierno. El cron corría una
+  // hora ANTES de la publicación y el día salía en 0/null (Lety, 2026-10-21).
+  //
+  // 04:10 UTC le da una hora de margen al caso más tardío (EST), así que
+  // funciona todo el año sin tocar nada en noviembre. Y `dias=3` sigue
+  // releyendo tres días hábiles, así que una corrida perdida se recupera
+  // sola al día siguiente.
   { job: 'mercado:form4-indice', path: '/api/stock-tracker?job=indice&dias=3',
-    schedule: '20 23 * * *', cadence: 'diario ~23:20', stale_after_h: 30 },
+    schedule: '10 4 * * *', cadence: 'diario ~04:10 UTC', stale_after_h: 30 },
   // Cada diez minutos. Late SIEMPRE, incluso con cero pendientes —que es el
   // estado bueno—: un cron que sólo late cuando hay trabajo no se distingue
   // de un cron muerto.

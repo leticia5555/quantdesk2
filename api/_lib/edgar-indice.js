@@ -141,7 +141,12 @@ export function estadoDelDia(fechaIso, ahora = new Date()) {
   const ayer = new Date(Date.UTC(
     Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1, Number(hoy.slice(8, 10)) - 1,
   )).toISOString().slice(0, 10);
-  if (f === ayer && ahora.getUTCHours() < 3) {
+  // El corte es 04:00 UTC y NO 03:00: EDGAR publica a las 02:00 UTC en
+  // horario de verano y a las 03:00 en invierno (22:00 ET en los dos casos).
+  // Con el corte en 3, en invierno el día de ayer pasaba a "cerrado" justo
+  // cuando su índice todavía no estaba, y al no encontrarlo en el listado se
+  // habría llamado festivo. Es el mismo horario al que corre el cron.
+  if (f === ayer && ahora.getUTCHours() < 4) {
     return { estado: 'en_curso', motivo: `el índice del ${f} todavía no se publica: EDGAR lo cierra después de las 22:00 ET` };
   }
   return { estado: 'cerrado', motivo: null };
@@ -255,7 +260,7 @@ export function form4DelIndice(filas) {
  * números no se puede auditar: "100%" de un denominador equivocado también
  * dice 100%.
  */
-export function coberturaDeDia({ fecha, enIndice, guardados, motivo = null } = {}) {
+export function coberturaDeDia({ fecha, enIndice, guardados, agotados = 0, motivo = null } = {}) {
   if (motivo) return { fecha, pct: null, en_indice: enIndice ?? null, guardados: guardados ?? null, completa: false, texto: motivo };
   const total = Number(enIndice);
   const nuestros = Number(guardados);
@@ -279,9 +284,13 @@ export function coberturaDeDia({ fecha, enIndice, guardados, motivo = null } = {
   const completa = nuestros >= total;
   return {
     fecha, pct, en_indice: total, guardados: nuestros, completa,
+    agotados: Number(agotados) || 0,
     texto: completa
       ? `Cobertura: 100% de los Form 4 del día (${nuestros} de ${total})`
-      : `Cobertura: ${pct.toFixed(1)}% de los Form 4 del día (${nuestros} de ${total}) — faltan ${total - nuestros}`,
+      : `Cobertura: ${pct.toFixed(1)}% de los Form 4 del día (${nuestros} de ${total}) — faltan ${total - nuestros}`
+        // "Faltan N" no distingue "todavía no se leyeron" de "no se pudieron
+        // leer". Lo segundo no se arregla esperando, así que se dice aparte.
+        + (Number(agotados) > 0 ? `, de los cuales ${Number(agotados)} no se pudieron leer` : ''),
   };
 }
 
