@@ -24,10 +24,42 @@ function xtag(block, tag) {
   const m = new RegExp('<(?:\\w+:)?' + tag + '(?:\\s[^>]*)?>([\\s\\S]*?)</(?:\\w+:)?' + tag + '>', 'i').exec(block);
   return m ? m[1].trim() : '';
 }
+/**
+ * LAS ENTIDADES DEL XML SE DECODIFICAN ACÁ, UNA SOLA VEZ.
+ *
+ * Lety, mirando `/mercado/insiders` en producción (2026-10-20): el cargo
+ * salía *"EVP, CFO &amp;amp; COO"*. El Form 4 trae `&amp;amp;` —es XML, ahí un
+ * `&amp;` se escribe así—, `xval` lo devolvía tal cual, se guardaba tal cual, y
+ * la pantalla lo escapaba OTRA VEZ al pintarlo: `&amp;` → `&amp;amp;`. Doble
+ * escape, y el usuario leyendo la segunda capa.
+ *
+ * El arreglo va en `xval` y no en la pantalla a propósito: lo que se guarda
+ * tiene que ser el texto REAL ("EVP, CFO & COO"), y escapar al pintar es
+ * correcto —es lo que impide que un titular con `<script>` se ejecute—. Si se
+ * arreglara en la pantalla, la base quedaría con basura y cualquier otro
+ * consumidor —el PNG de compartir, un export— heredaría el problema.
+ *
+ * NO afecta sólo al cargo: los nombres de emisora con `&` son de lo más
+ * común (AT&T, Procter & Gamble), y salían igual de mal.
+ *
+ * `&amp;amp;` se decodifica AL FINAL. Si se hiciera primero, `&amp;amp;lt;`
+ * —que es la forma de escribir un `&lt;` literal— terminaría convertido en
+ * `<` y habríamos inventado una etiqueta que el filing no tenía.
+ */
+function desentidad(s) {
+  return String(s)
+    .replace(/&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|lt|gt|quot|apos|nbsp);/g, (m, dec, hex) => {
+      if (dec) return String.fromCodePoint(Number(dec));
+      if (hex) return String.fromCodePoint(parseInt(hex, 16));
+      return { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&nbsp;': ' ' }[m] || m;
+    })
+    .replace(/&amp;/g, '&');
+}
+
 function xval(block, tag) {
   const inner = xtag(block, tag);
   const v = xtag(inner, 'value');
-  return (v || inner).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return desentidad((v || inner).replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 const num = (s) => { const n = parseFloat(s); return Number.isFinite(n) ? n : null; };
 

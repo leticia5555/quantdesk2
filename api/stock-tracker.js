@@ -132,7 +132,7 @@ import { beat } from './_lib/heartbeat.js';
 import { crearCliente } from './_lib/edgar.js';
 import {
   urlIndiceDiario, diasHabiles, parseIndiceEdgar, form4DelIndice, coberturaDeDia,
-  ownershipDeEnvio, urlDeArchivo, urlListadoTrimestre, diasPublicados,
+  ownershipDeEnvio, urlDeArchivo, urlListadoTrimestre, diasPublicados, estadoDelDia,
 } from './_lib/edgar-indice.js';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -498,16 +498,24 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
     const publicados = listados.get(urlListado);
     const falloListado = fallosDeListado.get(urlListado);
 
-    // ── EL DÍA NO EXISTE EN EDGAR: ESO NO ES UN ERROR ─────────────────
+    // ── EL DÍA NO ESTÁ EN EL LISTADO: DOS CAUSAS DISTINTAS ────────────
+    // Un festivo no va a aparecer nunca; el día en curso aparece en unas
+    // horas. Decirles igual hace que no se sepa si hay que volver a pedirlo
+    // (Lety, 2026-10-20). `estadoDelDia` sabe que EDGAR cierra el índice
+    // después de las 22:00 ET, así que el corte no es medianoche.
     if (publicados && !publicados.has(fecha)) {
+      const est = estadoDelDia(fecha, hoy);
+      const motivoAusente = est.estado === 'cerrado'
+        ? 'EDGAR no publicó índice ese día (no está en el listado del trimestre)'
+        : est.motivo;
       await sqlBatch([[
         `insert into mercado_form4_dias (fecha, lineas_form4, enmiendas, indice_leido_en, motivo)
          values ($1, null, null, now(), $2)
          on conflict (fecha) do update set indice_leido_en = now(), motivo = excluded.motivo`,
-        [fecha, 'EDGAR no publicó índice ese día (no está en el listado del trimestre)'],
+        [fecha, motivoAusente],
       ]]);
       resumen.push({ fecha, lineas: null, publicado: false, error: false,
-        motivo: 'EDGAR no publicó índice ese día (no está en el listado del trimestre)' });
+        estado: est.estado, motivo: motivoAusente });
       continue;
     }
 
@@ -711,12 +719,25 @@ async function coberturaForm4({ dias = 10, hoy = new Date() } = {}) {
     fecha: f.fecha, enIndice: f.lineas_form4, guardados: Number(f.guardados), motivo: f.motivo,
   }));
   const medibles = dias_.filter((d) => d.en_indice > 0);
+  // ── EL DÍA EN CURSO SE REPORTA, NO SE TIRA ──────────────────────────
+  // `cerrados` lo saca de la medición —su índice todavía crece y el
+  // porcentaje bajaría solo—, pero sacarlo de la medición no es razón para
+  // no DECIRLO: la pantalla tiene que poder mostrar "hoy: todavía no
+  // publicado" en vez de no mostrar nada o, peor, lo mismo que un festivo.
+  const abiertos = filas.filter((f) => f.fecha >= hoyIso).map((f) => ({
+    fecha: f.fecha, estado: estadoDelDia(f.fecha, hoy).estado,
+    texto: f.motivo || estadoDelDia(f.fecha, hoy).motivo || 'el día todavía no cierra',
+  }));
   return {
     dias: dias_,
+    abiertos,
     // El último día cerrado con índice es el que va al chip de la pantalla.
     ultimo: medibles[0] || null,
     completa: medibles.length > 0 && medibles.every((d) => d.completa),
     medidos: medibles.length,
+    // Estado crudo para que el aviso se arme de hechos y no de un default.
+    filas_dias: filas.length,
+    cerrados_con_error: dias_.filter((d) => d.en_indice === 0 || d.en_indice == null).length,
   };
 }
 
@@ -1116,13 +1137,27 @@ async function buildForm4() {
     cobertura_dias: cobertura ? cobertura.dias : [],
     cobertura_ultimo: cobertura ? cobertura.ultimo : null,
     cobertura_completa: completa,
+    // ── EL AVISO SE ARMA DE HECHOS, NO DE UN DEFAULT ──────────────────
+    // Decía "todavía no se ha leído el índice diario de EDGAR" en CUALQUIER
+    // caso en que no hubiera un día medible, incluido el caso en que el
+    // índice sí se había leído (Lety, 2026-10-20). Era el `else` de una
+    // cadena, no una afirmación verificada — y afirmaba algo falso sobre
+    // nuestro propio estado, que es lo que la regla 2 prohíbe.
+    //
+    // Ahora cada rama dice lo que efectivamente pasó: sin filas, con filas
+    // pero ningún día cerrado medible, o con medición.
     cobertura: completa
       ? (cobertura.ultimo ? cobertura.ultimo.texto : 'Cobertura: completa')
       : (errorNeon
         ? `no se pudo leer nuestra base de datos: lo que se ve es lo que esta instancia alcanzó a escanear (${errorNeon})`
         : (cobertura && cobertura.ultimo
           ? cobertura.ultimo.texto
-          : 'todavía no se ha leído el índice diario de EDGAR: lo que se ve es la ventana de lo recién presentado')),
+          : (!cobertura || !cobertura.filas_dias
+            ? 'todavía no se ha leído el índice diario de EDGAR: lo que se ve es la ventana de lo recién presentado'
+            : `el índice está leído (${cobertura.filas_dias} días en la tabla) pero ningún día cerrado se pudo medir todavía`
+              + (cobertura.dias && cobertura.dias[0] ? `: ${cobertura.dias[0].texto}` : '')))),
+    // Lo que pasa con el día en curso, dicho aparte: no es un festivo.
+    cobertura_abiertos: cobertura ? cobertura.abiertos : [],
     lag_note: 'SEC Form 4: reportado máx. 2 días hábiles después de la operación',
     de_neon: deNeon.length,
     de_memoria: form4Accum.size,

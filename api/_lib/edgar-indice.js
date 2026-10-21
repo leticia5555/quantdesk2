@@ -112,6 +112,41 @@ export function accessionDeArchivo(archivo) {
 // pregunta, y el feriado deja de ser una inferencia: es un dato.
 // ═══════════════════════════════════════════════════════════════════════
 
+/**
+ * "NO PUBLICÓ" Y "TODAVÍA NO PUBLICÓ" NO SON LO MISMO.
+ *
+ * Lety, mirando `/mercado/insiders` (2026-10-20): *"Cobertura del día de hoy:
+ * dice «EDGAR no publicó índice ese día». Si es el día en curso, debe decir
+ * «todavía no publicado», no lo mismo que un festivo."*
+ *
+ * Y tiene razón en que son dos cosas: un festivo no va a aparecer nunca y no
+ * hay nada que hacer; el día en curso aparece en unas horas y hay que volver
+ * a pedirlo. Decirles igual hace que el cron de mañana parezca redundante.
+ *
+ * EL CORTE NO ES MEDIANOCHE. EDGAR acepta presentaciones hasta las 22:00 ET y
+ * publica el índice del día después, o sea alrededor de las 02:00 UTC del día
+ * siguiente. Así que a las 23:50 UTC del 20 —que es cuando Lety corrió el
+ * job— el índice del 20 todavía no existía, y con un corte a medianoche UTC
+ * el día 20 ya contaba como "pasado" y se habría llamado festivo.
+ *
+ * Por eso un día ausente del listado es festivo sólo si YA pasó su hora de
+ * publicación; si no, es "todavía no publicado".
+ */
+export function estadoDelDia(fechaIso, ahora = new Date()) {
+  const f = String(fechaIso).slice(0, 10);
+  const hoy = ahora.toISOString().slice(0, 10);
+  if (f > hoy) return { estado: 'futuro', motivo: `el ${f} todavía no ocurrió` };
+  if (f === hoy) return { estado: 'en_curso', motivo: `el índice del ${f} todavía no se publica: EDGAR lo cierra después de las 22:00 ET` };
+  // El día de ayer, antes de las 03:00 UTC, tampoco tuvo su publicación.
+  const ayer = new Date(Date.UTC(
+    Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1, Number(hoy.slice(8, 10)) - 1,
+  )).toISOString().slice(0, 10);
+  if (f === ayer && ahora.getUTCHours() < 3) {
+    return { estado: 'en_curso', motivo: `el índice del ${f} todavía no se publica: EDGAR lo cierra después de las 22:00 ET` };
+  }
+  return { estado: 'cerrado', motivo: null };
+}
+
 /** El listado del trimestre al que pertenece esta fecha, en JSON. */
 export function urlListadoTrimestre(fechaIso) {
   const t = trimestreDe(fechaIso);
