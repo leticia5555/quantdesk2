@@ -296,9 +296,22 @@ function routeFetch(url, opts) {
   }
   if (u.includes('api.openfigi.com')) {
     const jobs = JSON.parse(opts.body);
-    return Promise.resolve(textResponse(JSON.stringify(jobs.map((j) =>
-      j.idValue === '037833100' ? { data: [{ ticker: 'AAPL' }] } : { warning: 'No identifier found.' }
-    )), 200, 'application/json'));
+    // ── LA FORMA REAL DE OPENFIGI ─────────────────────────────────────
+    // Devuelve TODAS las plazas del CUSIP, con su `exchCode`, y el orden no
+    // es una promesa: la de Fráncfort puede venir primera. El fixture tenía
+    // `[{ ticker: 'AAPL' }]` —una sola entrada y sin plaza—, así que no podía
+    // reproducir el defecto de Lety: Constellation Brands saliendo como
+    // `CB1A` (2026-10-22).
+    return Promise.resolve(textResponse(JSON.stringify(jobs.map((j) => {
+      if (j.idValue === '037833100') {
+        return { data: [
+          { ticker: 'APC', exchCode: 'GR', marketSector: 'Equity', name: 'APPLE INC' },
+          { ticker: 'AAPL', exchCode: 'US', marketSector: 'Equity', name: 'APPLE INC' },
+          { ticker: 'AAPL', exchCode: 'UW', marketSector: 'Equity', name: 'APPLE INC' },
+        ] };
+      }
+      return { warning: 'No identifier found.' };
+    })), 200, 'application/json'));
   }
   return Promise.resolve(textResponse('unmocked ' + u, 500, 'text/plain'));
 }
