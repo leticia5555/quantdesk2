@@ -568,8 +568,19 @@ try {
   // La gráfica se queda con lo que SOBRA, así que su alto depende del
   // contenido de arriba. Lo que se exige es que siga siendo una gráfica
   // —no un listón— no un número fijo que mañana nadie pueda cumplir.
+  // La cota baja de 280 a 255, y es un costo DECLARADO de R9: el menú
+  // compartido mide ~40 px en escritorio (ya compactado: con los 44 px de tap
+  // medía 57) y en esta ficha esos píxeles salen del alto de la gráfica,
+  // porque la gráfica es lo que se queda con lo que sobra. Medido: 307 sin
+  // menú, 267 con él.
+  //
+  // Se baja la cota en vez de recortar otra cosa de la página a propósito: lo
+  // de arriba —nivel, % del día, los nueve periodos— es lo que la pantalla
+  // viene a decidir, y encogerlo para recuperar 13 px cambiaría lo que se
+  // lee. 267 px sigue siendo una gráfica; el guardia contra el listón sigue
+  // vivo, sólo que calibrado a la pantalla que ahora existe.
   chequeo('y la gráfica sigue siendo una gráfica, no un listón',
-    caja.alto >= 280, String(caja.alto));
+    caja.alto >= 255, String(caja.alto));
 
   // ── EL ALTO A 1440×1000 ─────────────────────────────────────────────
   // La regla 8 pide escritorio sin scroll, y el mapa (R3(c)) lo cumple. Esta

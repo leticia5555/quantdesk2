@@ -90,7 +90,14 @@
   /* La página vuelve a recorrerse: debajo del mapa están las tablas de R3. El
      MAPA no se estira — eso vive en `.pantalla`, que mide una pantalla exacta. */
   body{margin:0}
-  .pantalla{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+  /* El alto de la pantalla descuenta el menú compartido, que publica su
+     propio alto MEDIDO en `--qdnav-alto` y `--qdnav-abajo` (qd-nav.js).
+     Sin esto, a 390 px el botón de volver al mapa quedaba debajo del borde
+     y no se podía tocar. Los fallbacks en 0px dejan la página igual que
+     antes si el menú no cargó. */
+  .pantalla{display:flex;flex-direction:column;overflow:hidden;
+    height:calc(100vh - var(--qdnav-alto,0px) - var(--qdnav-abajo,0px));
+    height:calc(100dvh - var(--qdnav-alto,0px) - var(--qdnav-abajo,0px))}
   header{display:flex;align-items:center;gap:10px;padding:10px 16px 8px;
     padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
   .marca{font-family:var(--mono);font-size:15px;letter-spacing:.5px}
@@ -835,7 +842,16 @@
 
   function pintarMapa(d){
     var l = document.getElementById('lienzo');
-    var w = l.clientWidth, h = l.clientHeight;
+    // ── SE MIDE HACIA ABAJO, NO AL MÁS CERCANO ────────────────────────
+    // `clientHeight` redondea: con una caja real de 608.6 px devuelve 609, y
+    // el treemap —que dibuja con los píxeles que se le dan— pinta su última
+    // hilera un píxel MÁS ALLÁ del borde. El arnés lo marcó con `sobra:-1`
+    // en cuanto el menú compartido de R9 dejó la caja en un alto
+    // fraccionario; antes el número caía redondo por casualidad.
+    // `floor` del rectángulo real nunca se pasa: a lo sumo deja un píxel
+    // sin pintar, y eso no se ve. Un cuadro cortado sí.
+    var caja = l.getBoundingClientRect();
+    var w = Math.floor(caja.width), h = Math.floor(caja.height);
     // Si el layout todavía no se aplicó (primer pintado), se reintenta en el
     // siguiente cuadro en vez de dibujar contra un cero.
     if(!w || !h){ requestAnimationFrame(function(){ pintarMapa(d); }); return; }
@@ -968,6 +984,19 @@
     pintarReset();
     if(!mapaBase){ escondeDesde(pool.cuadros, 0); escondeDesde(pool.cabeceras, 0); return; }
     var z = vista.z, W = mapaBase.w, H = mapaBase.h;
+    // ── EL BORDE REAL ES EL DEL LIENZO DE AHORA, NO EL DE CUANDO SE
+    //    CALCULÓ EL MAPA ───────────────────────────────────────────────
+    // `mapaBase` se arma con el lienzo MEDIDO en su momento. Cuando las
+    // tiras de índices estrenan una fila de la rejilla, `<main>` se encoge y
+    // el lienzo queda más bajo que el mapa que ya estaba calculado: la
+    // última hilera se pinta partida contra el borde. Hay un ResizeObserver
+    // que lo recalcula, pero mientras llega —y con el menú de R9 el orden
+    // cambió— lo que se ve es un cuadro cortado.
+    // Acotar contra el lienzo vivo hace que el recorte no dependa de quién
+    // llegue primero. Y como `#lienzo` tiene `overflow:hidden`, recortar la
+    // caja da exactamente el mismo dibujo.
+    var cajaViva = document.getElementById('lienzo').getBoundingClientRect();
+    var LW = Math.floor(cajaViva.width) || W, LH = Math.floor(cajaViva.height) || H;
 
     // Sólo lo que cae dentro de la ventana. A 8× eso es 1/64 del mapa, y es
     // lo que hace que ampliar no cueste 550 nodos cada vez.
@@ -1004,6 +1033,46 @@
     mapaBase.cuadros.forEach(function(q){
       var x = q.x*z - vista.px, y = q.y*z - vista.py, w = q.w*z, h = q.h*z;
       if(!dentro(x, y, w, h)) return;
+      // ── NINGÚN CUADRO PASA DEL BORDE DEL LIENZO ───────────────────
+      // Último punto antes del DOM, y el único que no se puede esquivar:
+      // acá ya está aplicado el zoom y el desplazamiento.
+      //
+      // `#lienzo` tiene `overflow:hidden`, así que lo que se sale YA era
+      // invisible: recortar la caja da el mismo dibujo. La diferencia es que
+      // el borde de abajo deja de ser una casualidad del redondeo —el arnés
+      // marcó un cuadro cortado en cuanto el menú de R9 cambió el alto de la
+      // caja— y pasa a ser una invariante.
+      // ── EL PISO DE UNA `.cuadro` SON 6 PX, Y NO ES NEGOCIABLE ─────
+      // `border:1px` arriba y abajo más `padding:2px` arriba y abajo, con
+      // `box-sizing:border-box`: la caja NO puede medir menos de 6 px. Se
+      // comprobó midiendo: con `height:4.79px` escrito, el navegador pintó
+      // 6.00px, y esa astilla asomaba 1.2 px por debajo del lienzo.
+      //
+      // Así que una astilla que no CABE entera no se pinta. Sólo afecta al
+      // borde: un cuadro que no toca el borde no entra por acá y se dibuja
+      // igual que siempre, por chico que sea. Lo que se pierde es una tira
+      // de menos de 6 px en la última hilera, que ya estaba recortada por el
+      // `overflow:hidden` del lienzo.
+      var PISO_CUADRO = 6;
+      if(x + w > LW) w = LW - x;
+      if(y + h > LH) h = LH - y;
+      if(w <= 0 || h <= 0) return;
+      // LA ASTILLA DEL BORDE SE RECUESTA, NO SE DESCARTA.
+      //
+      // La que falló medía `top:629.206px` y `height:4.79359px`: terminaba en
+      // 634.0, el borde EXACTO del lienzo, así que no se salía en la maqueta.
+      // Se salía al PINTARSE, porque la caja creció a su mínimo de 6 px.
+      //
+      // El primer intento fue no pintarla. Mal: el mapa tiene astillas
+      // legítimas en todos los bordes y se perdieron 24 emisoras de 554 —y
+      // "no se dibuja lo que no cabe" cambia QUÉ se ve, que es exactamente lo
+      // que el encargo no permite—.
+      //
+      // Así que se corre hacia adentro lo justo para que su mínimo entre. Se
+      // encima con su vecina 1.2 px, o sea la mitad de la costura que ya
+      // tienen entre bordes, y no se pierde ninguna.
+      if(h < PISO_CUADRO && y + PISO_CUADRO > LH) y = Math.max(0, LH - PISO_CUADRO);
+      if(w < PISO_CUADRO && x + PISO_CUADRO > LW) x = Math.max(0, LW - PISO_CUADRO);
       pintaCuadro(nodoDe(pool.cuadros, n++, 'cuadro', l), q.item, x, y, w, h);
     });
     escondeDesde(pool.cuadros, n);
@@ -2448,5 +2517,8 @@
   render();
 })();
 </script>
+<!-- El menú compartido de R9. UN solo componente: qd-nav.js.
+     Se monta solo y se inserta como primer hijo de <body>. -->
+<script src="/qd-nav.js"></script>
 </body>
 </html>
