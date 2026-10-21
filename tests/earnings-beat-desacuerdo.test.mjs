@@ -18,8 +18,19 @@
 // ═══════════════════════════════════════════════════════════════
 
 import {
-  evaluaDesacuerdo, CRITERIOS_DESACUERDO, estadisticasHistoricas, VENTANA_TRIMESTRES,
+  evaluaDesacuerdo, CRITERIOS_DESACUERDO, estadisticasHistoricas, VENTANA_TRIMESTRES, libroDelYes,
 } from '../api/_lib/earnings-beat.js';
+
+// Los cierres del INSTRUMENTO (métrica que empata + libro con spread chico)
+// se prueban en tests/earnings-beat-instrumento.test.mjs. Acá se prueba lo que
+// viene DESPUÉS de esos cierres, así que cada caso los pasa explícitamente:
+// misma métrica, libro angosto y un umbral de spread de PRUEBA (el congelado
+// es null hasta que se fije con datos).
+const INSTR = {
+  metrica_mercado: { metrica: 'eps_ajustado' },
+  libro: libroDelYes({ bids: [{ price: '0.07', size: '500' }], asks: [{ price: '0.09', size: '500' }] }),
+  criterios: { ...CRITERIOS_DESACUERDO, spread_max_puntos: 10 },
+};
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -49,7 +60,7 @@ console.log('el caso de la tarjeta: precio 8%, histórico 78%');
 
 // 21 de 27 da 78%, pero 27 NO es la ventana — ese conteo se prueba abajo.
 // Acá se usa 15 de 20 (75%) contra un precio de 8%: hueco de 67 puntos.
-const ibm = evaluaDesacuerdo({
+const ibm = evaluaDesacuerdo({ ...INSTR,
   historico: hist({ beats: 15, total: 20 }),
   precio_mercado: 0.08,
   consenso_declarado: 2.75,
@@ -81,7 +92,7 @@ ok(!/algo que el historial no contiene está moviendo/i.test(ibm.lectura),
   'la lectura NO afirma que el mercado sepa algo', ibm.lectura);
 ok(/pregunta OTRA cosa/.test(ibm.lectura), 'nombra la causa que hay que descartar primero');
 
-const medio = evaluaDesacuerdo({
+const medio = evaluaDesacuerdo({ ...INSTR,
   historico: hist({ beats: 15, total: 20 }),
   precio_mercado: 0.40, consenso_declarado: 2.75, fecha_reporte: '2026-10-22', hoy: '2026-09-25',
 });
@@ -97,12 +108,12 @@ console.log('la tasa histórica NUNCA es un pronóstico, en TODOS los caminos');
 
 const caminos = {
   desacuerdo: ibm,
-  coincide: evaluaDesacuerdo({ historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.70, consenso_declarado: 2.75 }),
-  sin_precio: evaluaDesacuerdo({ historico: hist({ beats: 15, total: 20 }), precio_mercado: null }),
-  sin_historial: evaluaDesacuerdo({ historico: null, precio_mercado: 0.08 }),
-  muestra_corta: evaluaDesacuerdo({ historico: hist({ beats: 5, total: 6 }), precio_mercado: 0.08 }),
-  fecha_pasada: evaluaDesacuerdo({ historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: 2.75, fecha_reporte: '2026-07-22', hoy: '2026-09-25' }),
-  sin_consenso: evaluaDesacuerdo({ historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: null }),
+  coincide: evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.70, consenso_declarado: 2.75 }),
+  sin_precio: evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 15, total: 20 }), precio_mercado: null }),
+  sin_historial: evaluaDesacuerdo({ ...INSTR, historico: null, precio_mercado: 0.08 }),
+  muestra_corta: evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 5, total: 6 }), precio_mercado: 0.08 }),
+  fecha_pasada: evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: 2.75, fecha_reporte: '2026-07-22', hoy: '2026-09-25' }),
+  sin_consenso: evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: null }),
 };
 for (const [nombre, r] of Object.entries(caminos)) {
   ok(/no un pronóstico de este trimestre/.test(r.la_tasa_no_es_pronostico || ''),
@@ -126,9 +137,9 @@ console.log('los cierres que van ANTES de restar');
 
 // El bug que este test cerró: `Number(null)` es 0, así que un mercado sin
 // consenso declarado pasaba como si declarara $0.00.
-ok(evaluaDesacuerdo({ historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: undefined }).motivo === 'sin_consenso_declarado',
+ok(evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: undefined }).motivo === 'sin_consenso_declarado',
   'undefined también cuenta como "no declara consenso", no como $0.00');
-ok(evaluaDesacuerdo({ historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: '' }).motivo === 'sin_consenso_declarado',
+ok(evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: '' }).motivo === 'sin_consenso_declarado',
   'y una cadena vacía igual');
 
 ok(caminos.muestra_corta.comparable === false && caminos.muestra_corta.motivo === 'muestra_corta',
@@ -151,7 +162,7 @@ console.log('el umbral declarado contra el nivel reciente de EPS');
 // Un mercado que pregunta por $3.60 cuando la empresa viene de estimados de
 // ~$2.70 no está preguntando "¿superó el consenso?". El hueco puede ser de 30
 // puntos y aun así el instrumento va primero.
-const umbralLejos = evaluaDesacuerdo({
+const umbralLejos = evaluaDesacuerdo({ ...INSTR,
   historico: hist({ beats: 15, total: 20 }),
   precio_mercado: 0.42, consenso_declarado: 3.60, fecha_reporte: '2026-10-22', hoy: '2026-09-25',
 });
@@ -161,7 +172,7 @@ ok(umbralLejos.instrumento_primero === true,
   'y eso solo ya manda el instrumento primero, con 33 puntos de hueco', `${umbralLejos.gap_puntos}`);
 ok(umbralLejos.instrumento.nivel_eps_reciente === 2.71,
   'el nivel se publica para poder discutirlo', umbralLejos.instrumento.nivel_eps_reciente);
-const umbralCerca = evaluaDesacuerdo({
+const umbralCerca = evaluaDesacuerdo({ ...INSTR,
   historico: hist({ beats: 15, total: 20 }),
   precio_mercado: 0.42, consenso_declarado: 2.75, fecha_reporte: '2026-10-22', hoy: '2026-09-25',
 });
@@ -182,7 +193,7 @@ const filas27 = Array.from({ length: 27 }, (_, i) => {
 const h27 = estadisticasHistoricas(filas27);
 ok(h27.ventana.total === 20, 'estadisticasHistoricas recorta a la ventana de 20', h27.ventana.total);
 ok(h27.completo.total === 27, 'y el conteo completo de 27 va aparte', h27.completo.total);
-const conVentana = evaluaDesacuerdo({ historico: h27, precio_mercado: 0.08, consenso_declarado: 2.70, fecha_reporte: '2026-10-22', hoy: '2026-09-25' });
+const conVentana = evaluaDesacuerdo({ ...INSTR, historico: h27, precio_mercado: 0.08, consenso_declarado: 2.70, fecha_reporte: '2026-10-22', hoy: '2026-09-25' });
 ok(conVentana.trimestres === 20 && conVentana.beats === h27.ventana.beats,
   'y el desacuerdo se calcula sobre la ventana, no sobre los 27',
   `${conVentana.beats} de ${conVentana.trimestres}`);
@@ -195,7 +206,7 @@ console.log('función PURA: el día entra por parámetro');
 const fuente = (await import('node:fs')).readFileSync(new URL('../api/_lib/earnings-beat.js', import.meta.url), 'utf8');
 const cuerpo = fuente.slice(fuente.indexOf('function evaluaDesacuerdo'), fuente.indexOf('function dondeMirarInstrumento'));
 ok(!/new Date\(\)|Date\.now\(\)/.test(cuerpo), 'evaluaDesacuerdo no lee el reloj: `hoy` entra por parámetro');
-ok(evaluaDesacuerdo({ historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: 2.75, fecha_reporte: '2020-01-01' }).clasificacion === 'desacuerdo',
+ok(evaluaDesacuerdo({ ...INSTR, historico: hist({ beats: 15, total: 20 }), precio_mercado: 0.08, consenso_declarado: 2.75, fecha_reporte: '2020-01-01' }).clasificacion === 'desacuerdo',
   'y sin `hoy` no se inventa una comparación de fechas: no se cierra por rancia');
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');

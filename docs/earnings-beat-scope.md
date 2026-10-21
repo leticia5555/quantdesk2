@@ -1098,6 +1098,66 @@ información o es que el mercado pregunta otra cosa. Corre la **misma**
 | `tests/earnings-beat-desacuerdo.test.mjs` | Umbrales pineados, los cierres previos, la ventana de 20, y que la lectura NO afirme que el mercado sabe algo. |
 | `tests/earnings-beat-live.test.mjs` | El lint de honestidad, ampliado al bloque nuevo y al diag. |
 
+### Cicatriz META: la alerta comparó GAAP contra ajustado, en un libro vacío
+
+**El caso.** META, mercado abierto que resolvía el 2026-10-21
+(`meta-quarterly-earnings-gaap-eps-10-21-2026-6pt31`). La tarjeta dijo
+"DESACUERDO · 68 puntos": Polymarket 7% contra un histórico de 15 de 20 (75%).
+Verificado a mano, era **falsa**, por dos causas:
+
+1. **Métrica distinta (la grave).** El mercado resuelve sobre **GAAP EPS > $6.31**.
+   El histórico cuenta el EPS de Alpha Vantage, que es **ajustado**. En
+   2025-10-29 la tarjeta marca ✓ (est 6.71 → 7.25) y el GAAP real fue $1.05
+   (cargo fiscal único de $15.93B): contamos un beat donde el mercado habría
+   pagado miss. Meta tuvo cargos extraordinarios grandes en 3 de los últimos 4
+   trimestres.
+2. **Libro vacío.** $4.2K de volumen, $1.3K de liquidez; Yes a 28¢ y No a
+   96.3¢ (suman 124¢). Tres números para "el precio": 7% en la tarjeta
+   (`outcomePrices` de Gamma), 16% en el encabezado de Polymarket (≈ mid), 28¢
+   para entrar (ask). La tarjeta no decía cuál era el suyo.
+
+**Las reglas nuevas (todas en `evaluaDesacuerdo`, antes de restar nada):**
+
+| Cierre | Motivo | ¿Configurable? |
+|---|---|---|
+| La métrica del mercado no empata con la del histórico (`eps_ajustado`) | `metrica_distinta` | **No.** No vive en `criterios`; ningún override lo apaga. |
+| La métrica del mercado no se pudo leer (sin mención, o fuentes que se contradicen) | `metrica_indeterminada` | **No.** No se adivina: se dice que no se sabe. |
+| Sin libro del Yes en el CLOB (vacío, sin bid, sin ask, cruzado, o el CLOB no contestó) | `sin_libro` | — |
+| `spread_max_puntos` todavía en `null` | `umbral_spread_sin_congelar` | Se fija con el censo, abajo. |
+| Spread del Yes por encima del umbral | `spread_ancho` | `CRITERIOS_DESACUERDO.spread_max_puntos` |
+
+- **La métrica se LEE** del slug, la pregunta y la descripción, por separado
+  (`extraeMetricaMercado`). `non-gaap-eps` contiene `gaap-eps`: el no-GAAP se mira
+  primero. "adjusted" suelto no cuenta ("adjusted for splits"); tiene que ir
+  pegado a EPS. Si una fuente dice GAAP y otra menciona non-GAAP → `conflicto`.
+- **La nuestra, declarada:** `METRICA_HISTORICO` = EPS ajustado, Alpha Vantage
+  `reportedEPS`. Congelada.
+- **El precio que se muestra y se compara** es el **mid del libro del Yes**
+  (CLOB `/book` por el token del Yes), con bid, ask y spread al lado. Sin libro,
+  la tarjeta muestra `outcomePrices` **diciendo que es eso** (Gamma no documenta
+  si es último o mid) y la alerta no dispara.
+- **La tarjeta** dice qué pide el mercado ("El mercado pide: GAAP EPS · umbral
+  $6.31"), cuál es la nuestra ("EPS AJUSTADO (Alpha Vantage), no GAAP"), el tipo
+  de precio, volumen, liquidez y spread. Si las métricas no empatan, en lugar de
+  la alerta va el aviso de "métricas distintas". No se tocaron el disclaimer
+  bilingüe, el "no es predicción" ni la ausencia de probabilidad propia, y la
+  Fase 2 sigue en **NO-GO**.
+
+**Censo ANTES de decidir** — `GET /api/earnings-beat?vista=live&diag=instrumento&format=md`:
+cuántos mercados abiertos piden GAAP / ajustado / indeterminada (y por qué), y la
+distribución de spreads (percentiles, histograma, y cuántos pasan con 2/3/5/10/15/20¢,
+en total y entre los que empatan métrica). **El umbral de spread NO está fijado:**
+mientras `spread_max_puntos` valga `null` la alerta no dispara en ningún mercado.
+Se fija con esa distribución en la mano, y el test que lo pinea cambia en el mismo
+commit.
+
+| Archivo | Qué |
+|---|---|
+| `api/_lib/earnings-beat.js` | `extraeMetricaMercado`, `comparaMetricas`, `METRICA_HISTORICO`, `libroDelYes`, `umbralDelSlug`; los cierres en `evaluaDesacuerdo`; `spread_max_puntos: null` |
+| `api/earnings-beat.js` | `vistaLive()` pide el libro del Yes y pasa métrica + libro; `?diag=instrumento` (`diagInstrumento`, `instrumentoMd`) |
+| `app.html` | Métrica + umbral, nuestra métrica, tipo de precio, bid/ask/spread, volumen y liquidez; avisos por código |
+| `tests/earnings-beat-instrumento.test.mjs` | **La alerta no dispara si la métrica no empata o no se sabe** (con control positivo, y probado en rojo quitando el cierre); el libro; el umbral sin congelar; la vista y el censo de punta a punta con el caso META |
+
 ---
 
 ## VISTA DE COMPARACIÓN ✅ IMPLEMENTADA (`?vista=comparacion`)

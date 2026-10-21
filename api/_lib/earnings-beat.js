@@ -1430,6 +1430,162 @@ function resumenMarkdown(c) {
 // Los umbrales están congelados acá y pineados por test.
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+// MÉTRICA: qué EPS pide el mercado, contra qué EPS cuenta el histórico
+//
+// LA CICATRIZ QUE ESTO CIERRA — META, mercado abierto que resuelve el
+// 2026-10-21 (slug meta-quarterly-earnings-gaap-eps-10-21-2026-6pt31). La
+// tarjeta dijo "DESACUERDO · 68 puntos": Polymarket 7% contra un histórico de
+// 15 de 20. Pero el mercado resuelve sobre GAAP EPS, y el histórico cuenta el
+// EPS de Alpha Vantage, que es AJUSTADO. No son el mismo número: en
+// 2025-10-29 el histórico marca ✓ (est 6.71 → 7.25) y el GAAP de ese
+// trimestre fue $1.05, por un cargo fiscal único de $15.93B. Contamos un beat
+// donde el mercado habría pagado miss. La alerta comparó dos preguntas
+// distintas — la causa (b) de la trampa de abajo, en su forma más limpia.
+//
+// La regla: la alerta de desacuerdo SOLO puede dispararse cuando la métrica
+// del mercado EMPATA con la del histórico. Si no empata → aviso de "métricas
+// distintas". Si no se puede leer → se dice que no se sabe, y tampoco dispara.
+// No se adivina la métrica: se LEE del slug y del texto del mercado, y cuando
+// las fuentes no dicen nada o se contradicen, queda indeterminada.
+// ═══════════════════════════════════════════════════════════════════
+
+// La NUESTRA, declarada. `reportedEPS` de Alpha Vantage es el EPS ajustado
+// (el que se compara contra el consenso de analistas), no el GAAP.
+const METRICA_HISTORICO = Object.freeze({
+  codigo: 'eps_ajustado',
+  etiqueta: 'EPS ajustado',
+  fuente: 'Alpha Vantage EARNINGS (reportedEPS) vía pead_earnings',
+  nota: 'Alpha Vantage publica el EPS AJUSTADO (non-GAAP), no el GAAP. Un cargo extraordinario mueve el GAAP y no el ajustado.',
+});
+
+const ETIQUETA_METRICA = Object.freeze({
+  eps_gaap: 'GAAP EPS',
+  eps_ajustado: 'EPS ajustado (non-GAAP)',
+  indeterminada: 'no se pudo determinar',
+});
+
+// Slug con guiones: "…-gaap-eps-…", "…-non-gaap-eps-…", "…-nongaap-eps-…".
+// "non-gaap-eps" CONTIENE "gaap-eps": por eso el no-GAAP se mira primero y se
+// borra antes de buscar el GAAP pelado.
+const SLUG_AJUSTADO = /(^|-)(non-?gaap|adjusted|adj)(-diluted)?-eps(-|$)/;
+const SLUG_NON_GAAP = /non-?gaap/g;
+const SLUG_GAAP = /(^|-)gaap(-diluted)?-eps(-|$)/;
+// Texto (pregunta o reglas). "adjusted" suelto NO alcanza ("adjusted for
+// splits"): tiene que ir pegado a EPS. "non-GAAP" sí cuenta suelto — y si
+// aparece en un mercado GAAP ("non-GAAP figures will not be considered"), la
+// fuente queda con las DOS menciones y la métrica, indeterminada. Peor un
+// "no se sabe" de más que una alerta falsa.
+const TEXTO_AJUSTADO = /\bnon[-\s]?gaap\b|\badjusted\s+(diluted\s+)?(eps|earnings per share)\b/i;
+const TEXTO_NON_GAAP = /\bnon[-\s]?gaap\b/gi;
+const TEXTO_GAAP = /\bgaap\b/i;
+
+function fragmentoAlrededor(texto, re) {
+  const r = new RegExp(re.source, re.flags.replace('g', ''));
+  const m = r.exec(texto);
+  if (!m) return null;
+  const ini = Math.max(0, m.index - 50);
+  return texto.slice(ini, Math.min(texto.length, m.index + m[0].length + 50)).replace(/\s+/g, ' ').trim();
+}
+
+// Una fuente → 'eps_gaap' | 'eps_ajustado' | 'ambas' | null (no menciona).
+function metricaDeFuente(texto, { slug = false } = {}) {
+  if (!texto || typeof texto !== 'string') return { lee: null, fragmento: null };
+  const t = slug ? texto.toLowerCase() : texto;
+  const ajustado = slug ? SLUG_AJUSTADO.test(t) : TEXTO_AJUSTADO.test(t);
+  const sinNon = slug ? t.replace(SLUG_NON_GAAP, '') : t.replace(TEXTO_NON_GAAP, '');
+  const gaap = slug ? SLUG_GAAP.test(sinNon) : TEXTO_GAAP.test(sinNon);
+  const lee = ajustado && gaap ? 'ambas' : ajustado ? 'eps_ajustado' : gaap ? 'eps_gaap' : null;
+  const fragmento = slug ? (lee ? texto : null)
+    : lee === 'eps_ajustado' ? fragmentoAlrededor(texto, TEXTO_AJUSTADO)
+      : lee ? fragmentoAlrededor(sinNon, TEXTO_GAAP) : null;
+  return { lee, fragmento };
+}
+
+// m: mercado normalizado (slug, pregunta, descripcion). Devuelve la métrica y
+// CÓMO se leyó: cada fuente por separado, para poder auditar el dictamen.
+function extraeMetricaMercado(m) {
+  const por_fuente = {
+    slug: metricaDeFuente(m && m.slug, { slug: true }),
+    pregunta: metricaDeFuente(m && m.pregunta),
+    descripcion: metricaDeFuente(m && m.descripcion),
+  };
+  const vistas = new Set();
+  for (const f of Object.values(por_fuente)) {
+    if (f.lee === 'ambas') { vistas.add('eps_gaap'); vistas.add('eps_ajustado'); } else if (f.lee) vistas.add(f.lee);
+  }
+  const metrica = vistas.size === 1 ? [...vistas][0] : 'indeterminada';
+  const motivo = vistas.size === 0 ? 'sin_mencion' : vistas.size > 1 ? 'conflicto' : null;
+  const decide = metrica === 'indeterminada' ? null
+    : ['slug', 'pregunta', 'descripcion'].filter((k) => por_fuente[k].lee === metrica);
+  return { metrica, etiqueta: ETIQUETA_METRICA[metrica], motivo, leida_de: decide, por_fuente };
+}
+
+// Umbral del slug: "meta-quarterly-earnings-gaap-eps-10-21-2026-6pt31" → 6.31.
+// Solo para COTEJAR el de la descripción: si un día dicen cosas distintas, eso
+// es un dato, no algo que se resuelva eligiendo uno.
+function umbralDelSlug(slug) {
+  const m = /(?:^|-)(neg-?)?(\d+)pt(\d+)(?:-|$)/.exec(String(slug || '').toLowerCase());
+  if (!m) return null;
+  const v = Number(`${m[2]}.${m[3]}`);
+  return Number.isFinite(v) ? (m[1] ? -v : v) : null;
+}
+
+// ¿Se puede comparar el precio del mercado con el histórico? Solo si empatan.
+function comparaMetricas(metricaMercado) {
+  const mercado = metricaMercado && metricaMercado.metrica ? metricaMercado.metrica : 'indeterminada';
+  const estado = mercado === 'indeterminada' ? 'indeterminada'
+    : mercado === METRICA_HISTORICO.codigo ? 'empata' : 'distinta';
+  const etiquetaMercado = ETIQUETA_METRICA[mercado] || ETIQUETA_METRICA.indeterminada;
+  return {
+    estado,
+    empata: estado === 'empata',
+    mercado, mercado_etiqueta: etiquetaMercado,
+    historico: METRICA_HISTORICO.codigo, historico_etiqueta: METRICA_HISTORICO.etiqueta,
+    historico_fuente: METRICA_HISTORICO.fuente,
+    aviso: estado === 'distinta'
+      ? `Métricas distintas: el mercado pide ${etiquetaMercado}, el histórico cuenta ${METRICA_HISTORICO.etiqueta} — no son comparables.`
+      : estado === 'indeterminada'
+        ? `No se pudo leer qué EPS pide el mercado (GAAP o ajustado). El histórico cuenta ${METRICA_HISTORICO.etiqueta}: sin saber la del mercado, no se comparan.`
+        : null,
+  };
+}
+
+// ── PROFUNDIDAD: el libro del Yes ────────────────────────────────────────
+// Segunda causa del caso META: $4.2K de volumen, $1.3K de liquidez y un libro
+// tan vacío que el Yes se compraba a 28¢ y el No a 96.3¢ (suman 124¢). Tres
+// números para "el precio": 7% en la tarjeta (outcomePrices de Gamma), 16% en
+// el encabezado de Polymarket, 28¢ para entrar. Con un libro así no hay UN
+// precio que restarle al histórico.
+//
+// body: respuesta cruda de CLOB GET /book?token_id=<token del Yes>. Bids y
+// asks se buscan por máximo/mínimo, sin confiar en el orden en que vienen.
+function libroDelYes(body) {
+  const lado = (arr) => (Array.isArray(arr) ? arr : [])
+    .map((o) => ({ precio: num(o && o.price), tam: num(o && o.size) }))
+    .filter((o) => o.precio !== null && o.precio > 0 && o.precio < 1 && (o.tam === null || o.tam > 0));
+  const bids = lado(body && body.bids);
+  const asks = lado(body && body.asks);
+  const mejorBid = bids.length ? bids.reduce((a, b) => (b.precio > a.precio ? b : a)) : null;
+  const mejorAsk = asks.length ? asks.reduce((a, b) => (b.precio < a.precio ? b : a)) : null;
+  const base = {
+    bid: mejorBid ? mejorBid.precio : null, ask: mejorAsk ? mejorAsk.precio : null,
+    tam_bid: mejorBid ? mejorBid.tam : null, tam_ask: mejorAsk ? mejorAsk.tam : null,
+    niveles_bid: bids.length, niveles_ask: asks.length,
+    mid: null, spread_puntos: null,
+  };
+  if (!bids.length && !asks.length) return { ...base, estado: 'vacio' };
+  if (!bids.length) return { ...base, estado: 'sin_bid' };
+  if (!asks.length) return { ...base, estado: 'sin_ask' };
+  if (mejorAsk.precio < mejorBid.precio) return { ...base, estado: 'cruzado' };
+  return {
+    ...base, estado: 'ok',
+    mid: +((mejorBid.precio + mejorAsk.precio) / 2).toFixed(4),
+    // En puntos (= centavos del Yes): 0.28 − 0.037 = 24.3.
+    spread_puntos: +((mejorAsk.precio - mejorBid.precio) * 100).toFixed(1),
+  };
+}
+
 const CRITERIOS_DESACUERDO = {
   // La MISMA ventana del titular de la tarjeta. Si el conteo que se compara
   // saliera de otra ventana, la brecha no sería la de lo que se muestra.
@@ -1446,6 +1602,12 @@ const CRITERIOS_DESACUERDO = {
   // separan más que esto, la pregunta puede no ser "beat vs consenso".
   tolerancia_umbral_pct: 20,
   trimestres_para_nivel: 4,
+  // Spread máximo del libro del Yes (en puntos) para que el precio cuente como
+  // UN precio. SIN CONGELAR A PROPÓSITO: el umbral sale de la distribución de
+  // spreads de los mercados abiertos (?vista=live&diag=instrumento), que se
+  // reporta ANTES de fijarlo. Mientras valga null la alerta NO dispara en
+  // ningún mercado — el caso META muestra que sin este cierre la alerta miente.
+  spread_max_puntos: null,
 };
 
 // `hoy` entra por parámetro (nunca `new Date()` acá dentro): así el test fija
@@ -1456,10 +1618,19 @@ function evaluaDesacuerdo({
   consenso_declarado = null,
   fecha_reporte = null,   // o la de resolución, lo que se tenga
   hoy = null,
+  // Salida de extraeMetricaMercado(). Ausente = indeterminada = NO dispara.
+  metrica_mercado = null,
+  // Salida de libroDelYes(). Ausente = sin libro = NO dispara.
+  libro = null,
   criterios = CRITERIOS_DESACUERDO,
 } = {}) {
   const v = historico && historico.ventana ? historico.ventana : null;
+  // La comparación de métricas viaja en TODOS los caminos: la tarjeta la
+  // muestra aunque el dictamen se cierre por otra causa.
+  const metrica = comparaMetricas(metrica_mercado);
   const base = {
+    metrica,
+    libro: libro || null,
     comparable: false, clasificacion: 'no_comparable', motivo: null,
     gap_puntos: null, tasa_historica_pct: null, precio_pct: null,
     // Va SIEMPRE, en todos los caminos: es la frase que impide que la tasa
@@ -1472,6 +1643,27 @@ function evaluaDesacuerdo({
     return { ...base, motivo: 'sin_precio' };
   }
   const precioPct = Math.round(Number(precio_mercado) * 100);
+
+  // ── CIERRE 1, el grave: ¿las dos cifras son sobre la MISMA métrica? ──
+  // No es un criterio configurable: no vive en `criterios` y ningún override
+  // lo apaga. Una alerta que resta GAAP de ajustado no es una alerta.
+  if (!metrica.empata) {
+    return { ...base, precio_pct: precioPct,
+      motivo: metrica.estado === 'distinta' ? 'metrica_distinta' : 'metrica_indeterminada' };
+  }
+
+  // ── CIERRE 2: ¿hay UN precio? Sin libro, o con spread ancho, no. ──
+  if (!libro || libro.estado !== 'ok' || !Number.isFinite(libro.spread_puntos)) {
+    return { ...base, precio_pct: precioPct, motivo: 'sin_libro' };
+  }
+  if (criterios.spread_max_puntos === null || criterios.spread_max_puntos === undefined
+    || !Number.isFinite(Number(criterios.spread_max_puntos))) {
+    return { ...base, precio_pct: precioPct, motivo: 'umbral_spread_sin_congelar' };
+  }
+  if (libro.spread_puntos > Number(criterios.spread_max_puntos)) {
+    return { ...base, precio_pct: precioPct, motivo: 'spread_ancho',
+      spread_max_puntos: Number(criterios.spread_max_puntos) };
+  }
 
   if (!v || !Number.isFinite(v.total) || !v.total) {
     return { ...base, precio_pct: precioPct, motivo: 'sin_historial' };
@@ -1583,4 +1775,5 @@ export {
   estadisticasHistoricas, mediana, sorpresaPct, VENTANA_TRIMESTRES, PISO_ESTIMADO,
   escalaDelEstimado, PISO_ESCALA,
   evaluaDesacuerdo, CRITERIOS_DESACUERDO,
+  METRICA_HISTORICO, ETIQUETA_METRICA, extraeMetricaMercado, metricaDeFuente, comparaMetricas, libroDelYes, umbralDelSlug,
 };
