@@ -2611,25 +2611,35 @@ function ebLiveCard(e){
       +'<span style="color:#555;">'+smL('est ','est ')+est+' → '+rep+'</span></div>';
   }).join('');
 
-  // QUÉ pide el mercado: la métrica (GAAP / ajustado / no se sabe) JUNTO al
-  // umbral. Es lo que la alerta falsa de META no decía: el mercado pedía GAAP
-  // EPS > $6.31 y el histórico cuenta EPS ajustado.
-  const met=(m.metrica&&m.metrica.metrica)||'indeterminada';
-  const metTxt=smL(m.metrica&&m.metrica.etiqueta||'no se pudo determinar',EB_METRICA_EN[met]||EB_METRICA_EN.indeterminada);
-  const umbral=(m.consenso_eps!==null&&m.consenso_eps!==undefined)?m.consenso_eps:m.umbral_slug;
-  const umbralTxt=(umbral===null||umbral===undefined)?smL('umbral no declarado','threshold not declared')
-    : smL('umbral ','threshold ')+'$'+Number(umbral).toFixed(2);
-  const consenso='<div style="font-size:9px;color:#666;margin-top:2px;">'+smL('El mercado pide: ','The market asks for: ')+metTxt+' · '+umbralTxt+'</div>';
-
-  // ── BLOQUE DE DESACUERDO ────────────────────────────────────────
-  // LA CAUSA LA DECIDE EL ENDPOINT. Acá solo se TRADUCE por código: la nota de
-  // sorpresa de BA ya afirmó una causa falsa por armarse el texto en el front,
-  // y no se repite. Si un código no se reconoce, no se escribe nada.
+  // NÚMEROS LADO A LADO, cada uno con lo que mide. QuantDesk NO dictamina el
+  // desacuerdo (decisión de Lety tras la alerta falsa de META): pone el precio
+  // del mercado con su métrica, el consenso con su fuente y el histórico con
+  // la suya, y el que compara es el usuario.
   //
-  // Y la brecha NUNCA se presenta como "QuantDesk dice 75%": es la distancia
-  // entre un precio y un CONTEO de trimestres pasados. Las dos cosas nombradas
-  // por lo que son, en la misma frase.
-  const desacuerdoTxt = ebDesacuerdoBloque(e, m);
+  // Qué mide el mercado, JUNTO al umbral: "Resuelve sobre GAAP EPS de $6.31".
+  // Si la métrica no se pudo leer, se dice así, sin inventarla.
+  const met=(m.metrica&&m.metrica.metrica)||'indeterminada';
+  const umbral=(m.consenso_eps!==null&&m.consenso_eps!==undefined)?m.consenso_eps:m.umbral_slug;
+  const umbralEs=(umbral===null||umbral===undefined)?null:'$'+Number(umbral).toFixed(2);
+  const pideTxt = met==='indeterminada'
+    ? smL('Métrica del mercado: no determinada','Market metric: not determined')+(umbralEs?smL(' · umbral ',' · threshold ')+umbralEs:'')
+    : smL('Resuelve sobre '+((m.metrica&&m.metrica.etiqueta)||'')+(umbralEs?' de '+umbralEs:''),
+          'Resolves on '+EB_METRICA_EN[met]+(umbralEs?' of '+umbralEs:''));
+
+  // El consenso de los analistas, con su fuente. Finnhub no declara si es GAAP
+  // o ajustado, y la tarjeta lo dice en vez de suponerlo.
+  const ca=m.consenso_analistas||{};
+  const consensoTxt = (ca.valor===null||ca.valor===undefined)
+    ? smL('Consenso de analistas: no disponible','Analyst consensus: not available')+(ca.motivo?' ('+ca.motivo+')':'')
+    : smL('Consenso de analistas: $'+Number(ca.valor).toFixed(2)+' · métrica no declarada por la fuente',
+          'Analyst consensus: $'+Number(ca.valor).toFixed(2)+' · metric not declared by the source');
+
+  // Línea NEUTRAL cuando el mercado mide otra cosa que el histórico. Informa;
+  // no es una advertencia ni bloquea nada.
+  const mv=m.metrica_vs_historico||{};
+  const metricaDistinta = mv.estado==='distinta'
+    ? smL(mv.nota||'','The market measures '+(EB_METRICA_EN[mv.mercado]||'')+', the track record counts adjusted EPS.')
+    : '';
 
   const titulo=m.titulo?String(m.titulo).slice(0,90):(m.slug||'');
   const link=m.url?'<a href="'+m.url+'" target="_blank" rel="noopener noreferrer" style="color:#ff6600;text-decoration:none;">'+titulo+' ↗</a>':titulo;
@@ -2644,125 +2654,35 @@ function ebLiveCard(e){
     +'<div style="font-family:var(--mono);font-size:11px;color:#ff6600;">'+pmTxt+'</div>'
     +'<div style="font-family:var(--mono);font-size:9px;color:#888;">'+libroTxt+'</div>'
     +'<div style="font-family:var(--mono);font-size:9px;color:#666;">'+profTxt+'</div>'
+    +'<div style="font-size:9px;color:#999;margin-top:2px;">'+pideTxt+'</div>'
     +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(m.fuente_precio||'Polymarket')+'</div>'
+    +'<div style="font-family:var(--mono);font-size:10px;color:#aaa;">'+consensoTxt+'</div>'
+    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(ca.fuente||'Finnhub')+'</div>'
+    +'<div style="font-size:8px;color:#555;letter-spacing:.08em;">QUANTDESK · TRACK RECORD</div>'
     +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">'+historicoTxt+'</div>'
     +(completoTxt?'<div style="font-size:9px;color:#666;">'+completoTxt+'</div>':'')
     +(racha?'<div style="font-size:9px;color:#888;margin-top:2px;">'+racha+'</div>':'')
     +(sorpresa?'<div style="font-size:9px;color:#888;">'+sorpresa+'</div>':'')
     +(sorpresaNota?'<div style="font-size:8px;color:#7a6a45;line-height:1.3;">'+sorpresaNota+'</div>':'')
-    +'<div style="font-size:8px;color:#444;margin-bottom:6px;">'+smL('fuente: EPS AJUSTADO (Alpha Vantage), no GAAP','source: ADJUSTED EPS (Alpha Vantage), not GAAP')+'</div>'
-    +desacuerdoTxt
+    +'<div style="font-size:8px;color:#444;'+(metricaDistinta?'':'margin-bottom:6px;')+'">'+smL('contando EPS ajustado (Alpha Vantage)','counting adjusted EPS (Alpha Vantage)')+'</div>'
+    +(metricaDistinta?'<div style="font-size:9px;color:#888;margin-bottom:6px;">'+metricaDistinta+'</div>':'')
     +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
       +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')
       +(v&&v.anios?'<span style="color:#444;"> · '+smL('titular sobre '+v.total+' trimestres ('+v.anios+' años)','headline over '+v.total+' quarters ('+v.anios+'y)')+'</span>':'')+'</div>'+quarters+'</div>':'')
-    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+consenso+otros+'</div>'
+    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+otros+'</div>'
     +'<div style="margin-top:6px;font-size:8px;color:#5a4f38;line-height:1.4;">'
       +smL('El histórico no es predicción · Track record is not a forecast',
            'Track record is not a forecast · El histórico no es predicción')+'</div>'
   +'</div>';
 }
 
-// ─── BLOQUE DE DESACUERDO ────────────────────────────────────────────
-// Se dibuja SOLO cuando el endpoint dictaminó `clasificacion === 'desacuerdo'`.
-// Los motivos de "no comparable" (muestra corta, fecha pasada, sin consenso)
-// no pintan tarjeta: una advertencia que no se puede sostener es peor que el
-// silencio. El único que sí se dice es el de varios umbrales, porque ahí la
-// tarjeta muestra un precio que podría no ser el comparable.
-//
-// LO QUE ESTE BLOQUE NO PUEDE DECIR, y hay test que lo vigila: que el mercado
-// sepa algo. Un hueco grande tiene dos causas y la más probable, según las
-// cuatro correcciones de la Fase 0, es que los dos números sean sobre
-// preguntas distintas. Por eso el orden de "dónde mirar" lo manda el endpoint.
-const EB_DONDE_MIRAR_EN = {
-  instrumento: 'FIRST: is the market asking the same question? Compare its threshold and quarter against consensus — a threshold above consensus trades low for good reason.',
-  instrumento_sin_consenso: 'FIRST: the market declares no consensus, so what it resolves against is unknown. Open the market on Polymarket and read the question.',
-  revisiones: 'estimate revisions, last 30 days',
-  ocho_k: "the company's latest 8-Ks (EDGAR)",
-  pares: 'what its sector peers reported this quarter',
-};
+// Etiqueta en inglés de la métrica que pide el mercado. El código lo decide
+// el endpoint (`m.metrica.metrica`); acá solo se traduce.
 const EB_METRICA_EN = {
   eps_gaap: 'GAAP EPS',
   eps_ajustado: 'adjusted EPS (non-GAAP)',
-  indeterminada: 'could not be determined',
+  indeterminada: 'not determined',
 };
-const EB_LECTURA_EN = {
-  instrumento_primero: 'A gap this size is produced more easily by a market asking something ELSE than by new information: check the instrument before the news.',
-  ambas_causas: 'It could be information the track record does not contain, or the two figures not measuring the same thing. There is no telling which without opening the market.',
-};
-
-function ebDesacuerdoBloque(e, m){
-  const ds=(e&&e.desacuerdos)||{};
-  const d=(m&&m.desacuerdo)||null;
-  const partes=[];
-
-  // Varios umbrales sobre el mismo reporte: el precio de arriba puede no ser el
-  // que se puede comparar con la tasa histórica. Se dice ANTES del hueco.
-  if(ds.varios_umbrales){
-    partes.push('<div style="font-size:9px;color:#7a6a45;line-height:1.35;">'
-      +smL(ds.cuantos_mercados+' mercados abiertos de esta empresa, con umbrales distintos sobre el mismo reporte. La tasa histórica solo es comparable con el que pregunta por el consenso.',
-           ds.cuantos_mercados+' open markets for this company, with different thresholds on the same report. The track record is only comparable with the one asking about consensus.')
-      +'</div>');
-  }
-
-  // Por qué NO hay comparación, cuando no la hay por el INSTRUMENTO. Estos
-  // cierres los decide el endpoint (`d.motivo`); acá solo se nombran.
-  // Métricas distintas o no determinadas: en lugar de la alerta, el aviso.
-  if(d&&(d.motivo==='metrica_distinta'||d.motivo==='metrica_indeterminada')&&d.metrica){
-    const mEn=EB_METRICA_EN[d.metrica.mercado]||EB_METRICA_EN.indeterminada;
-    const en=d.motivo==='metrica_distinta'
-      ? 'Different metrics: the market asks for '+mEn+', the track record counts adjusted EPS — not comparable.'
-      : 'Could not read which EPS the market asks for (GAAP or adjusted). The track record counts adjusted EPS: without the market\'s metric, they are not compared.';
-    partes.push('<div style="border-top:1px solid #2a2118;margin-top:6px;padding-top:6px;font-size:9px;color:#b89a5e;line-height:1.35;">'
-      +'⚠ '+smL(d.metrica.aviso||'',en)+'</div>');
-  }
-  if(d&&d.motivo==='spread_ancho'&&d.libro){
-    partes.push('<div style="font-size:9px;color:#7a6a45;line-height:1.35;margin-top:4px;">'
-      +smL('Libro delgado: spread de '+Number(d.libro.spread_puntos).toFixed(1)+'¢ entre bid y ask. Con un libro así no hay UN precio que comparar con el histórico.',
-           'Thin book: '+Number(d.libro.spread_puntos).toFixed(1)+'¢ bid-ask spread. With a book like this there is no single price to compare with the track record.')+'</div>');
-  }
-  if(d&&d.motivo==='sin_libro'){
-    partes.push('<div style="font-size:9px;color:#666;line-height:1.35;margin-top:4px;">'
-      +smL('Sin libro del Yes: no se sabe de qué precio se habla, así que no se compara con el histórico.',
-           'No Yes order book: it is unclear which price this is, so it is not compared with the track record.')+'</div>');
-  }
-  if(d&&d.motivo==='umbral_spread_sin_congelar'){
-    partes.push('<div style="font-size:8px;color:#555;line-height:1.35;margin-top:4px;">'
-      +smL('Comparación con el histórico en pausa: el spread máximo se fija con datos antes de volver a alertar.',
-           'Comparison with the track record paused: the maximum spread is being set from data before alerting again.')+'</div>');
-  }
-
-  if(d&&d.clasificacion==='desacuerdo'&&d.gap_puntos!==null){
-    const abs=Math.abs(d.gap_puntos);
-    const debajo=d.gap_puntos<0;
-    const pistas=(d.donde_mirar||[]).map(function(x){
-      const en=EB_DONDE_MIRAR_EN[x.codigo];
-      // Código que esta pantalla no conoce: NO se escribe. Mejor una pista
-      // menos que una frase inventada.
-      if(!en) return '';
-      return '<div style="padding-left:8px;color:#888;">→ '+smL(x.texto,en)+'</div>';
-    }).filter(Boolean).join('');
-    const lecturaEn=EB_LECTURA_EN[d.lectura_codigo]||'';
-    partes.push('<div style="border-top:1px solid #2a2118;margin-top:6px;padding-top:6px;">'
-      +'<div style="font-family:var(--mono);font-size:10px;color:#e8a33d;letter-spacing:.06em;">'
-        +smL('⚠ DESACUERDO · brecha de '+abs+' puntos','⚠ DISAGREEMENT · '+abs+'-point gap')+'</div>'
-      // Los dos números nombrados por lo que son: un PRECIO y un CONTEO.
-      +'<div style="font-size:9px;color:#aaa;line-height:1.35;margin-top:3px;">'
-        +smL('El precio del mercado ('+d.precio_pct+'%) está '+(debajo?'muy por debajo':'muy por encima')+' de la tasa histórica ('+d.tasa_historica_pct+'%, '+d.beats+' de '+d.trimestres+' trimestres).',
-             'The market price ('+d.precio_pct+'%) is far '+(debajo?'below':'above')+' the historical rate ('+d.tasa_historica_pct+'%, '+d.beats+' of '+d.trimestres+' quarters).')
-        +'</div>'
-      +(lecturaEn?'<div style="font-size:9px;color:#888;line-height:1.35;margin-top:3px;">'+smL(d.lectura,'A '+abs+'-point gap. '+lecturaEn)+'</div>':'')
-      +'<div style="font-size:9px;color:#666;margin-top:4px;">'+smL('Dónde mirar:','Where to look:')+'</div>'
-      +pistas
-      +'<div style="font-size:8px;color:#7a6a45;line-height:1.35;margin-top:4px;">'
-        +smL('La tasa histórica es un CONTEO de trimestres pasados: no es predicción de este trimestre.',
-             'The historical rate is a COUNT of past quarters: it is not a forecast for this quarter.')+'</div>'
-      +'<div style="font-size:8px;color:#666;margin-top:2px;">'
-        +smL('No es señal de compra ni de venta. Es dónde mirar.','Not a buy or sell signal. It is where to look.')+'</div>'
-    +'</div>');
-  }
-
-  return partes.join('');
-}
 
 // Monto AGREGADO en dólares, corto: $4.2K, $1.3M. No es un precio (el lint de
 // precios lo deja fuera a propósito): es volumen o liquidez de un mercado.
