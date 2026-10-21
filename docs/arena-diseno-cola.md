@@ -98,3 +98,25 @@ entrada 2, por otro camino.
 
 **Dato a juntar antes:** por agente, qué fracción de las llamadas fue a
 nombres que ya tenía, y cuántas corridas toparon el cupo.
+
+## 5. Un cierre cortado que el reintento rescató no queda registrado
+
+**Qué se vio (2026-10-21, al contar el corte del cierre en
+`puerta_por_corrida`).** El corte de nuestro reloj en el CIERRE se cuenta desde
+`context.llm_error.cuerpos_vacios` (`vuelta: 'cierre'`, `timeout_nuestro`).
+Pero `llm_error` sólo se escribe en el camino de ABORTO de `arena-shadow`. Si
+el primer intento del cierre muere por nuestro reloj y el reintento lo
+rescata, la corrida termina `ok_target` y ese corte no queda en ningún lado:
+`ctx.cierre` (el `cierre_diagnostico`) guarda los intentos sin decir si el
+vacío fue por nuestro reloj, y `cuerpos_vacios` no viaja en `ctx.tools`.
+
+**Por qué importa.** `cortes.cierre` sale `cortado: false` en esas corridas: la
+puerta las ve verdes aunque nuestro reloj haya cortado una llamada. Es el
+mismo hueco que tenía la fila 13 antes de contar el cierre, en el caso que
+termina bien.
+
+**El arreglo (NO hecho todavía):** que `arena-shadow` journalee
+`cuerpos_vacios` también cuando la corrida termina bien (p. ej. en
+`ctx.tools.cuerpos_vacios`), y que `cortesDelCierre` lo lea de ahí además de
+`llm_error`. Toca el journaleo del camino que decide: va en su propio PR, con
+una sombra que lo pruebe.
