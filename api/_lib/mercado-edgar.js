@@ -85,6 +85,24 @@ export const MAX_MESES_PORTADA = 15;
 /** Las formas que traen portada con conteo de acciones. Un 8-K no sirve. */
 export const FORMAS_CON_PORTADA = ['10-Q', '10-K', '10-K/A', '10-Q/A', '20-F', '40-F'];
 
+// ── EL SEGUNDO ESCALÓN: UNA EMISORA QUE TODAVÍA NO PRESENTA 10-Q ─────────
+// SPCX salió a bolsa el 2026-09-18 y no se pintaba: la cap de Finnhub era del
+// día de la IPO y difería 8% de acciones×precio, y EDGAR "no tenía" el conteo
+// de acciones. Cerró en $147.79 y fue de las más operadas del día — un hueco
+// de los que se notan (Lety, 2026-10-22).
+//
+// Y EDGAR SÍ LO TENÍA. `dei:EntityCommonStockSharesOutstanding` es un dato de
+// PORTADA, y lo trae cualquier presentación con portada: el prospecto
+// (424B4), el registro (S-1) y el 8-K del cierre de la oferta. La lista de
+// arriba sólo aceptaba informes periódicos, así que los descartaba.
+//
+// VA COMO ESCALÓN Y NO MEZCLADO, a propósito: el conteo de un prospecto puede
+// ser PREVIO a la oferta, y el de un S-1 puede quedar viejo entre enmiendas.
+// Mientras exista un informe periódico, ese manda. Esto entra sólo cuando no
+// hay ninguno — que es exactamente el caso de una emisora recién listada — y
+// el resultado declara de qué forma salió, para que la procedencia se vea.
+export const FORMAS_IPO = ['424B4', '424B1', '424B3', '424B2', 'S-1', 'S-1/A', '8-K', '8-K/A', 'F-1', 'F-1/A'];
+
 /**
  * El mapa ticker → CIK, desde `https://www.sec.gov/files/company_tickers.json`.
  *
@@ -212,19 +230,30 @@ export function muestraCruda(json, max = 600) {
  * nos enteramos.
  */
 export function accionesDeCompanyConcept(json, {
-  formas = FORMAS_CON_PORTADA, hoy = new Date(), maxMeses = MAX_MESES_PORTADA,
+  formas = FORMAS_CON_PORTADA, formasRespaldo = FORMAS_IPO,
+  hoy = new Date(), maxMeses = MAX_MESES_PORTADA,
 } = {}) {
   const { filas: unidades, unidad, forma } = filasDeUnits(json);
-  const validas = unidades.filter((u) => {
+  const utilizable = (u) => {
     const v = num(u && u.val);
-    return v != null && v > 0 && u.end && formas.includes(String(u.form || ''));
-  });
-  const base = { acciones: null, fecha_portada: null, presentado_en: null, form: null, unidad, forma };
+    return v != null && v > 0 && u.end;
+  };
+  const deFormas = (lista) => unidades.filter((u) => utilizable(u) && lista.includes(String(u.form || '')));
+
+  // Los informes periódicos primero. El escalón de IPO sólo si no hay ninguno.
+  let validas = deFormas(formas);
+  let escalon = 'periodico';
+  if (!validas.length && Array.isArray(formasRespaldo) && formasRespaldo.length) {
+    validas = deFormas(formasRespaldo);
+    if (validas.length) escalon = 'ipo';
+  }
+  const base = { acciones: null, fecha_portada: null, presentado_en: null, form: null,
+    unidad, forma, escalon: null };
   if (!validas.length) {
     return {
       ...base,
       motivo: unidades.length
-        ? `EDGAR no trae ${formas.join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`
+        ? `EDGAR no trae ${formas.join('/')} ni ${(formasRespaldo || []).join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`
         // La huella va PEGADA al motivo: es la diferencia entre "EDGAR no tiene
         // el concepto" y "la respuesta vino con otra forma y no la supimos leer".
         : `EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (${formaDeUnits(json)})`,
@@ -293,6 +322,12 @@ export function accionesDeCompanyConcept(json, {
     fy: u.fy != null ? Number(u.fy) : null,
     fp: u.fp ? String(u.fp) : null,
     accn: u.accn ? String(u.accn) : null,
+    // De qué escalón salió. `ipo` quiere decir "no hay informe periódico
+    // todavía y esto viene de la portada del prospecto o del 8-K". No es peor
+    // dato —es el mismo concepto de la misma fuente—, pero la procedencia se
+    // declara: la regla 3 pide que cada número diga de dónde sale, y "del
+    // 424B4 del 18-sep" no es lo mismo que "del 10-Q del 30-jun".
+    escalon,
     motivo: null,
   };
 }
