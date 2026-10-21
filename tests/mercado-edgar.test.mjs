@@ -57,10 +57,32 @@ test('gana el último 10-Q por fecha de presentación, no el archivo más nuevo'
   assert.equal(a.presentado_en, '2025-08-04', 'y la de presentación es cuándo nos enteramos');
 });
 
-test('sin formas con portada lo dice en vez de devolver un número', () => {
-  const a = accionesDeCompanyConcept({ units: { shares: [{ end: '2025-09-10', val: 5, form: '8-K' }] } });
+test('un 8-K SÍ sirve cuando no hay informe periódico: es el escalón de IPO', () => {
+  // ESTA PRUEBA DECÍA LO CONTRARIO, y lo contrario dejaba fuera a las
+  // emisoras recién listadas. SPCX salió a bolsa el 2026-09-18, cerró en
+  // $147.79, fue de las más operadas del día, y no se pintaba: "EDGAR no
+  // reporta el concepto". Era falso — EDGAR lo reportaba en la portada del
+  // 424B4 y del 8-K del cierre, y esta lista los descartaba (Lety,
+  // 2026-10-22).
+  //
+  // `EntityCommonStockSharesOutstanding` es un dato de PORTADA: lo trae
+  // cualquier presentación que tenga portada, no sólo los informes
+  // periódicos.
+  const a = accionesDeCompanyConcept(
+    { units: { shares: [{ end: '2025-09-10', filed: '2025-09-12', val: 5, form: '8-K' }] } },
+    { hoy: new Date('2025-10-01T00:00:00Z') },
+  );
+  assert.equal(a.acciones, 5);
+  assert.equal(a.escalon, 'ipo', 'y declara de dónde salió');
+});
+
+test('una forma que no está en NINGUNA de las dos listas se rechaza con su causa', () => {
+  // Lo que la prueba de arriba protegía —no tomar cualquier presentación—
+  // sigue vivo: un SC 13G es de un tercero, no una portada de la emisora.
+  const a = accionesDeCompanyConcept({ units: { shares: [{ end: '2025-09-10', val: 5, form: 'SC 13G' }] } });
   assert.equal(a.acciones, null);
   assert.match(a.motivo, /10-Q/);
+  assert.match(a.motivo, /8-K|424B4/, 'el motivo dice las dos listas que se buscaron');
 });
 
 test('un CIK sin el concepto lo dice con su causa', () => {

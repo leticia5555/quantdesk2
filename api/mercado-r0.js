@@ -201,6 +201,12 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
       .map((r) => [String(r.symbol).toUpperCase(), r]));
 
   // ── QUÉ FALTA, que es lo único que se pide ──────────────────────────
+  // ── CUÁNTO VALE UNA CAP ANTES DE VOLVER A PEDIRLA ─────────────────
+  // 36 horas. Lety pidió recapturar "si tiene más de 7 días" y esto es más
+  // estricto, así que lo cubre con margen. Lo que faltaba no era el número:
+  // era que el relevo de Arena no tenía ninguno.
+  const TTL_CAP_MS = 36 * 3600e3;
+
   // El TTL de la cap se mide contra `cap_actualizado` —cuándo se MIDIÓ— y no
   // contra `actualizado` —cuándo se tocó la fila—. Ver el comentario del
   // schema: confundirlos congelaba la cap para siempre.
@@ -216,8 +222,22 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
     const capArena = capsArena.get(sym);
     const medida = p && p.cap_actualizado ? new Date(p.cap_actualizado) : null;
     const capFresca = p && num(p.market_cap) != null && medida
-      && (ahora - medida) < 36 * 3600e3;
-    if (!capFresca && !(capArena && num(capArena.market_cap) != null)) necesitaCap.push(sym);
+      && (ahora - medida) < TTL_CAP_MS;
+    // ── LA CAP DE ARENA TAMBIÉN CADUCA ────────────────────────────────
+    // Esta línea decía `!(capArena && market_cap != null)`: con una cap de
+    // Arena presente, la recaptura se saltaba SIN MIRARLE LA EDAD. SPCX tenía
+    // una del día de su IPO (2026-09-18) y por eso seguía ahí un mes después,
+    // difiriendo 8% de acciones×precio, con el cuadro en gris punteado
+    // (Lety, 2026-10-22).
+    //
+    // `fetched_at` ya venía en la consulta de `arena_market_cap` y no se
+    // usaba. Ahora un relevo vale sólo mientras esté fresco, con el MISMO TTL
+    // que el principal: un relevo que no caduca no es un relevo, es un dato
+    // congelado con otro nombre.
+    const traidaArena = capArena && capArena.fetched_at ? new Date(capArena.fetched_at) : null;
+    const arenaFresca = capArena && num(capArena.market_cap) != null
+      && traidaArena && (ahora - traidaArena) < TTL_CAP_MS;
+    if (!capFresca && !arenaFresca) necesitaCap.push(sym);
   }
 
   // ── LA COLA, espaciada de verdad ────────────────────────────────────

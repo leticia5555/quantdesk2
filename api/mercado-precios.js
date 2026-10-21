@@ -26,7 +26,7 @@ import { beat } from './_lib/heartbeat.js';
 import { proximaRanura, intervaloDe } from './_lib/mercado-r0.js';
 import {
   SCHEMA_PRECIOS_US, RANGO_SIEMBRA, MIN_PUNTOS_SERIE,
-  aplanarChartYahoo, planPreciosUs, soloCierresDefinitivos, serieDesdeFilas, cubreYtd,
+  aplanarChartYahoo, planPreciosUs, soloCierresDefinitivos, serieDesdeFilas, cubreYtd, SQL_SIMBOLOS_MAPA, simboloYahoo,
 } from './_lib/mercado-precios.js';
 
 export const maxDuration = 300;
@@ -36,7 +36,9 @@ const YAHOO_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 
 // Cuántos nombres pinta el mapa. Mismo número que `recorteMapa` usa para el
 // treemap: sembrar series que nadie va a mirar es pagar por nada.
-const TOP_MAPA = 300;
+// `TOP_MAPA = 300` vivía acá y era el defecto: la cosecha sembraba 300
+// símbolos mientras el mapa pintaba 611. Ahora la lista sale de
+// `SQL_SIMBOLOS_MAPA`, la misma que usa el mapa, sin tope.
 
 // Yahoo no publica un techo, así que se elige uno CONSERVADOR y se declara:
 // 100/min es una petición cada 600 ms. La siembra de 300 nombres toma ~3
@@ -97,12 +99,13 @@ async function guardar(symbol, filas, lote = 400) {
   return escritas;
 }
 
-/** Los símbolos que el mapa va a pintar: top por cap, con sector y con cap. */
-async function simbolosDelMapa(n = TOP_MAPA) {
-  const filas = await sql(
-    `select symbol from mercado_universo_us
-      where sector_etf is not null and market_cap is not null
-      order by market_cap desc limit $1`, [n]).catch(() => []);
+/**
+ * Los símbolos que el mapa va a pintar. LA MISMA consulta que usa el mapa,
+ * importada de `_lib/mercado-precios.js`, no una copia con un `limit 300`
+ * que dejaba 311 emisoras sin sembrar nunca.
+ */
+async function simbolosDelMapa() {
+  const filas = await sql(SQL_SIMBOLOS_MAPA).catch(() => []);
   return filas.map((f) => String(f.symbol).toUpperCase());
 }
 
@@ -158,16 +161,20 @@ async function jobUs({ ahora, dry, t0, tope }) {
     if (Date.now() + r.espera > deadline) { cortada = true; break; }
     if (r.espera > 0) await dormir(r.espera);
 
-    const res = await chart(p.symbol, p.rango);
+    // Se PIDE con el símbolo de Yahoo (`BRK-B`) y se GUARDA con el nuestro
+    // (`BRK.B`), que es por donde el mapa junta la serie con el universo.
+    const res = await chart(simboloYahoo(p.symbol), p.rango);
     if (!res.ok) {
       contadores[res.red ? 'red' : 'http']++;
-      hecho.push({ symbol: p.symbol, tipo: p.tipo, estado: 'error', status: res.status, error: res.error || `HTTP ${res.status}` });
+      hecho.push({ symbol: p.symbol, pedido_como: simboloYahoo(p.symbol), tipo: p.tipo,
+        estado: 'error', status: res.status, error: res.error || `HTTP ${res.status}` });
       continue;
     }
     const plano = aplanarChartYahoo(res.json);
     if (!plano.filas.length) {
       contadores.sin_datos++;
-      hecho.push({ symbol: p.symbol, tipo: p.tipo, estado: 'sin_datos', motivo: plano.motivo });
+      hecho.push({ symbol: p.symbol, pedido_como: simboloYahoo(p.symbol), tipo: p.tipo,
+        estado: 'sin_datos', motivo: plano.motivo });
       continue;
     }
     // La barra del día en curso es el precio VIVO, no un cierre.

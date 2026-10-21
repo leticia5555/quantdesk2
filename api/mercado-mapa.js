@@ -23,7 +23,7 @@ import {
 } from './_lib/mercado-r0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import { armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES } from './_lib/mercado-mapa.js';
-import { MIN_PUNTOS_SERIE, cierreQueSePinta } from './_lib/mercado-precios.js';
+import { MIN_PUNTOS_SERIE, cierreQueSePinta, SQL_SIMBOLOS_MAPA } from './_lib/mercado-precios.js';
 
 export const maxDuration = 60;
 
@@ -123,9 +123,11 @@ export const SQL_MAPA_US = {
   // `conVolumen` NO es un detalle de estilo: ver el comentario de arriba. Con
   // la columna ausente, la consulta no la nombra y el mapa sigue cargando.
   precios: (conVolumen = true) =>
-      `with top as (
-         select symbol from mercado_universo_us
-          where sector_etf is not null and market_cap is not null
+      // `top` sale de `SQL_SIMBOLOS_MAPA`, la MISMA definición que usa la
+      // cosecha. Eran dos consultas con la misma intención y distinto
+      // resultado —la cosecha tenía `limit 300`—, y el mapa pintaba 611
+      // emisoras de las que 292 no tenían serie porque nunca se sembraron.
+      `with top as (${SQL_SIMBOLOS_MAPA}
        ), r as (
          select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
                 ${conVolumen ? 'p.volumen' : 'null::numeric as volumen'},
