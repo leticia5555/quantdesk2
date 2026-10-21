@@ -1,0 +1,35 @@
+{
+  "fuente": "arena_shadow_journal, 2026-10-20 (pegado por Lety el 2026-10-21). Por fila: id, run_date, created_at, agent_id, status y de context.tools solo lo que lee la puerta (used, turns, budget, stopped_by, limites, vueltas_medidas), copiado tal cual. Se omiten summary/sequence/proveedores: no entran en la cuenta.",
+  "filas": [
+    {
+      "nota": "fila 13 de la tabla: la cortada por nuestro reloj (255 s), tope 185000",
+      "id": "shadow-deepseek-2026-10-20T15:23:39.381Z", "run_date": "2026-10-20", "created_at": "2026-10-20 15:27:57.762418+00",
+      "agent_id": "deepseek", "status": "aborted_cuerpo_vacio",
+      "context": { "tools": {
+        "used": 20, "turns": 4, "budget": 20, "stopped_by": "call_budget",
+        "limites": {"nota": "Los tres topes cortan igual: se cierra con lo que haya, nunca se aborta. `stopped_by` dice cuál ganó; estos porcentajes dicen si ganó por poco o por lejos.", "vueltas": {"tope": 22, "usadas": 4}, "llamadas": {"pct": 100, "tope": 20, "usadas": 20, "intentos": 20}, "reloj_ms": {"pct": 137.8, "tope": 185000, "usado": 255017}, "reparto_ms": {"cierre_minimo": 70000, "reparto_en_ms": 96587, "cierre_concedido": 158413, "investigacion_usada": 255017, "investigacion_sobrante": 0}, "compactacion": {"activa": true, "vueltas_intactas": 1, "resultados_compactados": 18}, "contexto_tokens": {"pct": 37.4, "pico": 11221, "tope": 30000, "al_cierre": 11221}},
+        "vueltas_medidas": [{"ms": 18859, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 1, "techo_ms": 92500, "proveedor": "Reka", "reloj_nuestro": false}, {"ms": 14932, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 2, "techo_ms": 92500, "proveedor": "Reka", "reloj_nuestro": false}, {"ms": 13455, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 3, "techo_ms": 81120, "proveedor": "Reka", "reloj_nuestro": false}, {"ms": 49032, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 4, "techo_ms": 67626, "proveedor": "Reka", "reloj_nuestro": false}]
+      } }
+    },
+    {
+      "nota": "fila 17 de la tabla: sana, ya con tope 165000 (ARENA_CIERRE_MS=90000)",
+      "id": "shadow-deepseek-2026-10-20T15:57:41.841Z", "run_date": "2026-10-20", "created_at": "2026-10-20 15:59:51.7506+00",
+      "agent_id": "deepseek", "status": "ok_target",
+      "context": { "tools": {
+        "used": 11, "turns": 3, "budget": 20, "stopped_by": "time_budget",
+        "limites": {"nota": "Los tres topes cortan igual: se cierra con lo que haya, nunca se aborta. `stopped_by` dice cuál ganó; estos porcentajes dicen si ganó por poco o por lejos.", "vueltas": {"tope": 22, "usadas": 3}, "llamadas": {"pct": 55, "tope": 20, "usadas": 11, "intentos": 11}, "reloj_ms": {"pct": 75.6, "tope": 165000, "usado": 124773}, "reparto_ms": {"cierre_minimo": 90000, "reparto_en_ms": 71975, "cierre_concedido": 183025, "investigacion_usada": 124773, "investigacion_sobrante": 40227}, "compactacion": {"activa": true, "vueltas_intactas": 1, "resultados_compactados": 7}, "contexto_tokens": {"pct": 30.7, "pico": 9204, "tope": 30000, "al_cierre": 9204}},
+        "vueltas_medidas": [{"ms": 8614, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 1, "techo_ms": 75000, "proveedor": "DigitalOcean", "reloj_nuestro": false}, {"ms": 20654, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 2, "techo_ms": 66348, "proveedor": "Novita", "reloj_nuestro": false}, {"ms": 42579, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 3, "techo_ms": 45633, "proveedor": "Novita", "reloj_nuestro": false}]
+      } }
+    },
+    {
+      "nota": "fila 12 de la tabla: qwen, el corte de nuestro reloj cae DENTRO del loop (vuelta 5 vacía, reloj_nuestro)",
+      "id": "shadow-qwen-2026-10-20T15:20:08.422Z", "run_date": "2026-10-20", "created_at": "2026-10-20 15:23:39.195301+00",
+      "agent_id": "qwen", "status": "ok_target",
+      "context": { "tools": {
+        "used": 15, "turns": 5, "budget": 20, "stopped_by": "cuerpo_vacio",
+        "limites": {"nota": "Los tres topes cortan igual: se cierra con lo que haya, nunca se aborta. `stopped_by` dice cuál ganó; estos porcentajes dicen si ganó por poco o por lejos.", "vueltas": {"tope": 22, "usadas": 5}, "llamadas": {"pct": 75, "tope": 20, "usadas": 15, "intentos": 15}, "reloj_ms": {"pct": 110.1, "tope": 185000, "usado": 203746}, "reparto_ms": {"cierre_minimo": 70000, "reparto_en_ms": 150020, "cierre_concedido": 104980, "investigacion_usada": 203746, "investigacion_sobrante": 0}, "compactacion": {"activa": true, "vueltas_intactas": 1, "resultados_compactados": 11}, "contexto_tokens": {"pct": 35.2, "pico": 10550, "tope": 30000, "al_cierre": 10550}},
+        "vueltas_medidas": [{"ms": 10513, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 1, "techo_ms": 92500, "proveedor": "Venice", "reloj_nuestro": false}, {"ms": 6832, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 2, "techo_ms": 92500, "proveedor": "Venice", "reloj_nuestro": false}, {"ms": 31287, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 3, "techo_ms": 92500, "proveedor": "Venice", "reloj_nuestro": false}, {"ms": 33323, "ok": true, "bytes": null, "vacio": false, "status": 200, "vuelta": 4, "techo_ms": 66070, "proveedor": "Venice", "reloj_nuestro": false}, {"ms": 32716, "ok": false, "bytes": 0, "vacio": true, "status": 200, "vuelta": 5, "techo_ms": 32713, "proveedor": null, "reloj_nuestro": true}]
+      } }
+    }
+  ]
+}

@@ -13,7 +13,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { readFileSync } from 'node:fs';
-import { puertaDeCorrida, puertaPorCorrida, libroDeFila, PUERTA_RELOJ_PCT, PUERTA_LECTURA_MS } from '../api/liga-libros.js';
+import { puertaDeCorrida, puertaPorCorrida, libroDeFila, PUERTA_RELOJ_PCT, PUERTA_LECTURA_MS, FUENTE_PRUEBA } from '../api/liga-libros.js';
 import { resumenDelLoop } from '../api/arena-shadow.js';
 
 let failures = 0;
@@ -83,6 +83,53 @@ console.log('\n── 4) viaja por corrida ──');
   ok(!/from '\.\/arena-shadow\.js'|from '\.\.\/arena-shadow\.js'|from '\.\/arena-run\.js'/.test(src), 'el endpoint sigue sin importar el camino que decide');
   const html = readFileSync(new URL('../libros.html', import.meta.url), 'utf8');
   ok(/l\.puerta\.reloj_pct/.test(html) && /l\.puerta\.lectura_max_ms/.test(html), 'la tarjeta los muestra en "La corrida"');
+}
+
+// ── 5) LIBROS REALES DEL 20-OCT (arena_shadow_journal) ────────────────
+// Las filas las pegó Lety el 21-oct; el fixture copia tal cual lo que lee la
+// puerta. La 13 es la corrida de deepseek que nuestro reloj cortó a 255 s; la
+// 17 es una sana con el tope nuevo (165 s); la 12 es qwen, cortado DENTRO del
+// loop.
+console.log('\n── 5) libros reales del 20-oct ──');
+{
+  const { filas } = JSON.parse(readFileSync(new URL('./fixtures/libros-shadow-2026-10-20.json', import.meta.url), 'utf8'));
+  const libros = filas.map((f) => libroDeFila(f, FUENTE_PRUEBA));
+  const [l13, l17, l12] = libros;
+
+  ok(l13.puerta.reloj_pct === 137.8 && l13.puerta.puertas.reloj === false,
+    'fila 13 (deepseek, 255 s): reloj 137.8% → ROJO', JSON.stringify(l13.puerta));
+  ok(l13.puerta.lectura_max_ms === 49032 && l13.puerta.puertas.lectura === true,
+    'fila 13: la vuelta más larga fue 49 s → esa puerta sí pasa (lo que se pasó fue el total, no una lectura)');
+  // LO QUE ESTE LIBRO NO DICE: el corte de la 13 fue en el CIERRE, que no es
+  // una vuelta del loop. `vueltas_medidas` no lo registra, así que
+  // `cortes_nuestros` da 0. El rojo lo pone el reloj; esto lo deja escrito
+  // para que nadie lea el verde de cortes como "nuestro reloj no cortó".
+  ok(l13.puerta.cortes_nuestros === 0 && l13.puerta.puertas.cortes_nuestros === true,
+    'fila 13: el corte fue en el cierre, fuera de vueltas_medidas → cortes_nuestros no lo ve (el rojo viene del reloj)');
+  ok(l13.estado === 'aborted_cuerpo_vacio' && l13.corrida_id === 'shadow-deepseek-2026-10-20T15:23:39.381Z', 'y la fila se nombra por su id');
+
+  ok(l17.puerta.reloj_pct === 75.6 && l17.puerta.lectura_max_ms === 42579 && l17.puerta.cortes_nuestros === 0,
+    'fila 17 (deepseek, tope 165 s): 75.6% · 42.6 s · sin cortes', JSON.stringify(l17.puerta));
+  ok(l17.puerta.puertas.reloj === true && l17.puerta.puertas.lectura === true && l17.puerta.puertas.cortes_nuestros === true,
+    'fila 17: VERDE en las tres');
+
+  ok(l12.puerta.reloj_pct === 110.1 && l12.puerta.puertas.reloj === false
+    && l12.puerta.cortes_nuestros === 1 && l12.puerta.puertas.cortes_nuestros === false && l12.puerta.vacias === 1,
+    'fila 12 (qwen): reloj 110.1% y un corte de nuestro reloj DENTRO del loop → rojo en las dos', JSON.stringify(l12.puerta));
+
+  // La misma cuenta que la puerta, sobre datos reales.
+  for (const [i, f] of filas.entries()) {
+    const t = f.context.tools;
+    const r = resumenDelLoop({ turns: t.turns, stopped_by: t.stopped_by, limites: t.limites, vueltas_medidas: t.vueltas_medidas }, { used: t.used });
+    ok(r.reloj_pct === libros[i].puerta.reloj_pct && r.lectura_max_ms === libros[i].puerta.lectura_max_ms && r.cortes_nuestros === libros[i].puerta.cortes_nuestros,
+      `fila ${f.id}: igual que resumenDelLoop`);
+  }
+
+  // Lo que se filtra con jq: `.puerta_por_corrida[] | select(.puertas.reloj == false)`.
+  const rojas = puertaPorCorrida(libros).filter((p) => p.puertas.reloj === false).map((p) => p.corrida_id);
+  ok(rojas.length === 2 && rojas.includes(l13.corrida_id) && rojas.includes(l12.corrida_id) && !rojas.includes(l17.corrida_id),
+    'el filtro de jq devuelve la 13 y la 12, no la 17', JSON.stringify(rojas));
+  ok(puertaPorCorrida(libros).every((p) => p.fuente === 'prueba'), 'y las marca como de prueba (sombra), no en vivo');
 }
 
 console.log(failures ? `\n${failures} FAIL` : '\nTODOS LOS TESTS PASAN');
