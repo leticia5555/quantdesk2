@@ -74,7 +74,7 @@ import {
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
   estadisticasHistoricas, indiceYes, num, escalaDelEstimado, PISO_ESCALA,
-  extraeMetricaMercado, comparaMetricas, libroDelYes, METRICA_HISTORICO, umbralDelSlug,
+  extraeMetricaMercado, comparaMetricas, libroDelYes, METRICA_HISTORICO, umbralDelSlug, traduceTituloMercado,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -514,6 +514,9 @@ async function vistaLive(ctx) {
       market_id: m.id,
       slug: m.slug,
       titulo: m.pregunta,
+      // El título va en inglés (es una cita); esto es su traducción, solo
+      // para las formas conocidas. null = no se traduce.
+      titulo_es: traduceTituloMercado(m.pregunta),
       url: m.slug ? `https://polymarket.com/market/${m.slug}` : null,
       symbol: simbolo.symbol,
       fecha_resolucion: isoDia(m.fin),

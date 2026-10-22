@@ -21,6 +21,7 @@
 import { readFileSync } from 'node:fs';
 import {
   extraeMetricaMercado, comparaMetricas, libroDelYes, umbralDelSlug, METRICA_HISTORICO, sinCondicionales,
+  traduceTituloMercado,
 } from '../api/_lib/earnings-beat.js';
 
 let failures = 0;
@@ -130,17 +131,33 @@ ok(libroDelYes({ bids: [{ price: '0.3', size: '1' }], asks: [] }).estado === 'si
 ok(libroDelYes({ bids: [{ price: '0.6', size: '1' }], asks: [{ price: '0.4', size: '1' }] }).estado === 'cruzado', 'libro cruzado: se dice, no se promedia');
 ok(libroDelYes(null).mid === null, 'null → sin mid, no crashea');
 
+// ═══════════════════ 2b. el título: cita en inglés + traducción ═══════════════════
+console.log('el título del mercado se traduce por plantilla, no se inventa');
+
+ok(traduceTituloMercado('Will Meta (META) beat quarterly earnings?') === '¿Meta superará sus resultados trimestrales?',
+  'META: la traducción pedida, palabra por palabra', traduceTituloMercado('Will Meta (META) beat quarterly earnings?'));
+ok(traduceTituloMercado('Will Berkshire Hathaway (BRK.B) beat quarterly earnings?') === '¿Berkshire Hathaway superará sus resultados trimestrales?',
+  'ticker con punto (BRK.B)');
+ok(traduceTituloMercado('Will NVIDIA beat quarterly earnings?') === '¿NVIDIA superará sus resultados trimestrales?', 'sin ticker entre paréntesis');
+ok(traduceTituloMercado('Will Apple say "tariffs" during the earnings call?') === null, 'una forma que no conocemos: null, no una traducción inventada');
+ok(traduceTituloMercado('Will Meta report GAAP EPS above $6.31?') === null, 'otra forma de earnings tampoco se adivina');
+ok(traduceTituloMercado(null) === null && traduceTituloMercado('') === null, 'vacío / null → null');
+
 // ═══════════════════ 3. lints de fuente ═══════════════════
 console.log('lints: la tarjeta dice qué mide cada número');
 
 const app = readFileSync(new URL('../app.html', import.meta.url), 'utf8');
 const card = app.slice(app.indexOf('function ebLiveCard('), app.indexOf('\nfunction ebDiasHasta'));
-ok(/precio_tipo==='mid'/.test(card) && /mid del libro/.test(card), 'dice de QUÉ precio se habla (mid / outcomePrices)');
-ok(/'volumen '/.test(card) && /'liquidez '/.test(card) && /spread/.test(card), 'volumen, liquidez y spread junto al precio');
+ok(/precio_tipo==='mid'/.test(card) && /punto medio del libro/.test(card), 'dice de QUÉ precio se habla (punto medio / outcomePrices)');
+ok(/'volumen '/.test(card) && / liquidez '/.test(card) && /diferencia '/.test(card), 'volumen, liquidez y diferencia junto al precio');
+// El título se queda en inglés (cita de Polymarket); la traducción va DEBAJO, en gris chico.
+ok(/const titulo=m\.titulo\?String\(m\.titulo\)/.test(card), 'el título que se enlaza es el ORIGINAL en inglés');
+ok(/m\.titulo_es\?'<div style="font-size:8px;color:#555;/.test(card), 'la traducción va en gris chico, solo si el endpoint la dio');
+ok(/\+link\+tituloEs\+/.test(card), 'y va justo debajo del título');
 // El track record SE QUEDA TAL CUAL (pedido explícito): titular, completo,
 // racha, sorpresa mediana y últimos trimestres.
-for (const [nombre, re] of [['titular N de M', /'Histórico: superó '/], ['histórico completo', /histórico completo: /], ['racha', /'Racha: '/],
-  ['sorpresa mediana', /'Sorpresa mediana: '/], ['últimos trimestres', /'ÚLTIMOS TRIMESTRES'/]]) {
+for (const [nombre, re] of [['titular N de M', /'Historial: superó '/], ['historial completo', /historial completo: /], ['racha', /'Racha: '/],
+  ['sorpresa mediana', /'Sorpresa mediana: '/], ['últimos trimestres', /ÚLTIMOS TRIMESTRES/]]) {
   ok(re.test(card), `el track record conserva: ${nombre}`);
 }
 
@@ -250,6 +267,8 @@ ok(pedidosFinnhub === 1, 'el consenso cuesta UN request a Finnhub para toda la v
 
 const mMeta = emp.META.mercados[0];
 ok(mMeta.metrica.metrica === 'eps_gaap', 'META: el mercado pide GAAP EPS', mMeta.metrica.metrica);
+ok(mMeta.titulo === 'Will Meta Platforms (META) beat quarterly earnings?' && mMeta.titulo_es === '¿Meta Platforms superará sus resultados trimestrales?',
+  'META: el título en inglés y su traducción, por separado', mMeta.titulo_es);
 ok(mMeta.umbral_slug === 6.31 && mMeta.consenso_eps === 6.31, 'META: umbral 6.31, del slug y de la descripción');
 ok(mMeta.metrica_vs_historico.estado === 'distinta'
   && mMeta.metrica_vs_historico.nota === 'El mercado mide GAAP EPS, el histórico cuenta EPS ajustado.',

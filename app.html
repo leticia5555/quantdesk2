@@ -1030,9 +1030,9 @@ td:first-child{color:var(--text);font-weight:500;}
        aparece, va a ser un campo nuevo con su nombre — no este % renombrado. -->
   <div style="background:#0d0d0d;padding:16px;margin-top:1px;border-bottom:1px solid #1a1a1a;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;flex-wrap:wrap;">
-      <span style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;" data-i18n="pmOpenMarkets">POLYMARKET · OPEN EARNINGS MARKETS</span>
+      <span style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;">POLYMARKET · MERCADOS DE EARNINGS ABIERTOS</span>
       <span id="ebLiveMeta" style="font-family:var(--mono);font-size:9px;color:#444;"></span>
-      <button onclick="loadEarningsBeatLive(true)" style="margin-left:auto;font-family:var(--mono);font-size:9px;padding:2px 8px;background:none;border:1px solid #333;color:#888;border-radius:2px;cursor:pointer;" data-i18n="refresh">↻ refresh</button>
+      <button onclick="loadEarningsBeatLive(true)" style="margin-left:auto;font-family:var(--mono);font-size:9px;padding:2px 8px;background:none;border:1px solid #333;color:#888;border-radius:2px;cursor:pointer;">↻ actualizar</button>
     </div>
     <div id="ebLiveDisclaimer" style="font-family:var(--mono);font-size:9px;line-height:1.5;color:#7a6a45;background:#141109;border:1px solid #2a2212;border-radius:2px;padding:8px 10px;margin-bottom:12px;"></div>
     <div id="ebLivePanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:24px 0;">…</div></div>
@@ -2475,7 +2475,7 @@ async function loadEarningsBeatLive(forzar){
   _ebLiveLoading=true;
   ebLiveDisclaimer();
   panel.innerHTML='<div style="color:#444;font-family:var(--mono);font-size:11px;text-align:center;padding:24px 0;">'
-    +smL('Consultando Polymarket…','Querying Polymarket…')+'</div>';
+    +'Consultando Polymarket…'+'</div>';
   try{
     const r=await fetch('/api/earnings-beat?vista=live');
     const d=await r.json();
@@ -2483,18 +2483,16 @@ async function loadEarningsBeatLive(forzar){
     renderEbLive(d);
   }catch(e){
     // Un fallo de red NO se pinta como "no hay mercados": son cosas distintas.
-    panel.innerHTML=ebLiveAviso(smL('No se pudo consultar Polymarket. Es un fallo de conexión, no que no haya mercados abiertos.',
-      'Could not reach Polymarket. This is a connection failure, not an absence of open markets.'));
+    panel.innerHTML=ebLiveAviso('No se pudo consultar Polymarket. Es un fallo de conexión, no que no haya mercados abiertos.');
   }finally{ _ebLiveLoading=false; }
 }
 
 function ebLiveDisclaimer(){
   const el=document.getElementById('ebLiveDisclaimer');
   if(!el) return;
-  const es='⚠ El histórico es un CONTEO de trimestres pasados, no una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.';
-  const en='⚠ The track record COUNTS past quarters — it is not a forecast. QuantDesk does not publish its own probability yet: it is still being validated.';
-  const primero=smL(es,en), segundo=smL(en,es);
-  el.innerHTML='<div>'+primero+'</div><div style="color:#4a4130;margin-top:3px;">'+segundo+'</div>';
+  // Solo en español: la tarjeta entera va en español (el título del mercado,
+  // que es cita de Polymarket, es la única excepción).
+  el.innerHTML='<div>⚠ El historial es un CONTEO de trimestres pasados, no una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.</div>';
 }
 
 function ebLiveAviso(txt){
@@ -2508,23 +2506,23 @@ function renderEbLive(d){
   if(meta) meta.textContent='';
 
   if(d && d.error){
-    panel.innerHTML=ebLiveAviso(smL('Polymarket no respondió: ','Polymarket did not respond: ')+String(d.error).slice(0,140));
+    panel.innerHTML=ebLiveAviso('Polymarket no respondió: '+String(d.error).slice(0,140));
     return;
   }
   const empresas=(d&&d.empresas)||[];
   if(!empresas.length){
     // Estado vacío HONESTO: el motivo que dio el endpoint, no un genérico.
-    const motivo=(d&&d.vacio&&d.vacio.motivo)||smL('sin datos','no data');
-    panel.innerHTML=ebLiveAviso(smL('Ningún mercado abierto ahora mismo. Motivo: ','No open markets right now. Reason: ')+motivo
+    const motivo=(d&&d.vacio&&d.vacio.motivo)||'sin datos';
+    panel.innerHTML=ebLiveAviso('Ningún mercado abierto ahora mismo. Motivo: '+motivo
       +'<div style="color:#444;margin-top:6px;font-size:10px;">'
-      +smL('Revisados: ','Reviewed: ')+((d&&d.vacio&&d.vacio.revisados)||0)+'</div>');
+      +'Revisados: '+((d&&d.vacio&&d.vacio.revisados)||0)+'</div>');
     return;
   }
 
   if(meta){
     const c=(d&&d.cobertura)||{};
-    let txt=empresas.length+smL(' empresa(s) · ',' compan'+(empresas.length===1?'y':'ies')+' · ')+(d.mercados_abiertos||0)+smL(' mercado(s) abierto(s)',' open market(s)');
-    if(c.parcial) txt+=smL(' · cobertura parcial ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' símbolos)',' · partial coverage ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' symbols)');
+    let txt=empresas.length+(empresas.length===1?' empresa · ':' empresas · ')+(d.mercados_abiertos||0)+' mercado(s) abierto(s)';
+    if(c.parcial) txt+=(' · cobertura parcial ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' símbolos)');
     meta.textContent=txt;
   }
 
@@ -2537,37 +2535,39 @@ function ebLiveCard(e){
   const m=(e.mercados&&e.mercados[0])||{};
   const dias=ebDiasHasta(e.fecha_resolucion);
 
-  // "Histórico: superó 15 de 20 (75%) · completo: 77 de 121" — conteo, nunca
+  // "Historial: superó 15 de 20 (75%) · completo: 77 de 121" — conteo, nunca
   // probabilidad. El número PRINCIPAL es la ventana de 5 años: Micron en 1998
   // no informa sobre Micron hoy. El historial completo va al lado, secundario,
   // para no perder la profundidad.
   const v=h.ventana, comp=h.completo;
   const historicoTxt = (h.sin_datos||!v||!v.total)
-    ? smL('Histórico: sin trimestres comparables en nuestra base','Track record: no comparable quarters in our data')
-    : smL('Histórico: superó '+v.beats+' de '+v.total+' ('+v.pct+'%)',
-          'Track record: beat '+v.beats+' of '+v.total+' ('+v.pct+'%)');
+    ? 'Historial: sin trimestres comparables en nuestra base'
+    : 'Historial: superó '+v.beats+' de '+v.total+' ('+v.pct+'%)';
   const completoTxt = (!comp||!v||comp.total<=v.total) ? ''
-    : smL('histórico completo: '+comp.beats+' de '+comp.total+' ('+comp.pct+'%)',
-          'full history: '+comp.beats+' of '+comp.total+' ('+comp.pct+'%)');
+    : 'historial completo: '+comp.beats+' de '+comp.total+' ('+comp.pct+'%)';
 
-  // "Polymarket hoy: 16% (mid del libro)" — con el TIPO de precio dicho. En
+  // "Polymarket hoy: 16% (punto medio del libro)" — con el TIPO de precio dicho. En
   // META la tarjeta mostró 7% (outcomePrices), Polymarket 16% (mid) y entrar
   // costaba 28¢ (ask): tres números para lo mismo, y no se sabía cuál era el
   // nuestro. El tipo lo decide el endpoint (`precio_tipo`); acá se nombra.
-  const tipoTxt = m.precio_tipo==='mid' ? smL(' (mid del libro)',' (order-book mid)')
-    : m.precio_tipo==='outcome_prices' ? smL(' (outcomePrices de Gamma: no se sabe si es último o mid)',' (Gamma outcomePrices: last or mid is unknown)')
+  const tipoTxt = m.precio_tipo==='mid' ? ' (punto medio del libro)'
+    : m.precio_tipo==='outcome_prices' ? ' (Gamma outcomePrices: no se sabe si es último precio o punto medio)'
     : '';
   const pmTxt = (m.polymarket_yes_pct===null||m.polymarket_yes_pct===undefined)
-    ? smL('Polymarket hoy: sin precio','Polymarket today: no price')
-    : smL('Polymarket hoy: '+m.polymarket_yes_pct+'%','Polymarket today: '+m.polymarket_yes_pct+'%')+tipoTxt;
-  // Profundidad AL LADO del precio: bid, ask y spread del Yes, volumen y
-  // liquidez. Un precio de un libro de $1.3K no pesa lo mismo que uno de $1M.
+    ? 'Polymarket hoy: sin precio'
+    : 'Polymarket hoy: '+m.polymarket_yes_pct+'%'+tipoTxt;
+  // Profundidad AL LADO del precio: compra, venta y diferencia del Sí, volumen
+  // y liquidez. Un precio de un libro de $1.3K no pesa lo mismo que uno de $1M.
   const lb=m.libro||{};
   const cts=x=>(x===null||x===undefined)?'—':(Number(x)*100).toFixed(1)+'¢';
   const libroTxt = lb.estado==='ok'
-    ? 'bid '+cts(lb.bid)+' · ask '+cts(lb.ask)+' · spread '+Number(lb.spread_puntos).toFixed(1)+'¢'
-    : smL('sin libro del Yes','no Yes order book')+(lb.estado?' ('+lb.estado+')':'');
-  const profTxt = smL('volumen ','volume ')+ebUsdCorto(m.volumen)+' · '+smL('liquidez ','liquidity ')+ebUsdCorto(m.liquidez);
+    ? 'compra '+cts(lb.bid)+' · venta '+cts(lb.ask)+' · diferencia '+Number(lb.spread_puntos).toFixed(1)+'¢'
+    : 'sin libro de órdenes del Sí'+(lb.estado?' ('+lb.estado+')':'');
+  const profTxt = 'volumen '+ebUsdCorto(m.volumen)+' · liquidez '+ebUsdCorto(m.liquidez);
+  // La fuente del precio, nombrada por el CÓDIGO del tipo (`precio_tipo`): el
+  // texto del endpoint (`fuente_precio`) es dato y queda como está.
+  const fuentePrecio = m.precio_tipo==='mid' ? 'Polymarket · punto medio del libro del Sí (CLOB)'
+    : m.precio_tipo==='outcome_prices' ? 'Polymarket · Gamma outcomePrices' : 'Polymarket';
 
   // La racha se cuenta sobre LA MISMA ventana del titular. Si el titular mira
   // 20 trimestres y la racha mira 121, la tarjeta se contradice sola. `tope`
@@ -2575,8 +2575,7 @@ function ebLiveCard(e){
   // larga, pero afirmarlo sería inventar el trimestre 21.
   const mas=(h.racha&&h.racha.tope)?'+':'';
   const racha = h.racha&&h.racha.largo
-    ? smL('Racha: '+h.racha.largo+mas+' '+(h.racha.tipo==='beats'?'trimestre(s) superando':'trimestre(s) fallando')+' al hilo',
-          'Streak: '+h.racha.largo+mas+' quarter(s) '+(h.racha.tipo==='beats'?'beating':'missing')+' in a row')
+    ? 'Racha: '+h.racha.largo+mas+' '+(h.racha.tipo==='beats'?'trimestre(s) superando':'trimestre(s) fallando')+' al hilo'
     : '';
 
   // MEDIANA, no promedio. Un trimestre con estimado ≈ $0.01 mete un −3000%
@@ -2584,31 +2583,29 @@ function ebLiveCard(e){
   // 13 beats al hilo. Cuando los dos se separan, se dice.
   const sp=h.sorpresa||{};
   const sorpresa = (sp.mediana_pct===null||sp.mediana_pct===undefined) ? ''
-    : smL('Sorpresa mediana: ','Median surprise: ')+(sp.mediana_pct>0?'+':'')+sp.mediana_pct+'%';
+    : 'Sorpresa mediana: '+(sp.mediana_pct>0?'+':'')+sp.mediana_pct+'%';
   // LA CAUSA LA DECIDE EL ENDPOINT, no esta función. Esta frase ya estuvo mal
   // una vez: con BA imprimía "distorsionado por 0 trimestre(s) con estimado
   // cerca de cero" — y el extremo de BA es est 0.09 → −6.18, el 737 MAX, un
   // trimestre real. Armar el texto acá es lo que permitió que la pantalla
   // afirmara una causa que el dato no decía. Ahora se elige por `sp.causa`.
   const causaTxt = sp.causa==='artefacto_denominador'
-    ? smL(sp.denominador_chico+' trimestre(s) con estimado de centavos: ahí el % no significa nada',
-          sp.denominador_chico+' quarter(s) with a pennies-sized estimate: the % means nothing there')
+    ? sp.denominador_chico+' trimestre(s) con estimado de centavos: ahí el % no significa nada'
     : sp.causa==='colas_reales'
-      ? smL('trimestres de pérdida o sorpresas muy grandes REALES'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' con estimado negativo)':''),
-            'REAL loss quarters or very large surprises'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' with a negative estimate)':''))
+      ? 'trimestres de pérdida o sorpresas muy grandes REALES'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' con estimado negativo)':'')
       : '';
   const sorpresaNota = (sp.distorsionado&&causaTxt)
-    ? smL('promedio '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — ','mean '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — ')+causaTxt
+    ? 'promedio '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — '+causaTxt
     : '';
 
   const quarters=(h.ultimos||[]).map(q=>{
     const marca=q.beat?'<span style="color:#00c97d;">✓</span>':'<span style="color:#ff4444;">✗</span>';
     const est=(q.estimado===null||q.estimado===undefined)?'—':Number(q.estimado).toFixed(2);
     const rep=(q.reportado===null||q.reportado===undefined)?'—':Number(q.reportado).toFixed(2);
-    const front=q.frontera?'<span title="'+smL('dentro de 1 centavo del estimado','within one cent of the estimate')+'" style="color:#7a6a45;"> ~</span>':'';
+    const front=q.frontera?'<span title="dentro de 1 centavo del estimado" style="color:#7a6a45;"> ~</span>':'';
     return '<div style="display:flex;gap:6px;justify-content:space-between;font-size:9px;color:#666;padding:1px 0;">'
       +'<span>'+marca+front+' '+q.fecha+'</span>'
-      +'<span style="color:#555;">'+smL('est ','est ')+est+' → '+rep+'</span></div>';
+      +'<span style="color:#555;">est '+est+' → '+rep+'</span></div>';
   }).join('');
 
   // NÚMEROS LADO A LADO, cada uno con lo que mide. QuantDesk NO dictamina el
@@ -2616,35 +2613,38 @@ function ebLiveCard(e){
   // del mercado con su métrica, el consenso con su fuente y el histórico con
   // la suya, y el que compara es el usuario.
   //
-  // Qué mide el mercado, JUNTO al umbral: "Resuelve sobre GAAP EPS de $6.31".
+  // Qué mide el mercado, JUNTO al umbral: "Resuelve sobre EPS GAAP de $6.31".
   // Si la métrica no se pudo leer, se dice así, sin inventarla.
   const met=(m.metrica&&m.metrica.metrica)||'indeterminada';
   const umbral=(m.consenso_eps!==null&&m.consenso_eps!==undefined)?m.consenso_eps:m.umbral_slug;
   const umbralEs=(umbral===null||umbral===undefined)?null:'$'+Number(umbral).toFixed(2);
   const pideTxt = met==='indeterminada'
-    ? smL('Métrica del mercado: no determinada','Market metric: not determined')+(umbralEs?smL(' · umbral ',' · threshold ')+umbralEs:'')
-    : smL('Resuelve sobre '+((m.metrica&&m.metrica.etiqueta)||'')+(umbralEs?' de '+umbralEs:''),
-          'Resolves on '+EB_METRICA_EN[met]+(umbralEs?' of '+umbralEs:''));
+    ? 'Métrica del mercado: no determinada'+(umbralEs?' · umbral '+umbralEs:'')
+    : 'Resuelve sobre '+EB_METRICA_ES[met]+(umbralEs?' de '+umbralEs:'');
 
   // El consenso de los analistas, con su fuente. Finnhub no declara si es GAAP
   // o ajustado, y la tarjeta lo dice en vez de suponerlo.
   const ca=m.consenso_analistas||{};
   const consensoTxt = (ca.valor===null||ca.valor===undefined)
-    ? smL('Consenso de analistas: no disponible','Analyst consensus: not available')+(ca.motivo?' ('+ca.motivo+')':'')
-    : smL('Consenso de analistas: $'+Number(ca.valor).toFixed(2)+' · métrica no declarada por la fuente',
-          'Analyst consensus: $'+Number(ca.valor).toFixed(2)+' · metric not declared by the source');
+    ? 'Consenso de analistas: no disponible'+(ca.motivo?' ('+ca.motivo+')':'')
+    : 'Consenso de analistas: $'+Number(ca.valor).toFixed(2)+' · Finnhub no declara si es EPS GAAP o ajustado';
 
-  // Línea NEUTRAL cuando el mercado mide otra cosa que el histórico. Informa;
-  // no es una advertencia ni bloquea nada.
+  // Línea NEUTRAL cuando el mercado mide otra cosa que el historial. Informa;
+  // no es una advertencia ni bloquea nada. Se arma por CÓDIGO (`mv.mercado`),
+  // no con la nota del endpoint, para que la etiqueta sea la de esta pantalla.
   const mv=m.metrica_vs_historico||{};
-  const metricaDistinta = mv.estado==='distinta'
-    ? smL(mv.nota||'','The market measures '+(EB_METRICA_EN[mv.mercado]||'')+', the track record counts adjusted EPS.')
+  const metricaDistinta = mv.estado==='distinta'&&EB_METRICA_ES[mv.mercado]
+    ? 'El mercado mide '+EB_METRICA_ES[mv.mercado]+'; el historial cuenta EPS ajustado.'
     : '';
 
   const titulo=m.titulo?String(m.titulo).slice(0,90):(m.slug||'');
   const link=m.url?'<a href="'+m.url+'" target="_blank" rel="noopener noreferrer" style="color:#ff6600;text-decoration:none;">'+titulo+' ↗</a>':titulo;
+  // El título se queda en INGLÉS: es una cita de Polymarket. Debajo, en gris
+  // chico, su traducción — la arma el endpoint por plantilla (`titulo_es`), y
+  // si el título no encaja en ninguna, no se pinta nada.
+  const tituloEs=m.titulo_es?'<div style="font-size:8px;color:#555;line-height:1.3;">'+m.titulo_es+'</div>':'';
   const otros=(e.mercados&&e.mercados.length>1)
-    ? '<div style="font-size:9px;color:#555;margin-top:3px;">+'+(e.mercados.length-1)+smL(' mercado(s) más de esta empresa',' more market(s) for this company')+'</div>' : '';
+    ? '<div style="font-size:9px;color:#555;margin-top:3px;">+'+(e.mercados.length-1)+' mercado(s) más de esta empresa</div>' : '';
 
   return '<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">'
     +'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px;">'
@@ -2655,33 +2655,32 @@ function ebLiveCard(e){
     +'<div style="font-family:var(--mono);font-size:9px;color:#888;">'+libroTxt+'</div>'
     +'<div style="font-family:var(--mono);font-size:9px;color:#666;">'+profTxt+'</div>'
     +'<div style="font-size:9px;color:#999;margin-top:2px;">'+pideTxt+'</div>'
-    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(m.fuente_precio||'Polymarket')+'</div>'
+    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">fuente: '+fuentePrecio+'</div>'
     +'<div style="font-family:var(--mono);font-size:10px;color:#aaa;">'+consensoTxt+'</div>'
-    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(ca.fuente||'Finnhub')+'</div>'
-    +'<div style="font-size:8px;color:#555;letter-spacing:.08em;">QUANTDESK · TRACK RECORD</div>'
+    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">fuente: '+(ca.fuente||'Finnhub')+'</div>'
+    +'<div style="font-size:8px;color:#555;letter-spacing:.08em;">QUANTDESK · HISTORIAL</div>'
     +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">'+historicoTxt+'</div>'
     +(completoTxt?'<div style="font-size:9px;color:#666;">'+completoTxt+'</div>':'')
     +(racha?'<div style="font-size:9px;color:#888;margin-top:2px;">'+racha+'</div>':'')
     +(sorpresa?'<div style="font-size:9px;color:#888;">'+sorpresa+'</div>':'')
     +(sorpresaNota?'<div style="font-size:8px;color:#7a6a45;line-height:1.3;">'+sorpresaNota+'</div>':'')
-    +'<div style="font-size:8px;color:#444;'+(metricaDistinta?'':'margin-bottom:6px;')+'">'+smL('contando EPS ajustado (Alpha Vantage)','counting adjusted EPS (Alpha Vantage)')+'</div>'
+    +'<div style="font-size:8px;color:#444;'+(metricaDistinta?'':'margin-bottom:6px;')+'">contando EPS ajustado (Alpha Vantage)</div>'
     +(metricaDistinta?'<div style="font-size:9px;color:#888;margin-bottom:6px;">'+metricaDistinta+'</div>':'')
     +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
-      +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')
-      +(v&&v.anios?'<span style="color:#444;"> · '+smL('titular sobre '+v.total+' trimestres ('+v.anios+' años)','headline over '+v.total+' quarters ('+v.anios+'y)')+'</span>':'')+'</div>'+quarters+'</div>':'')
-    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+otros+'</div>'
+      +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">ÚLTIMOS TRIMESTRES'
+      +(v&&v.anios?'<span style="color:#444;"> · titular sobre '+v.total+' trimestres ('+v.anios+'a)</span>':'')+'</div>'+quarters+'</div>':'')
+    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+tituloEs+otros+'</div>'
     +'<div style="margin-top:6px;font-size:8px;color:#5a4f38;line-height:1.4;">'
-      +smL('El histórico no es predicción · Track record is not a forecast',
-           'Track record is not a forecast · El histórico no es predicción')+'</div>'
+      +'El historial no es predicción.</div>'
   +'</div>';
 }
 
-// Etiqueta en inglés de la métrica que pide el mercado. El código lo decide
-// el endpoint (`m.metrica.metrica`); acá solo se traduce.
-const EB_METRICA_EN = {
-  eps_gaap: 'GAAP EPS',
-  eps_ajustado: 'adjusted EPS (non-GAAP)',
-  indeterminada: 'not determined',
+// Etiqueta en pantalla de la métrica que pide el mercado. El código lo decide
+// el endpoint (`m.metrica.metrica`, que NO se toca: es dato); acá se nombra.
+const EB_METRICA_ES = {
+  eps_gaap: 'EPS GAAP',
+  eps_ajustado: 'EPS ajustado',
+  indeterminada: 'no determinada',
 };
 
 // Monto AGREGADO en dólares, corto: $4.2K, $1.3M. No es un precio (el lint de
@@ -2701,9 +2700,9 @@ function ebDiasHasta(iso){
   const d=new Date(iso+'T00:00:00');
   if(isNaN(d.getTime())) return null;
   const n=Math.round((d-hoy)/86400000);
-  if(n===0) return smL('hoy','today');
-  if(n<0) return smL('hace '+Math.abs(n)+'d',Math.abs(n)+'d ago');
-  return smL('en '+n+'d','in '+n+'d');
+  if(n===0) return 'hoy';
+  if(n<0) return 'hace '+Math.abs(n)+'d';
+  return 'en '+n+'d';
 }
 
 // Safe JSON parse - never throws, returns null on failure
