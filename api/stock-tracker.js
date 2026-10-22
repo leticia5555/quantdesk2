@@ -129,7 +129,7 @@ const FUNDS = [
 import { form4Completo, filasDeForm4, desentidad, xtag, xval } from './_lib/form4.js';
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import { beat } from './_lib/heartbeat.js';
-import { crearCliente } from './_lib/edgar.js';
+import { crearCliente, bajarTickerMap } from './_lib/edgar.js';
 import {
   urlIndiceDiario, diasHabiles, parseIndiceEdgar, form4DelIndice, coberturaDeDia,
   ownershipDeEnvio, urlDeArchivo, urlListadoTrimestre, diasPublicados, estadoDelDia,
@@ -206,6 +206,16 @@ export const SCHEMA_FORM4 = [
   // Entonces la idempotencia sale de una MARCA: la fila que ya pasó por la
   // migración queda sellada y no se vuelve a tocar, sin importar qué parezca
   // su contenido. Y de paso queda auditable cuándo se limpió cada una.
+  // ── CUÁNTAS VECES SE INTENTÓ LEER ESTE FILING ───────────────────────
+  // Sin esto, "pendiente" era `leido_en is null` y el job marcaba `leido_en`
+  // TAMBIÉN cuando fallaba: la fila dejaba de ser pendiente para siempre y
+  // tampoco contaba como guardada, así que desaparecía de los dos lados del
+  // quebrado. La cobertura se congeló en ~48% con 0 pendientes y 14.000
+  // filings invisibles (Lety, 2026-10-21).
+  //
+  // Con el contador, "pendiente" pasa a ser "no guardada y todavía con
+  // intentos", y lo que agota sus intentos se REPORTA en vez de evaporarse.
+  `alter table mercado_form4_indice add column if not exists intentos int not null default 0`,
   `alter table mercado_form4_tx add column if not exists entidades_limpias_en timestamptz`,
   `alter table mercado_form4_indice add column if not exists entidades_limpias_en timestamptz`,
 ];
@@ -224,6 +234,12 @@ async function ensureSchemaForm4() {
 const DIAS_RELLENO = 30;
 const XML_POR_CORRIDA = 400;
 const XML_PRESUPUESTO_MS = 40_000;
+// Cuántas veces se reintenta un filing que falló. No es infinito a propósito:
+// hay envíos que no tienen un Form 4 legible y reintentarlos cada diez
+// minutos para siempre se come el presupuesto de los que sí se pueden leer.
+// Al cuarto fallo la fila pasa a "agotada" — y agotada SE DICE, con su causa,
+// que es lo que no pasaba antes.
+const XML_MAX_INTENTOS = 4;
 
 const SOURCES = {
   edgar_form4_atom: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&company=&dateb=&owner=include&count=100&output=atom',
@@ -621,20 +637,70 @@ async function jobIndice({ dias = 3, hoy = new Date() } = {}) {
  * baja es lo primero que se ve. El relleno de los días viejos va quedando
  * atrás, y la cobertura dice exactamente cuánto falta de cada día.
  */
+// Exportadas para poder correrlas contra un Postgres de verdad: lo que falló
+// acá fue una CONSULTA, y una consulta no se prueba leyéndola.
+export const SQL_FORM4_PENDIENTES = `
+    select accession, cik, archivo, fecha_filing::text as fecha, intentos
+      from mercado_form4_indice
+     where leido_ok is not true and intentos < $2
+     order by (intentos > 0), fecha_filing desc, accession desc
+     limit $1`;
+
+export const SQL_FORM4_CUBOS = `
+    select count(*)::int as en_indice,
+           count(*) filter (where leido_ok is true)::int as guardados,
+           count(*) filter (where leido_ok is not true and intentos < $1)::int as pendientes,
+           count(*) filter (where leido_ok is not true and intentos >= $1)::int as agotados
+      from mercado_form4_indice`;
+
+export const FORM4_MAX_INTENTOS = XML_MAX_INTENTOS;
+
+/**
+ * LOS TRES CUBOS DEL ÍNDICE, Y QUE SUMEN.
+ *
+ * `en_indice = guardados + pendientes + agotados`. Esa identidad es lo que se
+ * rompió: la fila fallida se marcaba como leída y no era ni guardada ni
+ * pendiente, así que la suma daba menos que el total y nadie se enteraba —el
+ * cron reportaba `pendientes: 0` con 14.000 filings afuera (Lety, 2026-10-21)—.
+ *
+ * Ahora los tres se cuentan juntos y en la misma consulta, así que no pueden
+ * desincronizarse, y `agotados` existe para que lo que se da por perdido TENGA
+ * un número en vez de desaparecer.
+ */
+async function cubosDelIndice() {
+  const [f] = await sql(SQL_FORM4_CUBOS, [XML_MAX_INTENTOS]);
+  return f || { en_indice: 0, guardados: 0, pendientes: 0, agotados: 0 };
+}
+
 async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
   await ensureSchemaForm4();
-  const pendientes = await sql(`
-    select accession, cik, archivo, fecha_filing::text as fecha
-      from mercado_form4_indice
-     where leido_en is null
-     order by fecha_filing desc, accession desc
-     limit $1`, [tope]);
+  // ── PENDIENTE ES "NO GUARDADA", NO "NO INTENTADA" ──────────────────
+  // Decía `leido_en is null`, y el job ponía `leido_en` también al fallar:
+  // la fila fallida salía de la lista de pendientes para siempre sin haberse
+  // guardado nunca. 14.000 filings quedaron así, y el cron reportaba
+  // `pendientes: 0` mientras faltaba la mitad.
+  //
+  // Las que NUNCA se intentaron van PRIMERO: si los reintentos fueran al
+  // frente, una tanda vieja de fallos se comería el presupuesto de cada
+  // corrida y los filings nuevos no entrarían nunca.
+  const pendientes = await sql(SQL_FORM4_PENDIENTES, [tope, XML_MAX_INTENTOS]);
   if (!pendientes.length) {
-    // Cero pendientes es el estado BUENO: quiere decir que la cobertura está
-    // al día. Late igual, porque un cron que sólo late cuando hay trabajo no
-    // se distingue de un cron muerto.
-    await beat('mercado:form4-xml', 'ok', { pendientes: 0, leidos: 0 }).catch(() => {});
-    return { job: 'form4', pendientes: 0, leidos: 0, ok: 0, fallidos: 0, ms: Date.now() - t0 };
+    // ── CERO PENDIENTES NO ES, POR SÍ SOLO, BUENA NOTICIA ─────────────
+    // Decía "cero pendientes es el estado BUENO: la cobertura está al día" y
+    // latía `ok` con ceros. Eso fue exactamente lo que escondió el defecto
+    // durante 120 corridas: no quedaban pendientes porque las filas fallidas
+    // habían salido de la lista, no porque estuvieran guardadas.
+    //
+    // Ahora se mira el quebrado antes de cantar victoria: cero pendientes
+    // CON agotados es la fuente rota, y baja el semáforo.
+    const c = await cubosDelIndice();
+    const completo = c.agotados === 0 && c.guardados >= c.en_indice;
+    await beat('mercado:form4-xml', completo ? 'ok' : 'error', {
+      pendientes: 0, leidos: 0, ...c,
+      faltan: c.en_indice - c.guardados,
+    }).catch(() => {});
+    return { job: 'form4', pendientes: 0, leidos: 0, ok: 0, fallidos: 0,
+      ...c, faltan: c.en_indice - c.guardados, completo, ms: Date.now() - t0 };
   }
 
   const cli = crearCliente({ kind: 'form4-xml' });
@@ -673,7 +739,12 @@ async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
   const lotes = [];
   for (const r of resultados) {
     lotes.push([
-      `update mercado_form4_indice set leido_en = now(), leido_ok = $2, motivo = $3 where accession = $1`,
+      // `leido_en` es "cuándo se intentó por última vez", no "cuándo se
+      // guardó": lo que dice si se guardó es `leido_ok`. Y el intento se
+      // cuenta siempre, que es lo que acota los reintentos.
+      `update mercado_form4_indice
+          set leido_en = now(), leido_ok = $2, motivo = $3, intentos = intentos + 1
+        where accession = $1`,
       [r.accession, !!r.ok, r.motivo],
     ]);
     if (r.ok && (r.filas || []).length) {
@@ -690,12 +761,18 @@ async function jobForm4Xml({ tope = XML_POR_CORRIDA, t0 = Date.now() } = {}) {
   const buenos = resultados.filter((r) => r.ok).length;
   // Que algunos filings fallen es normal (un envío sin Form 4 legible). Que
   // fallen TODOS es la SEC caída o un formato que cambió.
+  const cubos = await cubosDelIndice();
   await beat('mercado:form4-xml', buenos ? 'ok' : 'error', {
     pendientes: pendientes.length, leidos: resultados.length, ok: buenos,
+    ...cubos, faltan: cubos.en_indice - cubos.guardados,
   }).catch(() => {});
   return {
     job: 'form4',
     pendientes: pendientes.length,
+    // Los tres cubos van en la respuesta: con `pendientes` sólo, "0" no
+    // distingue "ya está todo" de "lo que falta se volvió invisible".
+    ...cubos,
+    faltan: cubos.en_indice - cubos.guardados,
     leidos: resultados.length,
     ok: resultados.filter((r) => r.ok).length,
     fallidos: resultados.filter((r) => !r.ok).length,
@@ -711,16 +788,25 @@ async function coberturaForm4({ dias = 10, hoy = new Date() } = {}) {
   const filas = await sql(`
     select d.fecha::text as fecha, d.lineas_form4, d.motivo,
            (select count(*) from mercado_form4_indice i
-             where i.fecha_filing = d.fecha and i.leido_en is not null and i.leido_ok) as guardados
+             where i.fecha_filing = d.fecha and i.leido_ok is true) as guardados,
+           -- LO QUE SE DA POR PERDIDO TIENE SU NÚMERO. Sin esto, un filing
+           -- que agotó sus intentos sólo aparecía como un hueco en el
+           -- quebrado, sin decir si falta por leer o porque no se pudo leer.
+           -- Son dos cosas distintas: la primera se arregla esperando, la
+           -- segunda no se arregla nunca y hay que mirarla.
+           (select count(*) from mercado_form4_indice i
+             where i.fecha_filing = d.fecha and i.leido_ok is not true
+               and i.intentos >= $2) as agotados
       from mercado_form4_dias d
      order by d.fecha desc
-     limit $1`, [dias]);
+     limit $1`, [dias, XML_MAX_INTENTOS]);
   // El día de HOY no se mide: EDGAR acepta presentaciones hasta las 22:00 ET,
   // así que su índice todavía crece y el porcentaje bajaría solo.
   const hoyIso = hoy.toISOString().slice(0, 10);
   const cerrados = filas.filter((f) => f.fecha < hoyIso);
   const dias_ = cerrados.map((f) => coberturaDeDia({
-    fecha: f.fecha, enIndice: f.lineas_form4, guardados: Number(f.guardados), motivo: f.motivo,
+    fecha: f.fecha, enIndice: f.lineas_form4, guardados: Number(f.guardados),
+    agotados: Number(f.agotados), motivo: f.motivo,
   }));
   const medibles = dias_.filter((d) => d.en_indice > 0);
   // ── EL DÍA EN CURSO SE REPORTA, NO SE TIRA ──────────────────────────
@@ -888,6 +974,142 @@ export function pickInfotableFile(indexJson) {
   return xmls.sort((a, b) => (parseInt(b.size, 10) || 0) - (parseInt(a.size, 10) || 0))[0].name;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// CUSIP → TICKER: EL PRIMERO DE LA LISTA NO ES EL BUENO
+//
+// Lety, en `?cat=13f` de Berkshire (2026-10-22): Constellation Brands salía
+// como `CB1A` —que es su cotización en Fráncfort— y una posición de $6.4 mil
+// millones salía como `TRL`, un ticker que nadie reconoce.
+//
+// La causa: `res.data[0].ticker`, el PRIMER resultado a ciegas. OpenFIGI
+// devuelve TODAS las cotizaciones del mundo para un CUSIP —la compuesta de
+// EE.UU., la de Fráncfort, la de México, las de cada plaza— y el orden no es
+// una promesa de la API. Para un 13F, que es un formulario de la SEC sobre
+// tenencias en bolsas de EE.UU., la que vale es la de EE.UU.
+//
+// LO QUE NO SE HACE: inventar. Si no hay una cotización de EE.UU., o si el
+// ticker que sale no existe en nuestro universo, la posición se muestra con
+// `nameOfIssuer` —que siempre viene en el filing— y el ticker queda en null
+// con su causa. Un ticker equivocado es peor que ningún ticker: manda a
+// mirar la empresa de otro.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** El orden de preferencia, declarado. `exchCode: 'US'` es la compuesta. */
+const PREFERENCIA_EXCH = ['US', 'UN', 'UW', 'UQ', 'UA', 'UR', 'UP'];
+
+/**
+ * El ticker de una respuesta de OpenFIGI, con su procedencia.
+ *
+ * Devuelve `{ ticker, exch, via }` o `{ ticker: null, motivo }`. Nunca una
+ * cadena suelta: quien lo use tiene que poder decir de dónde salió.
+ */
+export function tickerDeOpenFigi(data, { nombre = null } = {}) {
+  const filas = Array.isArray(data) ? data.filter((d) => d && d.ticker) : [];
+  if (!filas.length) {
+    return { ticker: null, exch: null, via: null,
+      motivo: `OpenFIGI no devolvió ninguna cotización con ticker${nombre ? ` para ${nombre}` : ''}` };
+  }
+  // Sólo acciones: un CUSIP puede traer también bonos y opciones de la misma
+  // emisora, y un bono no tiene ticker que sirva en una tarjeta de 13F.
+  const acciones = filas.filter((d) => !d.marketSector || String(d.marketSector) === 'Equity');
+  const candidatas = acciones.length ? acciones : filas;
+
+  for (const ex of PREFERENCIA_EXCH) {
+    const f = candidatas.find((d) => String(d.exchCode || '').toUpperCase() === ex);
+    if (f) return { ticker: String(f.ticker).toUpperCase(), exch: ex, via: `openfigi:${ex}` };
+  }
+  // ── UNA SOLA RESPUESTA SIN PLAZA DECLARADA ─────────────────────────
+  // Si OpenFIGI devuelve UNA sola cotización y no dice su `exchCode`, no hay
+  // ambigüedad que resolver: es la única respuesta que hay. Se acepta y la
+  // procedencia DICE que la plaza no se pudo verificar, en vez de callarlo.
+  //
+  // Lo que no se acepta es elegir entre VARIAS sin saber cuál es de EE.UU.
+  // —ése es el caso de CB1A— porque ahí sí hay que decidir y no tenemos con
+  // qué. Un ticker equivocado manda a mirar la empresa de otro.
+  const sinPlaza = candidatas.filter((d) => !d.exchCode);
+  if (candidatas.length === 1 && sinPlaza.length === 1) {
+    return { ticker: String(candidatas[0].ticker).toUpperCase(), exch: null,
+      via: 'openfigi:sin-plaza-declarada' };
+  }
+  // Sin plaza de EE.UU. no se elige por descarte: se dice. Un 13F declara
+  // tenencias en EE.UU., así que una CUSIP que sólo aparece en Fráncfort es
+  // una señal de que algo no cuadra, no un ticker alternativo.
+  return {
+    ticker: null, exch: null, via: null,
+    motivo: `OpenFIGI sólo devolvió plazas fuera de EE.UU. (${
+      [...new Set(candidatas.map((d) => String(d.exchCode || '?')))].slice(0, 6).join(', ')
+    })${nombre ? ` para ${nombre}` : ''}`,
+  };
+}
+
+/**
+ * EL TICKER, CONTRASTADO — Y SON DOS PREGUNTAS, NO UNA.
+ *
+ * La primera versión de esto contrastaba contra el universo del mapa, y con
+ * eso NYT y ALLY —tickers perfectamente reales, que no están en el mapa por
+ * tamaño— salieron como "no está en nuestro universo" y la tarjeta mostró su
+ * CUSIP (Lety, 2026-10-22). Peor que antes: antes al menos salía el ticker.
+ *
+ * El error fue conceptual, no de código: confundí dos preguntas distintas.
+ *
+ *   · ¿EXISTE este ticker? → lo dice `company_tickers.json`, la lista
+ *     completa de la SEC. Si la SEC no lo conoce, el CUSIP resolvió mal y
+ *     mostrarlo sería inventar.
+ *   · ¿PODEMOS ABRIRLE UNA FICHA? → lo dice el universo del mapa, que son
+ *     las ~611 que cosechamos. Eso decide si el ticker lleva enlace, no si
+ *     se muestra.
+ *
+ * Lety: *"si existe pero no tiene ficha, muestra el ticker sin link"*.
+ *
+ * Las dos listas FALLAN ABIERTO. Si `company_tickers.json` no cargó, no se
+ * descarta nada: convertir una caída de la SEC en "este ticker no existe" es
+ * cambiar una causa por otra, que es exactamente el error de arriba otra vez.
+ */
+export function tickerValidado(resuelto, { sec = null, universo = null } = {}) {
+  if (!resuelto || !resuelto.ticker) return resuelto || { ticker: null, motivo: 'sin resolver' };
+  const t = resuelto.ticker;
+
+  // ── ¿EXISTE? ──────────────────────────────────────────────────────────
+  if (sec && sec.size && !sec.has(t)) {
+    return {
+      ticker: null, exch: resuelto.exch, via: resuelto.via, existe: false,
+      motivo: `OpenFIGI devolvió "${t}" y la SEC no lo conoce en company_tickers.json: `
+        + 'el CUSIP resolvió mal, así que se muestra el nombre del filing',
+    };
+  }
+  const existe = sec && sec.size ? true : null;
+
+  // ── ¿SE PUEDE ABRIR? ──────────────────────────────────────────────────
+  // Esto NO decide si se muestra: decide si lleva enlace.
+  const enUniverso = universo && universo.size ? universo.has(t) : null;
+  return {
+    ...resuelto,
+    existe,
+    en_universo: enUniverso,
+    enlazable: enUniverso === true,
+    nota: [
+      existe === null ? 'no se pudo contrastar contra company_tickers.json (la lista no cargó)' : null,
+      enUniverso === false ? 'existe pero no está en el mapa: se muestra sin enlace' : null,
+      enUniverso === null ? 'no se pudo contrastar contra el universo (la lista no cargó)' : null,
+    ].filter(Boolean).join('; ') || null,
+  };
+}
+
+// La lista completa de la SEC, cacheada por instancia: cambia poco y pesa ~1 MB.
+let secTickersCache = null;
+async function secTickers() {
+  if (secTickersCache) return secTickersCache;
+  try {
+    const cli = crearCliente({ kind: 'ticker-map' });
+    const { map } = await bajarTickerMap(cli);
+    secTickersCache = new Set(Object.keys(map));
+  } catch {
+    // Falla abierto: un Set vacío hace que `tickerValidado` no descarte nada.
+    secTickersCache = new Set();
+  }
+  return secTickersCache;
+}
+
 // CUSIP→ticker vía OpenFIGI (gratis; sin key = 10 jobs/request). Falla →
 // la card muestra nameOfIssuer, que siempre viene en el filing.
 async function mapCusipsToTickers(cusips) {
@@ -907,8 +1129,9 @@ async function mapCusipsToTickers(cusips) {
       const arr = tryJson(r.text);
       if (!Array.isArray(arr)) break;
       arr.forEach((res, j) => {
-        const ticker = res && Array.isArray(res.data) && res.data[0] ? res.data[0].ticker : null;
-        cusipTickerCache.set(chunk[j], ticker || null);
+        // `tickerDeOpenFigi` y no `data[0]`: el primero de la lista puede ser
+        // la cotización de Fráncfort (CB1A por STZ) o de cualquier plaza.
+        cusipTickerCache.set(chunk[j], tickerDeOpenFigi(res && res.data));
       });
     } catch { break; }
   }
@@ -977,9 +1200,38 @@ async function build13F() {
   // Ticker solo para los CUSIP que salen en cards (≤20 por fondo).
   const shown = valid.flatMap((f) => Object.values(f.top).flat().map((p) => p.cusip));
   const tickers = await mapCusipsToTickers(shown);
+
+  // ── EL TICKER SE CONTRASTA CONTRA NUESTRO UNIVERSO ──────────────────
+  // Lety: *"que un ticker que no existe en el universo salga como «sin
+  // resolver», no inventado"*. Un símbolo que resolvió bien pero que no
+  // cotizamos no se puede abrir en ninguna ficha nuestra, así que mostrarlo
+  // promete una pantalla que no existe.
+  //
+  // Si la consulta falla, el Set queda VACÍO y `tickerValidado` no descarta
+  // nada: convertir una caída de Neon en "ningún ticker se pudo resolver"
+  // sería cambiar una causa por otra.
+  let universo = new Set();
+  try {
+    const filas = await sql('select symbol from mercado_universo_us');
+    universo = new Set(filas.map((f) => String(f.symbol).toUpperCase()));
+  } catch { /* sin universo no se descarta: lo dice `nota` */ }
+  const sec = await secTickers();
+
   for (const f of valid) {
     for (const bucket of Object.values(f.top)) {
-      for (const p of bucket) p.ticker = tickers.get(p.cusip) || null;
+      for (const p of bucket) {
+        const v = tickerValidado(tickers.get(p.cusip), { sec, universo });
+        p.ticker = v.ticker || null;
+        // La procedencia y la causa viajan: un `ticker: null` sin motivo deja
+        // a la pantalla sin nada que decir (regla 2 y regla 3).
+        p.ticker_via = v.via || null;
+        p.ticker_motivo = v.ticker ? null : (v.motivo || 'sin resolver');
+        // `enlazable` es lo que decide si la pantalla le pone enlace: existe
+        // y además tenemos ficha. NYT y ALLY existen y no tienen ficha, así
+        // que salen con su ticker y sin enlace.
+        p.ticker_enlazable = v.enlazable === true;
+        if (v.nota) p.ticker_nota = v.nota;
+      }
     }
   }
 

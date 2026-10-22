@@ -101,6 +101,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/calcula",
+      "destination": "/index.html"
+    },
+    {
       "source": "/app",
       "destination": "/app.html"
     },
@@ -252,7 +256,7 @@
     },
     {
       "path": "/api/stock-tracker?job=indice&dias=3",
-      "schedule": "20 23 * * *"
+      "schedule": "10 4 * * *"
     },
     {
       "path": "/api/stock-tracker?job=form4",

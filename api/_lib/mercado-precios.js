@@ -64,6 +64,43 @@ export const SCHEMA_PRECIOS_US = [
  * Una fila sin fecha o sin cierre se DESCARTA y se cuenta, con el motivo:
  * "no llegó" y "llegó mal" no son lo mismo.
  */
+// ═══════════════════════════════════════════════════════════════════════
+// LOS SÍMBOLOS DEL MAPA, DEFINIDOS UNA VEZ
+//
+// La cosecha tenía su propia consulta con `limit 300` y el mapa la suya SIN
+// límite. El mapa pintaba 611 emisoras y la cosecha sembraba 300: 311
+// símbolos NUNCA se intentaban, y 292 de ellos aparecían como cuadros sin
+// serie de precios (Lety, contra producción, 2026-10-22).
+//
+// Las dos preguntas eran la misma —"¿qué va a pintar el mapa?"— con dos
+// respuestas distintas, que es el defecto que ya pagamos con los dos `xval`
+// del Form 4. Una definición, importada por los dos.
+//
+// SIN LÍMITE a propósito: un tope acá no ahorra trabajo, lo ESCONDE. Si la
+// cosecha no alcanza a cubrir el mapa en una corrida, lo que corresponde es
+// que `restantes` lo diga y que la siguiente corrida siga, no que el plan
+// finja que el mapa es más chico de lo que es.
+// ═══════════════════════════════════════════════════════════════════════
+export const SQL_SIMBOLOS_MAPA = `
+    select symbol from mercado_universo_us
+     where sector_etf is not null and market_cap is not null
+     order by market_cap desc`;
+
+// ── EL SÍMBOLO QUE YAHOO ENTIENDE ───────────────────────────────────────
+// Yahoo escribe las clases de acción con GUION, no con punto: `BRK-B`, no
+// `BRK.B`. Nuestro universo usa el punto, que es la forma de la SEC. La
+// cosecha mandaba el símbolo CRUDO, así que para Yahoo era un símbolo que no
+// existe y la serie nunca llegaba (Lety lo vio con BRK.B).
+//
+// `api/candles.js` ya traducía con `toYahooSymbol`; esta cosecha no. Otra vez
+// dos caminos para lo mismo, uno arreglado y el otro no.
+//
+// Se GUARDA con el símbolo original: la tabla de precios se junta con el
+// universo por ese nombre, y guardar `BRK-B` dejaría la serie huérfana.
+export function simboloYahoo(sym) {
+  return String(sym || '').trim().toUpperCase().replace(/\./g, '-');
+}
+
 export function aplanarChartYahoo(json) {
   const r = json && json.chart && json.chart.result && json.chart.result[0];
   if (!r) {

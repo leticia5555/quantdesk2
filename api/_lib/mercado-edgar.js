@@ -85,6 +85,40 @@ export const MAX_MESES_PORTADA = 15;
 /** Las formas que traen portada con conteo de acciones. Un 8-K no sirve. */
 export const FORMAS_CON_PORTADA = ['10-Q', '10-K', '10-K/A', '10-Q/A', '20-F', '40-F'];
 
+// ── EL SEGUNDO ESCALÓN: UNA EMISORA QUE TODAVÍA NO PRESENTA 10-Q ─────────
+// SPCX salió a bolsa el 2026-09-18 y no se pintaba: la cap de Finnhub era del
+// día de la IPO y difería 8% de acciones×precio, y EDGAR "no tenía" el conteo
+// de acciones. Cerró en $147.79 y fue de las más operadas del día — un hueco
+// de los que se notan (Lety, 2026-10-22).
+//
+// Y EDGAR SÍ LO TENÍA. `dei:EntityCommonStockSharesOutstanding` es un dato de
+// PORTADA, y lo trae cualquier presentación con portada: el prospecto
+// (424B4), el registro (S-1) y el 8-K del cierre de la oferta. La lista de
+// arriba sólo aceptaba informes periódicos, así que los descartaba.
+//
+// VA COMO ESCALÓN Y NO MEZCLADO, a propósito: el conteo de un prospecto puede
+// ser PREVIO a la oferta, y el de un S-1 puede quedar viejo entre enmiendas.
+// Mientras exista un informe periódico, ese manda. Esto entra sólo cuando no
+// hay ninguno — que es exactamente el caso de una emisora recién listada — y
+// el resultado declara de qué forma salió, para que la procedencia se vea.
+// ── LA VERSIÓN DE LA REGLA DE EXTRACCIÓN ────────────────────────────────
+// Cuando la regla cambia, lo que la regla VIEJA dio por perdido hay que
+// volver a preguntarlo. SPCX quedó marcado "EDGAR consultado el 2026-09-29,
+// sin dato" con la regla que sólo aceptaba informes periódicos; al agregar las
+// formas de IPO el arreglo no le llegaba, porque nadie vuelve a preguntar algo
+// que ya tiene respuesta (Lety, 2026-10-22).
+//
+// Se sube este número cada vez que cambia QUÉ se acepta. Una fila consultada
+// con una versión anterior vuelve a ser candidata, una sola vez, y queda
+// marcada con la nueva. No es un "reintentar todo": es "lo que se descartó
+// con un criterio que ya no usamos, se descartó por una razón que ya no vale".
+//
+//   1 → sólo 10-Q/10-K/20-F/40-F
+//   2 → + las formas de IPO (424B4, S-1, 8-K…) y se rechaza la portada futura
+export const REGLA_EDGAR_VERSION = 2;
+
+export const FORMAS_IPO = ['424B4', '424B1', '424B3', '424B2', 'S-1', 'S-1/A', '8-K', '8-K/A', 'F-1', 'F-1/A'];
+
 /**
  * El mapa ticker → CIK, desde `https://www.sec.gov/files/company_tickers.json`.
  *
@@ -103,6 +137,32 @@ export function mapaCik(json) {
     if (!out.has(t)) out.set(t, String(Math.trunc(cik)).padStart(10, '0'));
   }
   return out;
+}
+
+/**
+ * EL CIK DE UN SÍMBOLO, PROBANDO LAS DOS ORTOGRAFÍAS.
+ *
+ * `company_tickers.json` escribe las clases de acción con GUION —`BRK-B`— y
+ * nuestro universo con PUNTO —`BRK.B`—. La búsqueda era directa, así que
+ * BRK.B salía `sin_cik` y nunca llegaba a consultar sus acciones (Lety,
+ * 2026-10-22).
+ *
+ * CORRECCIÓN A UN COMENTARIO MÍO: en el PR del mapa escribí que el punto era
+ * "la forma de la SEC". Es al revés — la SEC usa guion igual que Yahoo, y el
+ * punto es nuestro. Queda dicho acá para que nadie lo lea al revés otra vez.
+ *
+ * Devuelve también CON QUÉ ortografía casó, porque "no está en EDGAR" y "está
+ * con otro nombre" son dos causas distintas y una de ellas es nuestra.
+ */
+export function cikDe(mapa, symbol) {
+  const base = String(symbol || '').toUpperCase().trim();
+  if (!base || !mapa) return { cik: null, como: null };
+  const formas = [base, base.replace(/\./g, '-'), base.replace(/-/g, '.')];
+  for (const f of formas) {
+    const cik = mapa.get ? mapa.get(f) : mapa[f];
+    if (cik) return { cik, como: f };
+  }
+  return { cik: null, como: null };
 }
 
 export const rutaCompanyConcept = (cik) =>
@@ -212,19 +272,53 @@ export function muestraCruda(json, max = 600) {
  * nos enteramos.
  */
 export function accionesDeCompanyConcept(json, {
-  formas = FORMAS_CON_PORTADA, hoy = new Date(), maxMeses = MAX_MESES_PORTADA,
+  formas = FORMAS_CON_PORTADA, formasRespaldo = FORMAS_IPO,
+  hoy = new Date(), maxMeses = MAX_MESES_PORTADA,
 } = {}) {
   const { filas: unidades, unidad, forma } = filasDeUnits(json);
-  const validas = unidades.filter((u) => {
+  const hoyIso = (hoy instanceof Date ? hoy : new Date(hoy || Date.now())).toISOString().slice(0, 10);
+  const utilizable = (u) => {
     const v = num(u && u.val);
-    return v != null && v > 0 && u.end && formas.includes(String(u.form || ''));
-  });
-  const base = { acciones: null, fecha_portada: null, presentado_en: null, form: null, unidad, forma };
+    if (v == null || v <= 0 || !u.end) return false;
+    // ── UNA PORTADA DEL FUTURO NO EXISTE ──────────────────────────────
+    // AAL resolvió con `portada: 2027-07-17` en un 10-Q presentado el
+    // 2026-07-23 (Lety, 2026-10-22). Un conteo de acciones fechado un año
+    // adelante del día en que se presentó es un error de etiquetado en el
+    // propio filing, y multiplicado por el cierre de hoy da un tamaño
+    // inventado con dos datos reales — el mismo modo de falla que la portada
+    // de 2009 de CMCSA, por el otro extremo.
+    //
+    // No se corrige la fecha ni se adivina cuál quiso decir: se descarta el
+    // hecho y, si no queda ninguno, el símbolo se va a gris con su causa.
+    if (String(u.end).slice(0, 10) > hoyIso) return false;
+    return true;
+  };
+  const deFormas = (lista) => unidades.filter((u) => utilizable(u) && lista.includes(String(u.form || '')));
+
+  // Los informes periódicos primero. El escalón de IPO sólo si no hay ninguno.
+  let validas = deFormas(formas);
+  let escalon = 'periodico';
+  if (!validas.length && Array.isArray(formasRespaldo) && formasRespaldo.length) {
+    validas = deFormas(formasRespaldo);
+    if (validas.length) escalon = 'ipo';
+  }
+  const base = { acciones: null, fecha_portada: null, presentado_en: null, form: null,
+    unidad, forma, escalon: null };
   if (!validas.length) {
     return {
       ...base,
       motivo: unidades.length
-        ? `EDGAR no trae ${formas.join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`
+        ? (() => {
+          // Si lo único que había estaba fechado adelante de hoy, eso es lo
+          // que hay que decir: "no trae formas con portada" mandaría a buscar
+          // el problema donde no está.
+          const futuras = unidades.filter((u) => u && u.end && String(u.end).slice(0, 10) > hoyIso).length;
+          if (futuras && futuras === unidades.filter((u) => num(u && u.val) != null && u.end).length) {
+            return `EDGAR trae ${futuras} conteo(s) de acciones con fecha de portada POSTERIOR a hoy (la más nueva, ${
+              unidades.map((u) => String(u.end)).sort().pop()}): es un error de etiquetado del filing y no se puede usar`;
+          }
+          return `EDGAR no trae ${formas.join('/')} ni ${(formasRespaldo || []).join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`;
+        })()
         // La huella va PEGADA al motivo: es la diferencia entre "EDGAR no tiene
         // el concepto" y "la respuesta vino con otra forma y no la supimos leer".
         : `EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (${formaDeUnits(json)})`,
@@ -278,7 +372,21 @@ export function accionesDeCompanyConcept(json, {
     return {
       ...base, fecha_portada: portada, presentado_en: u.filed ? String(u.filed) : null, form: String(u.form),
       meses_de_antiguedad: Math.round(meses),
-      motivo: `EDGAR sólo tiene portada de ${portada.slice(0, 4)} (${portada}, ${Math.round(meses)} meses): un conteo de acciones de esa fecha por el cierre de hoy no sostiene un tamaño`,
+      // ── QUÉ HAY EN LA RESPUESTA, PARA PODER DEPURARLA DESDE AFUERA ───
+      // ACN salió con "EDGAR sólo tiene portada de 2010" y Accenture reporta
+      // cada trimestre (Lety, 2026-10-22). Desde este contenedor no hay
+      // salida a sec.gov, así que lo único que puede explicar eso es lo que
+      // el job traiga en el motivo: cuántos hechos hay, de qué formas y de
+      // qué años. Con eso se distingue "la emisora usa otro concepto" de
+      // "estamos pegándole al CIK de la entidad vieja" —Accenture Ltd
+      // (Bermudas) y Accenture plc (Irlanda) son CIKs distintos— sin tener
+      // que adivinar.
+      hechos: validas.length,
+      formas_presentes: [...new Set(validas.map((x) => String(x.form || '?')))].sort(),
+      anios_presentes: [...new Set(validas.map((x) => String(x.end).slice(0, 4)))].sort(),
+      motivo: `EDGAR sólo tiene portada de ${portada.slice(0, 4)} (${portada}, ${Math.round(meses)} meses): un conteo de acciones de esa fecha por el cierre de hoy no sostiene un tamaño`
+        + ` — ${validas.length} hecho(s) utilizable(s), formas ${[...new Set(validas.map((x) => String(x.form || '?')))].sort().join('/')}`
+        + `, años ${[...new Set(validas.map((x) => String(x.end).slice(0, 4)))].sort().join(',')}`,
     };
   }
 
@@ -293,6 +401,12 @@ export function accionesDeCompanyConcept(json, {
     fy: u.fy != null ? Number(u.fy) : null,
     fp: u.fp ? String(u.fp) : null,
     accn: u.accn ? String(u.accn) : null,
+    // De qué escalón salió. `ipo` quiere decir "no hay informe periódico
+    // todavía y esto viene de la portada del prospecto o del 8-K". No es peor
+    // dato —es el mismo concepto de la misma fuente—, pero la procedencia se
+    // declara: la regla 3 pide que cada número diga de dónde sale, y "del
+    // 424B4 del 18-sep" no es lo mismo que "del 10-Q del 30-jun".
+    escalon,
     motivo: null,
   };
 }
@@ -496,7 +610,10 @@ export function estadoEdgar({ acciones = null, consultada_en = null, motivo = nu
  * EDGAR. Un cero sin desglose no se puede depurar: ahora cada descarte se
  * cuenta y la pregunta correcta es "¿tiene un conteo POSITIVO?".
  */
-export function candidatosParaEdgar({ entradas = [], veredictos = [], universoPorSymbol = new Map() } = {}) {
+export function candidatosParaEdgar({
+  entradas = [], veredictos = [], universoPorSymbol = new Map(), hoy = new Date(),
+} = {}) {
+  const hoyIso = (hoy instanceof Date ? hoy : new Date(hoy || Date.now())).toISOString().slice(0, 10);
   const porSymbol = new Map(entradas.map((e) => [e.symbol, e]));
   const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
   const diagnostico = {
@@ -504,16 +621,46 @@ export function candidatosParaEdgar({ entradas = [], veredictos = [], universoPo
     verificadas: 0, no_usd: 0, ya_con_edgar: 0, candidatos: 0,
   };
   const candidatos = [];
+  // ── POR QUÉ QUEDÓ FUERA CADA UNO, CON NOMBRE ──────────────────────────
+  // Los contadores dicen CUÁNTOS, no CUÁLES. Con SPCX gris y 52 candidatos,
+  // saber que hay "N sin acciones" no permite averiguar si SPCX es uno de
+  // ellos: hubo que inferirlo, y la inferencia puede estar mal. Ahora cada
+  // símbolo excluido viaja con su motivo.
+  const excluidos = [];
+  const fuera = (sym, motivo) => { excluidos.push({ symbol: sym, motivo }); };
   for (const v of veredictos) {
     const e = porSymbol.get(v.symbol) || {};
     const u = universoPorSymbol.get(v.symbol) || {};
-    if (!(n(e.precio_usd) > 0)) { diagnostico.sin_precio++; continue; }
-    if (!(n(e.acciones) > 0)) { diagnostico.sin_acciones++; continue; }
+    if (!(n(e.precio_usd) > 0)) { diagnostico.sin_precio++; fuera(v.symbol, 'sin precio en USD'); continue; }
+    if (!(n(e.acciones) > 0)) { diagnostico.sin_acciones++; fuera(v.symbol, 'sin conteo de acciones de Finnhub'); continue; }
     if (v.estado === 'verificada') { diagnostico.verificadas++; continue; }
-    if (v.moneda !== 'USD') { diagnostico.no_usd++; continue; }
-    if (n(u.acciones_edgar_millones) > 0) { diagnostico.ya_con_edgar++; continue; }
+    if (v.moneda !== 'USD') { diagnostico.no_usd++; fuera(v.symbol, `la cap declarada está en ${v.moneda || 'otra moneda'}`); continue; }
+    // ── LA REPREGUNTA POR CAMBIO DE REGLA, ACOTADA ─────────────────────
+    // Cuando la regla cambia, lo que la regla VIEJA dio por perdido hay que
+    // volver a preguntarlo (SPCX). Pero NO todo: el cambio de la versión 2
+    // sólo AGREGÓ formas, así que un conteo que ya salió de un 10-Q sigue
+    // siendo el mismo conteo. Repreguntar las 35 filas que ya tienen dato
+    // gastaría la cuota de la SEC para confirmar lo que ya sabemos.
+    //
+    // Se repregunta en dos casos, y los dos son concretos:
+    //   · SIN dato y consultado con una regla anterior — lo de SPCX: la
+    //     respuesta "no hay" la produjo un criterio que ya no usamos;
+    //   · CON dato cuya portada quedó en el futuro — lo de AAL: la versión 2
+    //     rechaza esas fechas, así que el dato guardado es inválido aunque
+    //     exista.
+    const reglaVieja = n(u.edgar_regla) < REGLA_EDGAR_VERSION;
+    const tieneDato = n(u.acciones_edgar_millones) > 0;
+    const portadaFutura = u.acciones_edgar_portada
+      && String(u.acciones_edgar_portada).slice(0, 10) > hoyIso;
+    const repreguntar = (reglaVieja && !tieneDato && !!u.edgar_consultada_en)
+      || (reglaVieja && portadaFutura);
+    if (tieneDato && !repreguntar) { diagnostico.ya_con_edgar++; continue; }
+    if (repreguntar) {
+      diagnostico.repregunta_por_regla = (diagnostico.repregunta_por_regla || 0) + 1;
+    }
     diagnostico.candidatos++;
     candidatos.push(v.symbol);
   }
+  diagnostico.excluidos = excluidos.slice(0, 40);
   return { candidatos, diagnostico };
 }

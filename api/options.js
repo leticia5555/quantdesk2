@@ -25,7 +25,12 @@ async function fetchJson(url, timeoutMs = 8000) {
     const text = await r.text();
     let json = null;
     try { json = JSON.parse(text); } catch { /* HTML de error */ }
-    return { ok: r.ok, status: r.status, json };
+    // UN RECORTE DEL CUERPO cuando no es JSON. Un 401 de Yahoo viene con una
+    // página HTML o con un JSON de error, y eso es lo único que dice si pide
+    // `crumb`, si bloqueó por región o si es otra cosa. Sin el recorte, el
+    // diagnóstico se queda en "no era JSON" y hay que adivinar.
+    return { ok: r.ok, status: r.status, json,
+      cuerpo: json ? null : String(text || '').slice(0, 200), bytes: (text || '').length };
   } catch (err) {
     return { ok: false, status: 0, json: null, error: err && err.name === 'AbortError' ? 'timeout' : String((err && err.message) || err) };
   } finally {
@@ -36,14 +41,48 @@ async function fetchJson(url, timeoutMs = 8000) {
 // Yahoo cae/rota entre hosts; probamos ambos antes de rendirnos.
 // EXPORTADA: el snapshot de apertura del Arena necesita la cadena CRUDA para
 // derivar la probabilidad implícita, que no es parte del resumen público.
+/**
+ * LA CADENA DE OPCIONES, Y SI NO SE PUDO, QUÉ CONTESTÓ CADA HOST.
+ *
+ * Lety, contra producción (2026-10-22): `?ticker=NVDA` devolvía
+ * `available: false, "Fuente de opciones no disponible"` y con eso no se
+ * puede hacer nada. La versión anterior devolvía UN solo `status` —el del
+ * último host probado—, así que si query1 daba 401 y query2 daba 429, lo que
+ * llegaba era "429" y la causa real se perdía.
+ *
+ * `intentos` lleva, por host: el código, si el cuerpo era JSON, el tamaño, y
+ * el mensaje de error que Yahoo pone en el cuerpo cuando rechaza. Es la
+ * diferencia entre "Yahoo cerró el endpoint" y "nuestro contenedor no tiene
+ * salida", que se arreglan en lugares distintos.
+ *
+ * SOSPECHA, y va dicha para que se pueda confirmar o descartar: `/v7/` es la
+ * familia de endpoints que Yahoo cerró detrás de cookie + `crumb`. El
+ * `/v8/finance/chart` que usa el resto de esta casa sigue abierto; `/v7/` no.
+ * Si los intentos vuelven con 401 o con un cuerpo que no es JSON, es eso.
+ */
 export async function fetchOptionChain(ticker) {
+  const intentos = [];
   for (const host of HOSTS) {
     const r = await fetchJson(`${host}/v7/finance/options/${encodeURIComponent(ticker)}`);
     const res = r.json && r.json.optionChain && Array.isArray(r.json.optionChain.result) ? r.json.optionChain.result[0] : null;
-    if (res && Array.isArray(res.options) && res.options.length) return { host, res, status: r.status };
-    if (r.status === 404) return { host, res: null, status: 404 }; // sin opciones: no reintentar otro host
+    intentos.push({
+      host,
+      status: r.status ?? 0,
+      json: !!r.json,
+      // El cuerpo de un rechazo de Yahoo trae su propia explicación
+      // (`finance.error.description`), y es la que dice si pide `crumb`.
+      error_yahoo: (r.json && r.json.finance && r.json.finance.error
+        && (r.json.finance.error.description || r.json.finance.error.code)) || null,
+      error_red: r.error || null,
+      bytes: r.bytes ?? null,
+      cuerpo: r.cuerpo || null,
+      resultados: res ? 1 : 0,
+      vencimientos: res && Array.isArray(res.expirationDates) ? res.expirationDates.length : 0,
+    });
+    if (res && Array.isArray(res.options) && res.options.length) return { host, res, status: r.status, intentos };
+    if (r.status === 404) return { host, res: null, status: 404, intentos }; // sin opciones: no reintentar otro host
   }
-  return { host: null, res: null, status: 0 };
+  return { host: null, res: null, status: intentos.length ? intentos[intentos.length - 1].status : 0, intentos };
 }
 
 const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : 0);
@@ -116,10 +155,22 @@ export function summarizeChain(calls, puts, spot) {
 }
 
 async function build(ticker) {
-  const { res, status } = await fetchOptionChain(ticker);
+  const { res, status, intentos } = await fetchOptionChain(ticker);
   if (!res || !Array.isArray(res.options) || !res.options.length) {
     return { ticker, available: false, status, source: 'Yahoo Finance options',
-      note: status === 404 ? 'Sin cadena de opciones para este ticker.' : 'Fuente de opciones no disponible.',
+      // QUÉ contestó cada host, no sólo que no se pudo (regla 2: la causa
+      // real). Sin esto, "no disponible" podía ser Yahoo cerrado, el ticker
+      // sin opciones, o nuestra salida de red, y las tres se arreglan en
+      // lugares distintos.
+      intentos,
+      note: status === 404 ? 'Sin cadena de opciones para este ticker.'
+        : (intentos || []).some((i) => i.status === 401 || i.status === 403)
+          ? 'Yahoo rechazó la petición (401/403): el endpoint /v7/ exige cookie y crumb desde su cambio de acceso. Hace falta otra fuente o autenticar.'
+          : (intentos || []).some((i) => i.status === 429)
+            ? 'Yahoo contestó 429 (demasiadas peticiones): es cuota, no cierre. Reintentar más tarde.'
+            : (intentos || []).every((i) => i.status === 0)
+              ? 'No hubo respuesta de ningún host de Yahoo: parece falta de salida de red, no un rechazo.'
+              : 'Fuente de opciones no disponible.',
       generated_at: new Date().toISOString() };
   }
   const chain = res.options[0]; // expiración más cercana
@@ -157,9 +208,9 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     const sym = ticker || 'TSLA';
     try {
-      const { host, res: chain, status } = await fetchOptionChain(sym);
+      const { host, res: chain, status, intentos } = await fetchOptionChain(sym);
       return res.status(200).json({
-        smoke: true, ticker: sym, host, status,
+        smoke: true, ticker: sym, host, status, intentos,
         expirations: chain ? (chain.expirationDates || []).length : 0,
         front_calls: chain && chain.options && chain.options[0] ? (chain.options[0].calls || []).length : 0,
         front_puts: chain && chain.options && chain.options[0] ? (chain.options[0].puts || []).length : 0,

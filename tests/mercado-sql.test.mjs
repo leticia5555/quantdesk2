@@ -36,7 +36,8 @@ import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
 import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS, SQL_PAGINA } from '../api/noticias.js';
 import { tickersDeFila } from '../api/_lib/noticias.js';
 import { SQL_NOTICIAS_LOCALES_TICKER, SQL_NOTICIAS_LOCALES_PALABRAS } from '../api/_lib/arena-tools.js';
-import { SCHEMA_FORM4, SUCIA_SQL, limpiaDocumento } from '../api/stock-tracker.js';
+import { SCHEMA_FORM4, SUCIA_SQL, limpiaDocumento,
+  SQL_FORM4_PENDIENTES, SQL_FORM4_CUBOS, FORM4_MAX_INTENTOS } from '../api/stock-tracker.js';
 
 const PUERTO = 55433;
 
@@ -517,5 +518,89 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
     assert.deepEqual(candidatas2, [], 'correrla dos veces no cambia nada (Lety)');
   });
 
+
+
+  // ═════════════════════════════════════════════════════════════════════
+  // `pendientes` = `en_indice` − `guardados`. LA IDENTIDAD QUE SE ROMPIÓ.
+  //
+  // Lety, contra producción (2026-10-21): la cobertura se congeló en ~48% y
+  // el cron reportaba `leidos: 0, pendientes: 0` tras 120 corridas, con
+  // ~14.000 filings sin leer.
+  //
+  // La causa: "pendiente" era `leido_en is null`, y el job ponía `leido_en`
+  // TAMBIÉN al fallar. La fila fallida salía de pendientes sin haberse
+  // guardado nunca, así que no estaba en ninguno de los dos cubos y la suma
+  // daba menos que el total. Nadie sumaba, así que nadie lo vio.
+  //
+  // Esta prueba corre las consultas REALES contra Postgres con filas en los
+  // cuatro estados posibles, y exige que los cubos sumen.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('pendientes = en_indice − guardados, con filas en los cuatro estados', () => {
+    psql(SCHEMA_FORM4.map((q) => q + ';').join('\n'));
+    psql('truncate mercado_form4_indice;');
+
+    const fila = (acc, { ok = null, intentos = 0 } = {}) =>
+      `('${acc}', '1', 'X', '2026-10-19', 'edgar/data/1/${acc}.txt', `
+      + (ok === null ? 'null' : (ok ? 'now()' : 'now()')) + ', '
+      + (ok === null ? 'null' : String(ok)) + `, ${intentos})`;
+
+    // 2 nunca intentadas · 3 guardadas · 2 fallidas con intentos de sobra ·
+    // 1 fallida que ya agotó sus intentos.
+    psql(`insert into mercado_form4_indice
+            (accession, cik, empresa, fecha_filing, archivo, leido_en, leido_ok, intentos)
+          values
+            ${fila('A-1')}, ${fila('A-2')},
+            ${fila('B-1', { ok: true, intentos: 1 })},
+            ${fila('B-2', { ok: true, intentos: 1 })},
+            ${fila('B-3', { ok: true, intentos: 2 })},
+            ${fila('C-1', { ok: false, intentos: 1 })},
+            ${fila('C-2', { ok: false, intentos: 3 })},
+            ${fila('D-1', { ok: false, intentos: FORM4_MAX_INTENTOS })};`);
+
+    const [en, gu, pe, ag] = psql(`${SQL_FORM4_CUBOS.replace(/\$1/g, String(FORM4_MAX_INTENTOS))};`)
+      .trim().split('|').map(Number);
+    assert.equal(en, 8, 'ocho en el índice');
+    assert.equal(gu, 3, 'tres guardadas');
+    assert.equal(ag, 1, 'una agotada');
+    // LA IDENTIDAD que pidió Lety: lo que falta tiene que estar en pendientes.
+    // Con la agotada aparte, porque ésa SE REPORTA en vez de desaparecer.
+    assert.equal(pe + ag, en - gu,
+      'todo lo que no está guardado tiene que estar en pendientes o en agotadas');
+    assert.equal(en, gu + pe + ag, 'los tres cubos suman el total: nada invisible');
+    assert.equal(pe, 4, 'dos sin intentar + dos fallidas con intentos de sobra');
+
+    // ── Y LA CONSULTA DE PENDIENTES DEVUELVE ESAS MISMAS ──────────────
+    // Que los conteos cuadren no alcanza: lo que el job PIDE tiene que ser
+    // el mismo conjunto, o volvemos al punto de partida con otro nombre.
+    const traidas = psql(`${SQL_FORM4_PENDIENTES
+      .replace('$1', '100').replace('$2', String(FORM4_MAX_INTENTOS))};`)
+      .trim().split('\n').filter(Boolean).map((l) => l.split('|')[0]);
+    assert.deepEqual(traidas.slice().sort(), ['A-1', 'A-2', 'C-1', 'C-2'],
+      'la fila fallida con intentos de sobra VUELVE a ser pendiente');
+    assert.ok(!traidas.includes('D-1'), 'la agotada no se reintenta para siempre');
+    assert.ok(!traidas.includes('B-1'), 'la guardada no se vuelve a pedir');
+
+    // Las NUNCA intentadas van primero: si los reintentos fueran al frente,
+    // una tanda vieja de fallos se comería el presupuesto de cada corrida y
+    // los filings nuevos no entrarían nunca.
+    assert.deepEqual(traidas.slice(0, 2).sort(), ['A-1', 'A-2'],
+      `las no intentadas van primero — orden real: ${traidas.join(',')}`);
+  });
+
+  await t.test('el bug exacto: marcar leido_en al fallar dejaba la fila invisible', () => {
+    psql('truncate mercado_form4_indice;');
+    // La forma que tenían las 14.000 filas: leída, no ok, y con el criterio
+    // viejo (`leido_en is null`) fuera de pendientes.
+    psql(`insert into mercado_form4_indice
+            (accession, cik, empresa, fecha_filing, archivo, leido_en, leido_ok, intentos)
+          values ('Z-1', '1', 'X', '2026-10-19', 'edgar/data/1/z.txt', now(), false, 1);`);
+
+    const viejo = psql(`select count(*)::int from mercado_form4_indice where leido_en is null;`).trim();
+    assert.equal(viejo, '0', 'con el criterio viejo esta fila NO era pendiente');
+
+    const nuevo = psql(`${SQL_FORM4_PENDIENTES
+      .replace('$1', '100').replace('$2', String(FORM4_MAX_INTENTOS))};`).trim();
+    assert.match(nuevo, /^Z-1\|/, 'con el criterio nuevo sí lo es');
+  });
 
 });
