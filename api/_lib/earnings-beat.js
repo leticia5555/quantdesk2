@@ -1527,6 +1527,26 @@ function extraeMetricaMercado(m, { ignorarCondicionales = true } = {}) {
   return { metrica, etiqueta: ETIQUETA_METRICA[metrica], motivo, leida_de: decide, por_fuente };
 }
 
+// ── Traducción del título del mercado ──
+// El título se queda en INGLÉS en la tarjeta: es una cita de Polymarket. Abajo
+// va su traducción, y solo para las formas que conocemos, por plantilla —
+// nada de traducción automática. Un título que no encaja devuelve null y la
+// tarjeta no pone traducción: mejor sin traducir que mal traducido.
+const PLANTILLAS_TITULO = [
+  // «Will Meta (META) beat quarterly earnings?» → «¿Meta superará sus resultados trimestrales?»
+  { re: /^\s*will\s+(.+?)(?:\s*\(\$?[A-Z][A-Z0-9.\-]{0,6}\))?\s+beat\s+quarterly\s+earnings\s*\?\s*$/i,
+    es: (m) => `¿${m[1].trim()} superará sus resultados trimestrales?` },
+];
+
+function traduceTituloMercado(titulo) {
+  if (!titulo || typeof titulo !== 'string') return null;
+  for (const p of PLANTILLAS_TITULO) {
+    const m = p.re.exec(titulo);
+    if (m) return p.es(m);
+  }
+  return null;
+}
+
 // Umbral del slug: "meta-quarterly-earnings-gaap-eps-10-21-2026-6pt31" → 6.31.
 // Solo para COTEJAR el de la descripción: si un día dicen cosas distintas, eso
 // es un dato, no algo que se resuelva eligiendo uno.
@@ -1602,5 +1622,5 @@ export {
   analizaDesfases, clasificaT24h, MAX_TOLERANCIA_PROPONIBLE, comparaEmparejamiento,
   estadisticasHistoricas, mediana, sorpresaPct, VENTANA_TRIMESTRES, PISO_ESTIMADO,
   escalaDelEstimado, PISO_ESCALA,
-  METRICA_HISTORICO, ETIQUETA_METRICA, extraeMetricaMercado, metricaDeFuente, sinCondicionales, comparaMetricas, libroDelYes, umbralDelSlug,
+  METRICA_HISTORICO, ETIQUETA_METRICA, extraeMetricaMercado, metricaDeFuente, sinCondicionales, comparaMetricas, libroDelYes, umbralDelSlug, traduceTituloMercado,
 };

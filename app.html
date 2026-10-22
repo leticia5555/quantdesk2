@@ -2643,6 +2643,10 @@ function ebLiveCard(e){
 
   const titulo=m.titulo?String(m.titulo).slice(0,90):(m.slug||'');
   const link=m.url?'<a href="'+m.url+'" target="_blank" rel="noopener noreferrer" style="color:#ff6600;text-decoration:none;">'+titulo+' ↗</a>':titulo;
+  // El título se queda en INGLÉS: es una cita de Polymarket. Debajo, en gris
+  // chico, su traducción — la arma el endpoint por plantilla (`titulo_es`), y
+  // si el título no encaja en ninguna, no se pinta nada. En inglés no hace falta.
+  const tituloEs=m.titulo_es?smL('<div style="font-size:8px;color:#555;line-height:1.3;">'+m.titulo_es+'</div>',''):'';
   const otros=(e.mercados&&e.mercados.length>1)
     ? '<div style="font-size:9px;color:#555;margin-top:3px;">+'+(e.mercados.length-1)+smL(' mercado(s) más de esta empresa',' more market(s) for this company')+'</div>' : '';
 
@@ -2669,7 +2673,7 @@ function ebLiveCard(e){
     +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
       +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')
       +(v&&v.anios?'<span style="color:#444;"> · '+smL('titular sobre '+v.total+' trimestres ('+v.anios+' años)','headline over '+v.total+' quarters ('+v.anios+'y)')+'</span>':'')+'</div>'+quarters+'</div>':'')
-    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+otros+'</div>'
+    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+tituloEs+otros+'</div>'
     +'<div style="margin-top:6px;font-size:8px;color:#5a4f38;line-height:1.4;">'
       +smL('El histórico no es predicción · Track record is not a forecast',
            'Track record is not a forecast · El histórico no es predicción')+'</div>'
