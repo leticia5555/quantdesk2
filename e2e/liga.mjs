@@ -57,7 +57,10 @@ const agente = (id, name, rank) => ({
   account: { equity: 100000, cash: 50000 }, positions: [], return_pct: 1, day_change_pct: 0.1,
   journal: { plan: `Plan de ${id}.`, created_at: `${HOY}T15:40:00Z`, run_date: HOY, status: 'ok_target', ordenes: [] },
 });
-const LEADERBOARD = { enabled: true, agents: [agente('grok', 'Grok', 1), agente('deepseek', 'DeepSeek', 2), agente('qwen', 'Qwen', 3)], baseline_equity: 100000 };
+const LEADERBOARD = { enabled: true, agents: [agente('grok', 'Grok', 1), agente('deepseek', 'DeepSeek', 2), agente('qwen', 'Qwen', 3)], baseline_equity: 100000,
+  // El saldo que leyó el vigilante (2026-10-21): bajo el piso → aviso arriba de la tabla.
+  saldo_openrouter: { usd: 6.79, piso: 10, bajo: true, fuente: 'credits', at: '2026-10-21T18:10:00.000Z',
+    aviso: 'SALDO DE OPENROUTER BAJO: $6.79, por debajo del piso de $10. Los cinco agentes de OpenRouter dependen de esa cuenta: sin créditos, cada corrida aborta con causa "cuenta" (nuestra, no del modelo).' } };
 
 const nav = globalThis.process;
 const browser = await chromium.launch();
@@ -81,6 +84,11 @@ async function abrir(ruta, { librosOk = true } = {}) {
   const { page, errores } = await abrir('/leaderboard.html');
   await page.waitForSelector('.decide', { timeout: 8000 }).catch(() => {});
   report('la página carga sin errores de JS', errores.length === 0, errores.join(' · '));
+  const saldo = await page.locator('#saldo').innerText();
+  report('el saldo bajo de OpenRouter sale arriba de la tabla', /Saldo de OpenRouter bajo/i.test(saldo) && /\$6\.79/.test(saldo) && /18:10 UTC/.test(saldo), saldo.slice(0, 160));
+  const yBoard = await page.locator('#board').boundingBox();
+  const ySaldo = await page.locator('#saldo').boundingBox();
+  report('…y ANTES del ranking', !!(ySaldo && yBoard && ySaldo.y < yBoard.y));
   report('cada agente trae su bloque "cómo decidió"', (await page.locator('.decide').count()) === 3);
   const grok = await page.locator('.row', { hasText: 'Grok' }).first().innerText();
   report('la cadena se lee como historia', /ficha NVDA → 9 líneas/.test(grok) && /noticias NVDA → 5 titulares/.test(grok), grok.slice(0, 300));

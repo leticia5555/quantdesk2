@@ -587,9 +587,17 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
 
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
+    // ── UN 402 CON CUERPO JSON NO ES "CUERPO NO-JSON" (2026-10-21) ─────
+    // OpenRouter rechaza con HTTP 4xx y `{error: {code, message}}`. Esto
+    // decía "cuerpo no-JSON: {"error":…}" sobre un cuerpo que SÍ era JSON: el
+    // mensaje del proveedor estaba ahí, mal rotulado. Ahora se lee.
+    const errProv = first.raw && first.raw.error && typeof first.raw.error === 'object' ? first.raw.error : null;
     return {
       status: first.status || 502, data: null, timedOut: !!first.timedOut,
-      error_detail: first.netError || (cuerpo ? `cuerpo no-JSON: ${cuerpo.slice(0, 200)}` : null),
+      error_detail: first.netError
+        || (errProv && errProv.message ? `OpenRouter HTTP ${first.status}: ${String(errProv.message).slice(0, 300)}${errProv.code != null ? ` (code ${errProv.code})` : ''}` : null)
+        || (cuerpo ? `cuerpo no-JSON: ${cuerpo.slice(0, 200)}` : null),
+      ...(errProv && errProv.message ? { provider_error: { message: errProv.message, code: errProv.code ?? null, type: errProv.type ?? null } } : {}),
       raw_body: first.bodySample || null,
       threw_stack: first.threw_stack || null,
       // El techo y QUIÉN lo puso. Un aborto sin esto obliga a adivinar entre

@@ -74,6 +74,7 @@ import { currentTier } from './_lib/arena-budget.js';
 import { beat } from './_lib/heartbeat.js';
 // La pausa dinámica del vigilante (la pone el reset mientras aplana las cuentas).
 import { watchPaused } from './_lib/arena-baseline.js';
+import { leerSaldoOpenRouter, estadoSaldo, pisoSaldo, CLAVE_META as CLAVE_SALDO } from './_lib/openrouter-saldo.js';
 
 // Un tick puede despertar hasta 7 agentes, cada uno con su llamada al DIVE y su
 // titular. Mismo techo que arena-run (plan Pro): 300s.
@@ -237,6 +238,14 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
   // cambiar un problema por otro peor. Queda journaleado que corrió a ciegas.
   const presupuesto = await currentTier(now);
   await announceSpendTier(presupuesto, now);
+
+  // ── (1d) EL SALDO DE OPENROUTER, AL EMPEZAR CADA CICLO (2026-10-21) ───
+  // El 21-oct la cuenta se quedó sin créditos a media sesión (402) y nada lo
+  // anticipó. Se lee acá, se guarda para /liga y /api/arena-audit, y NUNCA
+  // frena la liga: es un aviso, no una compuerta. `leerSaldoOpenRouter` no
+  // lanza y tiene un techo de 4 s por endpoint.
+  const saldoOpenRouter = estadoSaldo(await leerSaldoOpenRouter({ now }), pisoSaldo());
+  await markDone(CLAVE_SALDO, saldoOpenRouter, now);
 
   // (2) LIBROS. Un agente sin keys o con Alpaca caída se salta sin tumbar al
   // resto — igual que en la liga.
@@ -613,6 +622,7 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
       buffet_triggers_apagados: apagadosPorPresupuesto.length,
       note: presupuesto.note || null,
     },
+    saldo_openrouter: saldoOpenRouter,
     fixed_round: rondaFija ? rondaFija.id : null,
     fixed_runs: fixedRuns,
     watched: watched.length,
