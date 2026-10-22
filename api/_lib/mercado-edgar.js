@@ -384,7 +384,28 @@ export function accionesDeCompanyConcept(json, {
       hechos: validas.length,
       formas_presentes: [...new Set(validas.map((x) => String(x.form || '?')))].sort(),
       anios_presentes: [...new Set(validas.map((x) => String(x.end).slice(0, 4)))].sort(),
+      // ── LA CAUSA REAL, CONFIRMADA POR LETY (2026-10-22) ─────────────
+      // ACN resolvió con portada de 2010 teniendo el CIK correcto
+      // (1467373, Accenture plc) y sólo dos hechos, de 2009-2010. Mi
+      // hipótesis de la entidad de Bermudas no era.
+      //
+      // La causa es de la API: `companyconcept` OMITE los hechos con
+      // dimensión —los que llevan `StatementClassOfStockAxis`—. Una empresa
+      // con varias clases etiqueta la portada POR CLASE, así que desde el
+      // trimestre en que empezó a hacerlo sus hechos desaparecen de esta API
+      // y lo único que queda es el último sin dimensión, de hace quince años.
+      // Lety lo confirmó en el 10-Q de Berkshire: dos
+      // `dei:EntityCommonStockSharesOutstanding`, cada uno con su
+      // `contextref`.
+      //
+      // Afecta a TODAS las de varias clases, no sólo a ACN y BRK.B, y no se
+      // arregla con esta API: hace falta leer los contextos del filing, o
+      // capturar las clases a mano. Va en el motivo para que el próximo que
+      // lo vea no vuelva a buscar en el CIK.
       motivo: `EDGAR sólo tiene portada de ${portada.slice(0, 4)} (${portada}, ${Math.round(meses)} meses): un conteo de acciones de esa fecha por el cierre de hoy no sostiene un tamaño`
+        + '. Causa frecuente: EDGAR separa la portada por clase y `companyconcept` no trae los hechos'
+        + ' con dimensión, así que de una emisora de varias clases sólo queda su último hecho sin'
+        + ' dimensión, que puede ser de hace años'
         + ` — ${validas.length} hecho(s) utilizable(s), formas ${[...new Set(validas.map((x) => String(x.form || '?')))].sort().join('/')}`
         + `, años ${[...new Set(validas.map((x) => String(x.end).slice(0, 4)))].sort().join(',')}`,
     };
