@@ -56,6 +56,18 @@ const EXCLUSIONES = [
   { motivo: 'mencion', re: /\bwill\b.*\bsays?\b|\bsay\b|\bsaid\b|\bmentions?\b|\bmentioned\b/i },
 ];
 
+// Un KPI de earnings es de un PERIODO fiscal. Sin "Q3", "quarter" o "FY" en el
+// título, lo que la búsqueda trajo es otra cosa con rangos (la corrida en seco
+// del 2026-10-22 metió 16 "Elon Musk Net Worth on …" por la semilla
+// "net adds", y un "Saudi Aramco net income in 2023").
+const PERIODO_FISCAL = /\bQ[1-4]\b|\bquarter(ly)?\b|\bFY\s?'?\d{2,4}\b|\bfiscal\b/i;
+
+// Eventos-ESCALERA ("Will X Q3 net new ARR be above __?"): cada hijo es un
+// umbral acumulado ("$5B" = "más de $5B"), no un cajón. Los Yes NO suman 1.
+// Se guardan con range_kind = 'umbral' para que nadie los sume como cajones.
+const ESCALERA_ARRIBA = /\b(above|over|at least|more than|exceed)\s*_{2,}/i;
+const ESCALERA_ABAJO = /\b(below|under|less than)\s*_{2,}/i;
+
 function excluyeTitulo(titulo) {
   const t = String(titulo || '');
   for (const e of EXCLUSIONES) if (e.re.test(t)) return e.motivo;
@@ -194,11 +206,14 @@ const ALIAS_KPI = {
   'sirius': 'SIRI', 'siriusxm': 'SIRI', 'nio': 'NIO', 'xpeng': 'XPEV', 'li auto': 'LI', 'byd': 'BYD',
   'ferrari': 'RACE', 'oracle': 'ORCL', 'pdd': 'PDD', 'alibaba': 'BABA', 'jd': 'JD', 'sea': 'SE',
   'mercadolibre': 'MELI', 'nu': 'NU', 'nubank': 'NU', 'sofi': 'SOFI', 'affirm': 'AFRM',
+  'autozone': 'AZO', 'lennar': 'LEN', 'gamestop': 'GME', 'take two': 'TTWO', 'take-two': 'TTWO',
+  'general mills': 'GIS', 'ralph lauren': 'RL', 'interactive brokers': 'IBKR', 'abbott': 'ABT',
   'crowdstrike': 'CRWD', 'datadog': 'DDOG', 'mongodb': 'MDB', 'cloudflare': 'NET', 'zscaler': 'ZS',
 };
 
 // Paréntesis que NO son tickers aunque lo parezcan.
-const NO_TICKER = new Set(['GAAP', 'EPS', 'YOY', 'QOQ', 'FY', 'US', 'USA', 'USD', 'ADJ', 'TTM', 'LTM', 'EU', 'UK', 'AI', 'ARR', 'RPO', 'MBR', 'NIM']);
+// "(CC)" = constant currency (Salesforce RPO): la corrida en seco lo leyó como ticker.
+const NO_TICKER = new Set(['CC', 'LC', 'FX', 'EX', 'GAAP', 'EPS', 'YOY', 'QOQ', 'FY', 'US', 'USA', 'USD', 'ADJ', 'TTM', 'LTM', 'EU', 'UK', 'AI', 'ARR', 'RPO', 'MBR', 'NIM']);
 
 let INDICE_KPI = null;
 function indiceKpi() {
@@ -260,8 +275,12 @@ function filasDeEvento(evento, { semilla = null } = {}) {
   const excl = excluyeTitulo(titulo);
   if (excl) return { motivo: excl, filas: [], ilegibles: 0 };
 
+  if (!PERIODO_FISCAL.test(titulo)) return { motivo: 'sin_periodo_fiscal', filas: [], ilegibles: 0 };
+
   const sim = extraeSimboloKpi(titulo);
   const kpi = kpiDeTitulo(titulo);
+  const escalera = ESCALERA_ARRIBA.test(titulo) ? 'arriba' : ESCALERA_ABAJO.test(titulo) ? 'abajo' : null;
+  const etiquetasIlegibles = [];
   const mercados = Array.isArray(evento.markets) ? evento.markets : [];
   const filas = [];
   let ilegibles = 0;
@@ -269,10 +288,18 @@ function filasDeEvento(evento, { semilla = null } = {}) {
     // Un hijo de MENCIÓN dentro de un evento de rangos no existe en la práctica,
     // pero si aparece no se cuela por heredar el título del padre.
     if (excluyeTitulo(raw && raw.question)) { ilegibles++; continue; }
-    const rango = rangoDeMercado(raw);
+    let rango = rangoDeMercado(raw);
+    // En una escalera, el número pelado es el umbral: "$5B" = [5B, ∞).
+    if (rango && escalera && rango.forma === 'puntual') {
+      rango = escalera === 'arriba' ? { ...rango, high: null, forma: 'umbral' } : { ...rango, low: null, forma: 'umbral' };
+    }
     const m = normalizaMercado(raw);
     const marketId = raw && (raw.conditionId || raw.condition_id) ? String(raw.conditionId || raw.condition_id) : null;
-    if (!rango || !m || !marketId) { ilegibles++; continue; }
+    if (!rango || !m || !marketId) {
+      ilegibles++;
+      etiquetasIlegibles.push(String((raw && (raw.groupItemTitle || raw.question)) || '').slice(0, 80));
+      continue;
+    }
     const res = m.cerrado ? outcomeResuelto(m) : null;
     filas.push({
       market_id: marketId,
@@ -284,6 +311,7 @@ function filasDeEvento(evento, { semilla = null } = {}) {
       range_low: rango.low,
       range_high: rango.high,
       range_unit: rango.unidad,
+      range_kind: escalera ? 'umbral' : 'cajon',
       symbol: sim.symbol,
       symbol_via: sim.via,
       kpi_name: kpi,
@@ -301,8 +329,8 @@ function filasDeEvento(evento, { semilla = null } = {}) {
       _raw: raw,
     });
   }
-  if (filas.length < MIN_RANGOS_POR_EVENTO) return { motivo: 'sin_rangos', filas: [], ilegibles };
-  return { motivo: 'ok', filas, ilegibles };
+  if (filas.length < MIN_RANGOS_POR_EVENTO) return { motivo: 'sin_rangos', filas: [], ilegibles, etiquetasIlegibles };
+  return { motivo: 'ok', filas, ilegibles, etiquetasIlegibles };
 }
 
 // ─────────────────── reporte de la corrida ───────────────────
@@ -323,6 +351,7 @@ function conteos(filas, ahoraMs) {
     resueltos: filas.filter((f) => f.resolved).length,
     sin_symbol: filas.filter((f) => !f.symbol).length,
     sin_token_yes: filas.filter((f) => !f.yes_token_id).length,
+    eventos_escalera: new Set(filas.filter((f) => f.range_kind === 'umbral').map((f) => f.event_slug)).size,
   };
 }
 
@@ -384,14 +413,18 @@ function markdownEventos(filas, { titulo = 'Mercados KPI abiertos (Polymarket)',
     for (const f of [...filasEv].sort(ordenCajon)) {
       out.push(`| ${fmtRango(f)} | ${fmtPrecio(f.price_yes_latest)} | ${fmtPrecio(f.price_yes_first_seen)} | ${fmtPrecio(f.price_yes_t24h)} | ${f.volume === null || f.volume === undefined ? '—' : Math.round(f.volume)} | ${f.liquidity === null || f.liquidity === undefined ? '—' : Math.round(f.liquidity)} |`);
     }
-    const suma = filasEv.reduce((a, f) => a + (Number(f.price_yes_latest) || 0), 0);
-    out.push('', `Σ Yes = ${suma.toFixed(3)}`, '');
+    if (e.range_kind === 'umbral') {
+      out.push('', 'Escalera de umbrales: cada Yes es "más allá de X", no suman 1.', '');
+    } else {
+      const suma = filasEv.reduce((a, f) => a + (Number(f.price_yes_latest) || 0), 0);
+      out.push('', `Σ Yes = ${suma.toFixed(3)}`, '');
+    }
   }
   return out.join('\n') + '\n';
 }
 
 export {
-  SEMILLAS_KPI, MIN_RANGOS_POR_EVENTO, EXCLUSIONES, ALIAS_KPI,
+  PERIODO_FISCAL, SEMILLAS_KPI, MIN_RANGOS_POR_EVENTO, EXCLUSIONES, ALIAS_KPI,
   excluyeTitulo, parseaRango, leeNumero, rangoDeMercado, extraeSimboloKpi, kpiDeTitulo,
   precioYesActual, filasDeEvento, conteos, veredictoFrontera, markdownEventos, fmtRango, num,
 };

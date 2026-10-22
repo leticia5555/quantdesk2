@@ -17,6 +17,7 @@ create table if not exists pm_kpi_markets (
    range_low               numeric,            -- null en '<x'
    range_high              numeric,            -- null en 'x+'
    range_unit              text,               -- '%' | '$' | 'bps' | 'pp' | null (absoluto)
+   range_kind              text,               -- 'cajon' (excluyentes) | 'umbral' (escalera "above __")
    symbol                  text,
    symbol_via              text,               -- 'ticker' | 'alias'
    kpi_name                text,

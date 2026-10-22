@@ -17,7 +17,7 @@ import {
 import { cosechaKpi, markdownSeco } from '../api/_lib/earnings-kpi-cosecha.js';
 import { FRASES_BUSQUEDA } from '../api/_lib/earnings-beat.js';
 import {
-  EVENTO_MA, EVENTO_DKS, EVENTO_BEAT, EVENTO_MENCION, EVENTO_AZURE_SIN_RANGOS, busqueda,
+  EVENTO_MA, EVENTO_DKS, EVENTO_BEAT, EVENTO_MENCION, EVENTO_AZURE_SIN_RANGOS, EVENTO_MUSK, EVENTO_ESCALERA, busqueda,
 } from './fixtures/pm-kpi-eventos.mjs';
 
 let failures = 0;
@@ -78,6 +78,8 @@ ok(extraeSimboloKpi('DICK’S comparable sales Q2?').symbol === 'DKS', '"DICK’
 ok(extraeSimboloKpi('Target comparable sales Q3?').symbol === 'TGT', '"Target" → TGT');
 ok(extraeSimboloKpi('Progressive combined ratio September?').symbol === 'PGR', '"Progressive" → PGR');
 ok(extraeSimboloKpi('Revenue growth (GAAP) Q3?').symbol === null, '"(GAAP)" no es ticker');
+ok(extraeSimboloKpi('Salesforce Q3 current RPO growth (CC)?').symbol === 'CRM', '"(CC)" = constant currency, no ticker → Salesforce = CRM');
+ok(extraeSimboloKpi('AutoZone Q1 domestic same store sales growth?').symbol === 'AZO', 'AutoZone → AZO');
 ok(kpiDeTitulo('Mastercard (MA) cross-border volume growth Q3 2026?') === 'Mastercard (MA) cross-border volume growth Q3 2026', 'kpi_name: título sin "?"');
 ok(kpiDeTitulo('Target comparable sales Q3: 1% to 2%?') === 'Target comparable sales Q3', 'kpi_name: sin el rango', kpiDeTitulo('Target comparable sales Q3: 1% to 2%?'));
 
@@ -109,7 +111,20 @@ ok(dk.filas[0].symbol === 'DKS', "DKS por alias (DICK'S)");
 
 ok(filasDeEvento(EVENTO_BEAT).motivo === 'beat_quarterly_earnings', 'evento beat/miss → excluido con motivo');
 ok(filasDeEvento(EVENTO_MENCION).motivo === 'mencion', 'evento de mención → excluido con motivo');
-ok(filasDeEvento(EVENTO_AZURE_SIN_RANGOS).motivo === 'sin_rangos', '"Azure outage" (1 mercado, sin rango) → sin_rangos');
+ok(filasDeEvento(EVENTO_AZURE_SIN_RANGOS).motivo === 'sin_periodo_fiscal', '"Azure outage by December 31" → fuera (no es un periodo fiscal)');
+ok(filasDeEvento({ ...EVENTO_AZURE_SIN_RANGOS, title: 'Azure outage in Q4?' }).motivo === 'sin_rangos', 'con periodo pero 1 mercado sin rango → sin_rangos');
+ok(filasDeEvento(EVENTO_MUSK).motivo === 'sin_periodo_fiscal', '"Elon Musk Net Worth on October 31?" → fuera aunque tenga rangos');
+ok(filasDeEvento({ ...EVENTO_MA, title: 'Tesla deliveries this quarter?' }).motivo === 'ok', '"this quarter" cuenta como periodo fiscal');
+ok(filasDeEvento({ ...EVENTO_MA, title: 'Microsoft Azure revenue growth FY26?' }).motivo === 'ok', '"FY26" cuenta como periodo fiscal');
+
+const esc = filasDeEvento(EVENTO_ESCALERA);
+ok(esc.motivo === 'ok' && esc.filas.every((f) => f.range_kind === 'umbral'), 'escalera "above __" → range_kind umbral');
+ok(eq(esc.filas.map((f) => [f.range_low, f.range_high]), [[200e6, null], [225e6, null], [250e6, null]]),
+  'en una escalera "$225M" = [225M, ∞), no un valor puntual', JSON.stringify(esc.filas.map((f) => [f.range_low, f.range_high])));
+ok(esc.filas[0].range_unit === '$' && esc.filas[0].symbol === 'CRWD', 'unidad $ y símbolo por alias');
+ok(ma.filas.every((f) => f.range_kind === 'cajon'), 'evento de cajones → range_kind cajon');
+ok(/no suman 1/.test(markdownEventos(esc.filas.map((f) => ({ ...f, end_date: '2026-12-02T00:00' }))))
+  && !/Σ Yes/.test(markdownEventos(esc.filas)), 'el markdown NO suma los Yes de una escalera');
 
 const disputa = { ...EVENTO_MA, markets: EVENTO_MA.markets.map((m) => ({ ...m, closed: true })) };
 ok(filasDeEvento(disputa).filas.every((f) => !f.resolved), 'cerrado sin 0/1 limpio (disputa) → NO resuelto');
@@ -153,7 +168,8 @@ function dobleGamma({ porSemilla = {}, eventos = {}, falla422En = null } = {}) {
 }
 const clobVacio = async () => ({ status: 'ok', http: 200, body: { history: [] } });
 const TODOS = { [EVENTO_MA.slug]: EVENTO_MA, [EVENTO_DKS.slug]: EVENTO_DKS, [EVENTO_BEAT.slug]: EVENTO_BEAT,
-  [EVENTO_MENCION.slug]: EVENTO_MENCION, [EVENTO_AZURE_SIN_RANGOS.slug]: EVENTO_AZURE_SIN_RANGOS };
+  [EVENTO_MENCION.slug]: EVENTO_MENCION, [EVENTO_AZURE_SIN_RANGOS.slug]: EVENTO_AZURE_SIN_RANGOS,
+  [EVENTO_MUSK.slug]: EVENTO_MUSK };
 
 console.log('cosechaKpi en seco');
 const g1 = dobleGamma({
@@ -162,23 +178,25 @@ const g1 = dobleGamma({
     'volume growth': [EVENTO_MA],                    // duplicado: dedupe por slug
     'comparable sales': [EVENTO_DKS, EVENTO_BEAT],
     'Azure': [EVENTO_MENCION, EVENTO_AZURE_SIN_RANGOS],
+    'net adds': [EVENTO_MUSK],
   },
   eventos: TODOS,
 });
 const seco = await cosechaKpi({ gamma: g1, clob: clobVacio, db: null, ahora: new Date(AHORA) });
 ok(seco.seco === true && seco.escritura === undefined, 'en seco: no hay escritura');
 ok(seco.frontera.estado === 'ok', 'frontera ok');
-ok(seco.descubrimiento.eventos_unicos === 5, 'dedupe por event_slug: 5 únicos', seco.descubrimiento.eventos_unicos);
+ok(seco.descubrimiento.eventos_unicos === 6, 'dedupe por event_slug: 6 únicos', seco.descubrimiento.eventos_unicos);
 // 'volume growth' va antes que 'cross-border' en SEMILLAS_KPI: se queda el evento.
 ok(seco.por_semilla['volume growth'].nuevos === 1 && seco.por_semilla['cross-border'].eventos_crudos === 1
   && seco.por_semilla['cross-border'].nuevos === 0, 'semilla duplicada: lo vio (1) pero no aporta nuevos (0)');
 ok(seco.por_semilla['deliveries'].eventos_crudos === 0, 'semilla con 0 → se reporta en 0, no desaparece');
 ok(Object.keys(seco.por_semilla).length === 15, 'las 15 semillas en el reporte');
 ok(seco.conteos.eventos === 2 && seco.conteos.rangos === 9, 'conteos: 2 eventos KPI, 9 rangos', JSON.stringify(seco.conteos));
-ok(seco.filtro.motivos.beat_quarterly_earnings === 1 && seco.filtro.motivos.mencion === 1 && seco.filtro.motivos.sin_rangos === 1,
+ok(seco.filtro.motivos.beat_quarterly_earnings === 1 && seco.filtro.motivos.mencion === 1 && seco.filtro.motivos.sin_periodo_fiscal === 2,
   'motivos de exclusión contados', JSON.stringify(seco.filtro.motivos));
 ok(seco.por_semilla['comparable sales'].eventos_kpi === 1, 'por semilla: eventos KPI aceptados');
-ok(seco.hidratacion.ok === 5, 'hidratación por slug: 5');
+ok(seco.hidratacion.ok === 6, 'hidratación por slug: 6');
+ok(seco.filtro.cajones_ilegibles === 0, 'ilegibles: solo cuentan los de eventos aceptados (los de menciones no)');
 const md = markdownSeco(seco);
 ok(/Semillas con 0 eventos:\*\* .*deliveries/.test(md), 'el markdown NOMBRA las semillas en 0');
 ok(/\| rangos \(cajones\) \| 9 \|/.test(md), 'el markdown trae el conteo de rangos');

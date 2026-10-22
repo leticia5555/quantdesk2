@@ -40,6 +40,7 @@ const SCHEMA = [
      range_low               numeric,            -- null en '<x'
      range_high              numeric,            -- null en 'x+'
      range_unit              text,               -- '%' | '$' | 'bps' | 'pp' | null (absoluto)
+     range_kind              text,               -- 'cajon' (excluyentes) | 'umbral' (escalera "above __")
      symbol                  text,
      symbol_via              text,               -- 'ticker' | 'alias'
      kpi_name                text,
@@ -85,7 +86,7 @@ async function ensureSchema() {
 // ─────────────────── escritura ───────────────────
 
 const COLS = ['market_id', 'gamma_market_id', 'event_slug', 'event_title', 'question', 'range_label',
-  'range_low', 'range_high', 'range_unit', 'symbol', 'symbol_via', 'kpi_name', 'end_date', 'created_at_pm',
+  'range_low', 'range_high', 'range_unit', 'range_kind', 'symbol', 'symbol_via', 'kpi_name', 'end_date', 'created_at_pm',
   'yes_token_id', 'price_yes_first_seen', 'price_yes_first_seen_at', 'price_yes_latest', 'volume', 'liquidity',
   'last_snapshot_at', 'resolved', 'winning_range', 'semilla', 'raw'];
 
@@ -103,6 +104,7 @@ function preparaFilaKpi(f, ahora) {
     range_low: f.range_low ?? null,
     range_high: f.range_high ?? null,
     range_unit: f.range_unit || null,
+    range_kind: f.range_kind || null,
     symbol: f.symbol || null,
     symbol_via: f.symbol_via || null,
     kpi_name: f.kpi_name || null,
@@ -145,6 +147,7 @@ function sqlUpsertMercados(filas) {
        range_low = excluded.range_low,
        range_high = excluded.range_high,
        range_unit = excluded.range_unit,
+       range_kind = coalesce(excluded.range_kind, pm_kpi_markets.range_kind),
        symbol = coalesce(excluded.symbol, pm_kpi_markets.symbol),
        symbol_via = coalesce(excluded.symbol_via, pm_kpi_markets.symbol_via),
        kpi_name = coalesce(excluded.kpi_name, pm_kpi_markets.kpi_name),
@@ -174,7 +177,7 @@ async function upsertMercadosKpi(filas) {
   const validas = (filas || []).filter((f) => f && f.market_id && f.event_slug);
   let insertados = 0;
   let total = 0;
-  // De a 100: 25 columnas × 100 = 2500 parámetros, holgado bajo el tope.
+  // De a 100: 26 columnas × 100 = 2600 parámetros, holgado bajo el tope.
   for (let i = 0; i < validas.length; i += 100) {
     const { query, params } = sqlUpsertMercados(validas.slice(i, i + 100));
     const rows = await sql(query, params);
@@ -301,7 +304,7 @@ async function statsKpi() {
 // Para ?job=kpi&format=md: cajones de eventos con algo abierto.
 async function leeAbiertos() {
   return sql(
-    `select event_slug, event_title, symbol, kpi_name, range_label, range_low, range_high, range_unit,
+    `select event_slug, event_title, symbol, kpi_name, range_label, range_low, range_high, range_unit, range_kind,
             to_char(end_date at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI') as end_date,
             price_yes_first_seen, price_yes_latest, price_yes_t24h, volume, liquidity, resolved
        from pm_kpi_markets

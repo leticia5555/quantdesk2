@@ -195,12 +195,16 @@ async function cosechaKpi({ gamma, clob, db = null, ahora = new Date(), presupue
   const porSemillaAceptados = {};
   let filas = [];
   let ilegibles = 0;
+  const muestraIlegibles = [];
   const vistos = new Set();
   for (const e of hid.eventos) {
     const r = filasDeEvento(e.evento, { semilla: e.semilla });
     motivos[r.motivo] = (motivos[r.motivo] || 0) + 1;
-    ilegibles += r.ilegibles;
     if (r.motivo !== 'ok') continue;
+    // Solo cuentan los cajones ilegibles de eventos ACEPTADOS: los de eventos
+    // excluidos (menciones, "Azure outage") no son rangos que se perdieron.
+    ilegibles += r.ilegibles;
+    for (const et of r.etiquetasIlegibles || []) if (muestraIlegibles.length < 25) muestraIlegibles.push(`${e.slug}: ${et}`);
     if (e.semilla) porSemillaAceptados[e.semilla] = (porSemillaAceptados[e.semilla] || 0) + 1;
     for (const f of r.filas) {
       if (vistos.has(f.market_id)) continue;   // un cajón en dos eventos: no debería, pero no se duplica
@@ -217,7 +221,7 @@ async function cosechaKpi({ gamma, clob, db = null, ahora = new Date(), presupue
     descubrimiento: { eventos_unicos: desc.eventos.size, abiertos_conocidos: conocidos, requests: desc.intentos.length,
       requests_ok: desc.intentos.filter((i) => i.status === 'ok').length },
     hidratacion: hid.conteo,
-    filtro: { motivos, cajones_ilegibles: ilegibles },
+    filtro: { motivos, cajones_ilegibles: ilegibles, muestra_ilegibles: muestraIlegibles },
     conteos: conteos(filas, ahoraMs),
   };
 
@@ -270,7 +274,7 @@ function muestraEventos(filas) {
   for (const f of filas) {
     if (!m.has(f.event_slug)) {
       m.set(f.event_slug, { slug: f.event_slug, titulo: f.event_title, symbol: f.symbol, end_date: f.end_date,
-        semilla: f.semilla, rangos: 0, con_precio: 0, resuelto: true });
+        semilla: f.semilla, tipo: f.range_kind, rangos: 0, con_precio: 0, resuelto: true });
     }
     const e = m.get(f.event_slug);
     e.rangos++;
@@ -284,7 +288,7 @@ function muestraEventos(filas) {
 function markdownSeco(r) {
   const out = ['## Cosecha KPI — corrida en seco', '', `Ahora: \`${r.ahora}\` · sin escribir a Postgres`, ''];
   out.push(`**Frontera:** ${r.frontera.estado}${r.frontera.motivo ? ' — ' + r.frontera.motivo : ''}`, '');
-  out.push('| semilla | status | páginas | eventos devueltos | nuevos (dedupe) | eventos KPI aceptados |');
+  out.push('| semilla | status | páginas | eventos devueltos | nuevos (dedupe) | eventos KPI aceptados (de sus nuevos) |');
   out.push('|---|---|---:|---:|---:|---:|');
   for (const [s, v] of Object.entries(r.por_semilla || {})) {
     out.push(`| ${s} | ${v.status ?? '—'} | ${v.paginas} | ${v.eventos_crudos} | ${v.nuevos} | ${v.eventos_kpi ?? '—'} |`);
@@ -293,7 +297,10 @@ function markdownSeco(r) {
   out.push('', ceros.length ? `**Semillas con 0 eventos:** ${ceros.join(', ')}` : 'Ninguna semilla devolvió 0 eventos.', '');
   if (r.corte_422) { out.push('**Corte por 422:** `' + JSON.stringify(r.corte_422) + '`', ''); return out.join('\n') + '\n'; }
   if (r.hidratacion) out.push(`Hidratación /events?slug=: \`${JSON.stringify(r.hidratacion)}\``, '');
-  if (r.filtro) out.push(`Filtro (eventos por motivo): \`${JSON.stringify(r.filtro.motivos)}\` · cajones ilegibles: ${r.filtro.cajones_ilegibles}`, '');
+  if (r.filtro) {
+    out.push(`Filtro (eventos por motivo): \`${JSON.stringify(r.filtro.motivos)}\` · cajones ilegibles en eventos aceptados: ${r.filtro.cajones_ilegibles}`, '');
+    if ((r.filtro.muestra_ilegibles || []).length) out.push('Ilegibles (muestra): ' + r.filtro.muestra_ilegibles.map((x) => '`' + x + '`').join(', '), '');
+  }
   if (r.conteos) {
     const c = r.conteos;
     out.push('| conteo | n |', '|---|---:|');
@@ -304,13 +311,14 @@ function markdownSeco(r) {
     out.push(`| con end_date futura | ${c.con_end_date_futura} (en ${c.eventos_con_end_date_futura} eventos) |`);
     out.push(`| resueltos | ${c.resueltos} |`);
     out.push(`| sin símbolo | ${c.sin_symbol} |`);
-    out.push(`| sin token Yes | ${c.sin_token_yes} |`, '');
+    out.push(`| sin token Yes | ${c.sin_token_yes} |`);
+    out.push(`| eventos escalera ("above __", range_kind='umbral') | ${c.eventos_escalera} |`, '');
   }
   if (r.clob_en_seco) out.push(`CLOB /prices-history (cajones abiertos, ventana ${VENTANA_CLOB_DIAS} d): \`${JSON.stringify(r.clob_en_seco)}\``, '');
   if (r.eventos && r.eventos.length) {
-    out.push('| evento | símbolo | cierra | semilla | rangos | con precio | resuelto |', '|---|---|---|---|---:|---:|---|');
+    out.push('| evento | símbolo | cierra | semilla | tipo | rangos | con precio | resuelto |', '|---|---|---|---|---|---:|---:|---|');
     for (const e of r.eventos) {
-      out.push(`| ${String(e.titulo || e.slug).replace(/\|/g, '/')} | ${e.symbol || '—'} | ${e.end_date ? String(e.end_date).slice(0, 10) : '—'} | ${e.semilla || '—'} | ${e.rangos} | ${e.con_precio} | ${e.resuelto ? 'sí' : 'no'} |`);
+      out.push(`| ${String(e.titulo || e.slug).replace(/\|/g, '/')} | ${e.symbol || '—'} | ${e.end_date ? String(e.end_date).slice(0, 10) : '—'} | ${e.semilla || '—'} | ${e.tipo} | ${e.rangos} | ${e.con_precio} | ${e.resuelto ? 'sí' : 'no'} |`);
     }
     out.push('');
   }

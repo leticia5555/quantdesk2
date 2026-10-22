@@ -39,7 +39,12 @@ evento completo. Cada corrida re-hidrata también los eventos abiertos ya
 conocidos, aunque la búsqueda ya no los devuelva (así se captura la resolución).
 
 Exclusiones (con motivo, contadas): `beat … quarterly earnings` (tiene su
-cosecha), menciones ("Will X say…"), y eventos con menos de 2 cajones legibles.
+cosecha), menciones ("Will X say…"), títulos sin periodo fiscal (Q1–Q4 /
+quarter / FY: deja fuera "Elon Musk Net Worth on …", que la semilla `net adds`
+traía), y eventos con menos de 2 cajones legibles.
+
+`range_kind`: `cajon` (rangos excluyentes, los Yes suman ~1) o `umbral`
+(escaleras "Will X be above __?": cada hijo es "más de X", no suman 1).
 
 ## Candados
 

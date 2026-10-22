@@ -71,6 +71,21 @@ export const EVENTO_AZURE_SIN_RANGOS = {
   markets: [{ ...cajon('0xaz1', 'December 31', 0.2, { question: 'Azure outage by December 31?' }) }],
 };
 
+// Rangos, pero no de un periodo fiscal: la semilla "net adds" los trajo en la
+// corrida en seco real.
+export const EVENTO_MUSK = {
+  slug: 'elon-musk-net-worth-on-october-31',
+  title: 'Elon Musk Net Worth on October 31?',
+  markets: [cajon('0xem1', '<$400B', 0.2), cajon('0xem2', '$400B to $500B', 0.5), cajon('0xem3', '$500B+', 0.3)],
+};
+
+// Escalera: cada hijo es "above X", con la etiqueta como número pelado.
+export const EVENTO_ESCALERA = {
+  slug: 'will-crowdstrike-q3-net-new-arr-be-above',
+  title: 'Will CrowdStrike Q3 net new ARR be above __?',
+  markets: [cajon('0xcr1', '$200M', 0.9), cajon('0xcr2', '$225M', 0.6), cajon('0xcr3', '$250M', 0.25)],
+};
+
 // Respuesta de /public-search: los eventos pueden venir con los mercados
 // recortados; la cosecha re-hidrata por slug.
 export function busqueda(eventos) {
