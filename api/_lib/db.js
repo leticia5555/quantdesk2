@@ -392,4 +392,8 @@ async function ensureSchema() {
   schemaReady = true;
 }
 
-export { sql, sqlBatch, ensureSchema, sqlEndpoint, rowsToObjects, coerce };
+// `SCHEMA` se exporta para que las pruebas creen las tablas con LA DDL REAL
+// en vez de con una copia escrita a mano. Una copia a mano no puede
+// contradecirme: si la DDL cambia y la consulta deja de cuadrar, una prueba
+// contra una copia sigue en verde y el que se entera es producción.
+export { sql, sqlBatch, ensureSchema, sqlEndpoint, rowsToObjects, coerce, SCHEMA };
