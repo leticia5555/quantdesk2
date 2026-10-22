@@ -639,7 +639,7 @@ export function candidatosParaEdgar({
   const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
   const diagnostico = {
     filas: veredictos.length, sin_precio: 0, sin_acciones: 0,
-    verificadas: 0, no_usd: 0, ya_con_edgar: 0, candidatos: 0,
+    verificadas: 0, verificadas_sin_contraste: 0, no_usd: 0, ya_con_edgar: 0, candidatos: 0,
   };
   const candidatos = [];
   // ── POR QUÉ QUEDÓ FUERA CADA UNO, CON NOMBRE ──────────────────────────
@@ -654,7 +654,34 @@ export function candidatosParaEdgar({
     const u = universoPorSymbol.get(v.symbol) || {};
     if (!(n(e.precio_usd) > 0)) { diagnostico.sin_precio++; fuera(v.symbol, 'sin precio en USD'); continue; }
     if (!(n(e.acciones) > 0)) { diagnostico.sin_acciones++; fuera(v.symbol, 'sin conteo de acciones de Finnhub'); continue; }
-    if (v.estado === 'verificada') { diagnostico.verificadas++; continue; }
+    // ── EL LAZO: "VERIFICADA" NO PUEDE SER MOTIVO PARA NO PREGUNTAR ────
+    // Acá decía `if (v.estado === 'verificada') continue;` a secas, y eso
+    // cerraba un círculo del que SPCX no podía salir:
+    //
+    //   · `veredictoCapUs` la daba por verificada porque EDGAR no tenía
+    //     conteo con qué contradecir a Finnhub;
+    //   · y este filtro no la mandaba a EDGAR porque estaba verificada.
+    //
+    // O sea que el cruce que #320 agregó NUNCA iba a correr para ella, y
+    // ningún job lo iba a arreglar: `?job=acciones-edgar` jamás la miraba.
+    // Peor, salía por acá ANTES de la lista de `excluidos`, así que tampoco
+    // aparecía entre los descartados: desaparecía en un contador (Lety,
+    // 2026-10-22).
+    //
+    // Una verificada SIN conteo de EDGAR está verificada por el par de
+    // Finnhub, que concuerda consigo mismo por construcción. Eso no es una
+    // verificación, es una tautología — y es exactamente lo que #320 dijo que
+    // no alcanza. Así que se pregunta igual: lo que no se puede es dar por
+    // confirmado lo que nadie confirmó.
+    //
+    // Las que SÍ tienen conteo de EDGAR siguen saliendo por acá: ésas se
+    // cruzaron de verdad y repreguntarlas gastaría la cuota de la SEC para
+    // confirmar lo que ya sabemos.
+    const yaCruzada = n(u.acciones_edgar_millones) > 0 || n(u.acciones_edgar_suma_millones) > 0;
+    if (v.estado === 'verificada' && yaCruzada) { diagnostico.verificadas++; continue; }
+    if (v.estado === 'verificada') {
+      diagnostico.verificadas_sin_contraste = (diagnostico.verificadas_sin_contraste || 0) + 1;
+    }
     if (v.moneda !== 'USD') { diagnostico.no_usd++; fuera(v.symbol, `la cap declarada está en ${v.moneda || 'otra moneda'}`); continue; }
     // ── LA REPREGUNTA POR CAMBIO DE REGLA, ACOTADA ─────────────────────
     // Cuando la regla cambia, lo que la regla VIEJA dio por perdido hay que
