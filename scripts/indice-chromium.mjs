@@ -568,19 +568,24 @@ try {
   // La gráfica se queda con lo que SOBRA, así que su alto depende del
   // contenido de arriba. Lo que se exige es que siga siendo una gráfica
   // —no un listón— no un número fijo que mañana nadie pueda cumplir.
-  // La cota baja de 280 a 255, y es un costo DECLARADO de R9: el menú
-  // compartido mide ~40 px en escritorio (ya compactado: con los 44 px de tap
-  // medía 57) y en esta ficha esos píxeles salen del alto de la gráfica,
-  // porque la gráfica es lo que se queda con lo que sobra. Medido: 307 sin
-  // menú, 267 con él.
+  // La cota baja de 280 a 275, y los 5 px son el costo DECLARADO de R9: el
+  // menú compartido mide 41 px en escritorio y en esta ficha esos píxeles
+  // salen del alto de la gráfica, porque la gráfica es lo que se queda con lo
+  // que sobra. Medido: 307 sin menú, 284 con él.
   //
-  // Se baja la cota en vez de recortar otra cosa de la página a propósito: lo
+  // DE CAMINO SE RECUPERARON 17 px. La primera versión de esta nota decía
+  // "267 con menú" y bajaba la cota a 255, dando por sentado que el menú
+  // medía lo que medía. No: `.qdnav-tabs` es un `<nav>` y el `nav{padding:8px 0}`
+  // de la página se le estaba aplicando, así que la tira de escritorio medía
+  // 58 px en vez de 41 en TODAS las pantallas. El componente ahora resetea lo
+  // que usa (ver el comentario del reset en `qd-nav.js`). Un número medido
+  // tampoco es una explicación: hay que saber POR QUÉ mide eso.
+  //
+  // No se recortó nada de la página para los 5 px que faltan, a propósito: lo
   // de arriba —nivel, % del día, los nueve periodos— es lo que la pantalla
-  // viene a decidir, y encogerlo para recuperar 13 px cambiaría lo que se
-  // lee. 267 px sigue siendo una gráfica; el guardia contra el listón sigue
-  // vivo, sólo que calibrado a la pantalla que ahora existe.
+  // viene a decidir, y encogerlo cambiaría lo que se lee.
   chequeo('y la gráfica sigue siendo una gráfica, no un listón',
-    caja.alto >= 255, String(caja.alto));
+    caja.alto >= 275, String(caja.alto));
 
   // ── EL ALTO A 1440×1000 ─────────────────────────────────────────────
   // La regla 8 pide escritorio sin scroll, y el mapa (R3(c)) lo cumple. Esta

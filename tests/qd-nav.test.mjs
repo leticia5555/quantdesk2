@@ -28,11 +28,42 @@ test('las cinco pestañas del encargo, en su orden', () => {
     ['Mercado', 'Noticias', 'La Liga', 'Insiders', 'Herramientas']);
 });
 
-test('en celular la barra de abajo son CUATRO: Herramientas va arriba', () => {
+test('en celular la barra de abajo son CUATRO, y Herramientas no es una de ellas', () => {
   const abajo = NAV.QD_NAV_TABS.filter((t) => t.movil);
   assert.equal(abajo.length, 4);
   assert.ok(!abajo.some((t) => t.id === 'herramientas'),
     'Herramientas no va en la barra de abajo (encargo R9, punto 1)');
+});
+
+test('y lo que no está en la barra de abajo SÍ está en el pie de la hoja', () => {
+  // La tira de celular se quedó sin pestañas (*"solo una tira de ~44 px con
+  // logo y lupa"*), así que el pie de la hoja del buscador es la ÚNICA puerta
+  // que le queda a "Herramientas" en el teléfono. Sin ella, `/app`,
+  // `/terminal` y `/historia` se vuelven inalcanzables desde el celular, y la
+  // regla uno del encargo es "no borres ninguna página ni función".
+  const pie = NAV.qdNavHtmlHojaPie();
+  for (const t of NAV.QD_NAV_TABS.filter((x) => !x.movil)) {
+    assert.ok(pie.includes('href="' + t.href + '"'),
+      `"${t.texto}" no tiene cómo abrirse en el teléfono: no está abajo ni en el pie`);
+  }
+  // Y al revés: lo que ya está al alcance del pulgar no se repite.
+  for (const t of NAV.QD_NAV_TABS.filter((x) => x.movil)) {
+    assert.ok(!pie.includes('href="' + t.href + '"'),
+      `"${t.texto}" ya está en la barra de abajo; repetirlo en el pie es cobrar dos veces`);
+  }
+});
+
+test('el pie sale de QD_NAV_TABS, no de una lista aparte', () => {
+  // Si mañana una pestaña entra o sale de la barra de abajo, el pie se tiene
+  // que acomodar solo. Se comprueba moviendo "Herramientas" a `movil:true` y
+  // viendo que el pie se queda vacío.
+  const tab = NAV.QD_NAV_TABS.find((t) => t.id === 'herramientas');
+  const antes = tab.movil;
+  try {
+    tab.movil = true;
+    assert.equal(NAV.qdNavHtmlHojaPie(), '',
+      'con las cinco abajo, el pie no tiene nada que mostrar');
+  } finally { tab.movil = antes; }
 });
 
 test('cada pestaña lleva a una ruta que existe en vercel.json', async () => {
@@ -122,6 +153,66 @@ test('el CSS declara las piezas de las que dependen las doce páginas', () => {
   assert.match(css, /\.qdnav-tab\{flex:0 0 auto;white-space:nowrap/);
   // La barra de abajo no existe en escritorio.
   assert.match(css, /@media \(min-width:1000px\)\{[\s\S]*\.qdnav-abajo\{display:none\}/);
+});
+
+test('el reset declara lo que el menú usa, porque la página puede pintarlo', () => {
+  const css = NAV.QD_NAV_CSS;
+  // El agujero no eran los colores: el menú usa `<header>`, `<nav>`, `<a>`,
+  // `<button>` e `<input>`, y las doce páginas tienen reglas POR ETIQUETA
+  // para esos elementos. El `nav{padding:18px 0;position:sticky;top:0}` de
+  // `/inicio` le metía 18+18 px de alto a las pestañas Y dejaba la barra de
+  // abajo fijada arriba y abajo a la vez, de 851 px.
+  const reset = css.match(/\.qdnav,\.qdnav \*,\.qdnav-abajo,\.qdnav-abajo \*\{[\s\S]*?\}/);
+  assert.ok(reset, 'el reset defensivo tiene que existir');
+  for (const prop of ['padding:0', 'margin:0', 'border:0', 'position:static',
+    'top:auto', 'bottom:auto', 'backdrop-filter:none']) {
+    assert.ok(reset[0].includes(prop), `el reset no declara ${prop}`);
+  }
+  // Y las dos barras declaran sus cuatro lados: un lado sin declarar es un
+  // lado que la página puede poner.
+  assert.match(css, /\.qdnav\{[\s\S]*?position:fixed;top:0;left:0;right:0;bottom:auto/);
+  assert.match(css, /\.qdnav-abajo\{position:fixed;left:0;right:0;bottom:0;top:auto/);
+});
+
+test('en celular arriba NO hay pestañas, y la tira mide el tap', () => {
+  const css = NAV.QD_NAV_CSS;
+  // `QD_NAV_CSS` es el CSS ya unido, sin las comillas del arreglo: el bloque
+  // cierra con una llave sola al principio de su línea.
+  const movil = css.match(/@media \(max-width:999px\)\{[\s\S]*?\n\}/);
+  assert.ok(movil, 'el bloque de celular tiene que existir');
+  assert.match(movil[0], /\.qdnav-tabs\{display:none\}/);
+  assert.match(movil[0], /min-height:calc\(var\(--qdnav-tap\)/);
+  // La lupa es la única forma de buscar en el teléfono.
+  assert.match(movil[0], /\.qdnav-lupa\{display:inline-flex\}/);
+  // Y en escritorio no existe: *"en computadora déjalo como está"*.
+  assert.match(css, /@media \(min-width:1000px\)\{[\s\S]*\.qdnav-lupa\{display:none\}/);
+});
+
+test('la tira se esconde con `transform`, no cambiando su alto', () => {
+  // La razón no es la animación: el hueco que reserva
+  // (`body{padding-top:--qdnav-alto}`) NO puede cambiar, porque si cambiara,
+  // cada dedo que baja re-maquetaría la página — y en `/mercado` eso es
+  // recalcular y redibujar el treemap de 554 cuadros.
+  assert.match(NAV.QD_NAV_CSS, /\.qdnav\.qdnav-oculto\{transform:translateY\(-100%\)\}/);
+  assert.doesNotMatch(NAV.QD_NAV_CSS, /\.qdnav\.qdnav-oculto\{[^}]*(height|display|top:)/);
+  // En escritorio queda clavada incluso si la clase llegara por otro lado.
+  assert.match(NAV.QD_NAV_CSS, /@media \(min-width:1000px\)\{[\s\S]*\.qdnav\{transform:none\}/);
+});
+
+test('el umbral del dedo acumula en vez de perderse', () => {
+  const { readFileSync } = require('node:fs');
+  const src = readFileSync(join(ROOT, 'qd-nav.js'), 'utf8');
+  // Debajo del umbral NO se actualiza la última posición: así un arrastre
+  // lento suma hasta cruzarlo. Si alguien mueve el `set` arriba del `return`,
+  // la tira deja de esconderse con el dedo despacio.
+  assert.match(src,
+    /if \(Math\.abs\(d\) < QD_NAV_UMBRAL\) return;[^\n]*\n\s*if \(ultimos\) ultimos\.set/);
+  // Arriba del todo la tira siempre se ve.
+  assert.match(src, /if \(pos\.y <= QD_NAV_PISO\) return barra\.classList\.remove\('qdnav-oculto'\)/);
+  // El scroll se escucha en captura: hay pantallas donde la ventana no se
+  // mueve y lo que se recorre es un contenedor de adentro (`/mercado`).
+  assert.match(src, /document\.addEventListener\('scroll', alScroll, \{ passive: true, capture: true \}\)/);
+  assert.ok(NAV.QD_NAV_UMBRAL > 0 && NAV.QD_NAV_PISO >= NAV.QD_NAV_UMBRAL);
 });
 
 test('el menú no pide nada al cargar (regla 7) ni habla con un modelo (regla 6)', () => {
