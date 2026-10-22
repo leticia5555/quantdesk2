@@ -25,10 +25,8 @@
 // ═══════════════════════════════════════════════════════════════════════
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { levantaPostgres, binDePostgres, SIN_POSTGRES, FALTA_POSTGRES } from './_postgres.mjs';
 
 import { SQL_MAPA_US } from '../api/mercado-mapa.js';
 import { SCHEMA_PRECIOS_US } from '../api/_lib/mercado-precios.js';
@@ -41,21 +39,6 @@ import { SCHEMA_FORM4, SUCIA_SQL, limpiaDocumento,
 
 const PUERTO = 55433;
 
-/** El directorio de binarios del Postgres instalado, o null. */
-function binDePostgres() {
-  const raices = ['/usr/lib/postgresql', '/usr/local/pgsql', '/opt/homebrew/opt'];
-  for (const raiz of raices) {
-    if (!existsSync(raiz)) continue;
-    for (const v of readdirSync(raiz).sort().reverse()) {
-      const bin = join(raiz, v, 'bin');
-      if (existsSync(join(bin, 'initdb')) && existsSync(join(bin, 'pg_ctl'))) return bin;
-    }
-  }
-  for (const bin of ['/usr/bin', '/usr/local/bin']) {
-    if (existsSync(join(bin, 'initdb')) && existsSync(join(bin, 'pg_ctl'))) return bin;
-  }
-  return null;
-}
 
 /**
  * Los $1/$2/$3 con literales, porque `create table as` no acepta parámetros.
@@ -64,53 +47,12 @@ function binDePostgres() {
  */
 const conLiterales = (q) => q.replace(/\$1/g, "'2026-01-01'").replace(/\$2/g, '23');
 
-const SIN_POSTGRES = process.env.SIN_POSTGRES === '1';
 const BIN = SIN_POSTGRES ? null : binDePostgres();
 
 test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
-  assert.ok(
-    BIN,
-    'no se encontró un Postgres instalado (initdb/pg_ctl). Esta prueba NO se salta sola: ' +
-      'el SQL sin verificar fue exactamente cómo el mapa llegó roto a producción. ' +
-      'Instalá postgresql (apt install postgresql, o brew install postgresql) — ' +
-      'o, si sabés lo que estás haciendo, corré con SIN_POSTGRES=1.',
-  );
+  assert.ok(BIN, FALTA_POSTGRES);
 
-  const dir = mkdtempSync(join(tmpdir(), 'qd-pg-'));
-  const datos = join(dir, 'datos');
-  // initdb se niega a correr como root, así que si lo somos delegamos en un
-  // usuario sin privilegios. Es la misma configuración en los dos casos.
-  const comoRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-  const USUARIO = 'pgtest';
-  const corre = (cmd) => {
-    if (!comoRoot) return execSync(cmd, { encoding: 'utf8', stdio: 'pipe' });
-    return execSync(`su ${USUARIO} -c ${JSON.stringify(cmd)}`, { encoding: 'utf8', stdio: 'pipe' });
-  };
-  if (comoRoot) {
-    try { execSync(`id -u ${USUARIO}`, { stdio: 'ignore' }); }
-    catch { execSync(`useradd -m ${USUARIO}`, { stdio: 'ignore' }); }
-    execSync(`chown -R ${USUARIO} ${dir} && chmod 700 ${dir}`);
-  }
-
-  t.after(() => {
-    try { corre(`${join(BIN, 'pg_ctl')} -D ${datos} -m immediate -w stop`); } catch { /* ya estaba caído */ }
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* da igual */ }
-  });
-
-  corre(`${join(BIN, 'initdb')} -D ${datos} -A trust -U postgres`);
-  corre(
-    `${join(BIN, 'pg_ctl')} -D ${datos} ` +
-      `-o "-k ${dir} -p ${PUERTO} -c listen_addresses=''" -l ${join(dir, 'log')} -w start`,
-  );
-
-  /** Corre SQL y devuelve la salida; lanza con el error de Postgres si falla. */
-  const psql = (sql) =>
-    // `-q` es necesario, no cosmético: sin él psql mezcla las etiquetas de
-    // comando ("INSERT 0 1150", "SELECT 24") con las filas, y el test contaría
-    // ruido como si fueran datos.
-    execFileSync(join(BIN, 'psql'), ['-h', dir, '-p', String(PUERTO), '-U', 'postgres', '-tAq', '-v', 'ON_ERROR_STOP=1'], {
-      input: sql, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-    });
+  const psql = levantaPostgres(t, { bin: BIN, puerto: PUERTO });
 
   await t.test('la DDL real del repo crea el esquema', () => {
     // Si la DDL no corre, lo que siga no prueba nada: se para acá.

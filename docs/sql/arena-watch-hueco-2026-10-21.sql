@@ -32,6 +32,13 @@
 -- Lo más barato es mirar H5 primero: si el bloque 4 está vacío, las otras seis
 -- sobran.
 --
+-- CÓMO CORRERLA SIN ENTRAR A NEON: este mismo diagnóstico vive en
+--   /api/arena-watch?job=diagnostico&dia=2026-10-21&desde=18:00&hasta=19:30
+-- con la llave de lectura, y devuelve los seis bloques en JSON más un
+-- `resumen` por agente. Este archivo queda como la versión para pegar en una
+-- consola, y porque el mapa de hipótesis de arriba es el mismo que el del
+-- endpoint (`_lib/arena-watch-diagnostico.js`).
+--
 -- PREPARADA contra un Postgres real con el DDL de `api/_lib/db.js`, y corrida
 -- con filas de prueba para que ningún bloque quede mudo por un tipo mal puesto.
 -- ════════════════════════════════════════════════════════════════════════
