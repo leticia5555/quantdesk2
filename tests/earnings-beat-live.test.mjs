@@ -253,7 +253,7 @@ ok(/'historial completo: '/.test(card), 'y el historial completo aparece como se
 // como el resto de la tarjeta.
 const iDisc = app.indexOf('function ebLiveDisclaimer(');
 const disc = app.slice(iDisc, app.indexOf('\nfunction ebLiveAviso', iDisc));
-ok(/no una predicción/.test(disc), 'el disclaimer dice que el conteo no es una predicción');
+ok(/El historial es un CONTEO de trimestres pasados, no una predicción/.test(disc), 'el disclaimer dice que el conteo no es una predicción, con "historial" como el resto de la tarjeta');
 ok(/en validación/.test(disc), 'y que QuantDesk está en validación');
 ok(!/smL\(/.test(disc) && !/not a forecast|being validated/.test(disc), 'y va solo en español: sin la copia en inglés');
 
