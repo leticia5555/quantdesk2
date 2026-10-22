@@ -223,13 +223,53 @@ test('la lista para cron-status no lleva alerta: una tarea con fecha no es un ro
 });
 
 // ── EDGAR entra SÓLO como segunda oportunidad ──────────────────────────
-test('si el par de Finnhub ya concuerda, EDGAR no cambia nada', () => {
-  // Las 279 verificadas de la auditoría no se mueven de fuente por haber
-  // agregado un árbitro: nadie reportó que estuvieran rotas.
-  const v = veredictoCapUs({ ...NVDA, edgar: { acciones: 1, fecha_portada: '2025-08-01' } });
+test('si Finnhub concuerda Y EDGAR también, sigue verificada por Finnhub', () => {
+  // Las 279 verificadas de la auditoría no se mueven: cuando las tres
+  // mediciones coinciden, la fuente sigue siendo la declarada.
+  const accNvda = NVDA.acciones * 1e6;  // el conteo que Finnhub implica
+  const v = veredictoCapUs({ ...NVDA, edgar: { acciones: accNvda, fecha_portada: '2025-08-01' } });
   assert.equal(v.estado, 'verificada');
   assert.equal(v.via, 'finnhub');
   assert.equal(v.cap_usd, NVDA.declarada * 1e6);
+});
+
+test('ESTA PRUEBA DECÍA LO CONTRARIO: un EDGAR que discrepa ahora SÍ cambia todo', () => {
+  // Decía: "si el par de Finnhub ya concuerda, EDGAR no cambia nada", y lo
+  // probaba con `edgar: { acciones: 1 }` — un conteo absurdo que se ignoraba.
+  //
+  // El problema es que las dos cifras de Finnhub que "concuerdan" son
+  // `marketCapitalization` y `shareOutstanding × precio`, y Finnhub calcula
+  // su cap A PARTIR de su propio conteo: concuerdan por construcción. Así que
+  // "verificada" quería decir que Finnhub concuerda consigo mismo, y EDGAR
+  // —la medición independiente— nunca llegaba a discrepar.
+  //
+  // SPCX lo puso en evidencia: Finnhub daba ~14,200 M de acciones y $2,101
+  // mil M de cap, coherentes entre sí, mientras el 8-K de EDGAR daba 1,812.5
+  // M. Ocho veces, y el cuadro salía `verificada` (Lety, 2026-10-22).
+  const v = veredictoCapUs({
+    symbol: 'SPCX', moneda: 'USD', declarada: 2_101_000, acciones: 14_215, precio_usd: 147.79,
+    edgar: { acciones: 1_812_500_000, fecha_portada: '2026-09-18' },
+  });
+  assert.equal(v.estado, 'gris_punteado', 'dos mediciones independientes que no cuadran no se pintan');
+  assert.equal(v.via, 'finnhub_vs_edgar');
+  assert.equal(v.cap_usd, null, 'y no se elige cuál está bien');
+  assert.ok(v.auditable, 'es un hallazgo de verdad, no un insumo que falta');
+  // El motivo dice LOS DOS conteos, para poder ir a verificar cuál miente.
+  assert.match(v.motivo, /14,215 millones|14.215 millones/);
+  assert.match(v.motivo, /1,813 millones|1.813 millones|1812/);
+  // Y la causa más probable, que es la que Lety confirmó.
+  assert.match(v.motivo, /VARIAS CLASES/);
+  assert.match(v.motivo, /companyconcept` no trae los hechos con dimensión/);
+});
+
+test('un EDGAR algo viejo NO tumba una verificada: la tolerancia es 10%', () => {
+  // Las acciones son de la portada del trimestre y el precio es de hoy: entre
+  // las dos fechas la empresa recompra y vestea RSUs. Esa deriva no es un
+  // error de nadie, y por eso el umbral de EDGAR es 10% y no el 5% de G2.
+  const accNvda = NVDA.acciones * 1e6;
+  const v = veredictoCapUs({ ...NVDA, edgar: { acciones: accNvda * 0.94, fecha_portada: '2025-08-01' } });
+  assert.equal(v.estado, 'verificada', '6% de deriva no es un conflicto');
+  assert.equal(v.via, 'finnhub');
 });
 
 test('cuando Finnhub no concuerda, EDGAR decide y la fuente lo dice', () => {
@@ -444,8 +484,32 @@ test('capturada_en es el día en que se LEYÓ la cap, y el sello de Yahoo va apa
   const vale = REFERENCIAS.referencias.find((r) => r.clave === 'VALE');
   assert.equal(vale.capturada_en, '2026-09-23');
   assert.equal(vale.cotizacion_marcada_en, '2026-09-18');
-  for (const r of REFERENCIAS.referencias) {
+  // Sólo las de ADR: el registro ahora también guarda referencias de CLASES
+  // (BRK.B), que no son una cap leída de Yahoo sino conteos leídos de la
+  // portada de un 10-Q, en su propia fecha. Mezclarlas en este bucle haría
+  // que agregar una emisora de dos clases pusiera roja una prueba sobre los
+  // ADR, que es otra cosa.
+  const adrs = REFERENCIAS.referencias.filter((r) => !Array.isArray(r.clases));
+  assert.equal(adrs.length, 4, 'los cuatro ADR de la auditoría');
+  for (const r of adrs) {
     assert.equal(r.capturada_en, '2026-09-23', `${r.clave}: todas se leyeron el mismo día`);
+  }
+});
+
+test('una referencia de CLASES declara su procedencia igual que un ADR', () => {
+  // La regla del registro no cambia por ser de otro tipo: quién, de dónde y
+  // cuándo. Una cap sin las tres cosas no entra.
+  const clases = REFERENCIAS.referencias.filter((r) => Array.isArray(r.clases));
+  assert.ok(clases.length >= 1, 'hay al menos una (BRK.B)');
+  for (const r of clases) {
+    assert.ok(r.fuente && /10-Q|accession/i.test(r.fuente), `${r.clave}: la fuente dice de qué filing`);
+    assert.match(r.capturada_en, /^\d{4}-\d{2}-\d{2}$/, `${r.clave}: cuándo`);
+    assert.match(r.vigente_hasta, /^\d{4}-\d{2}-\d{2}$/, `${r.clave}: hasta cuándo`);
+    assert.ok(r.cotizada, `${r.clave}: cuál es la clase que cotiza`);
+    for (const c of r.clases) {
+      assert.ok(Number(c.acciones) > 0, `${r.clave}/${c.nombre}: conteo real, no cero`);
+      assert.ok(Number(c.equivalencia_en_cotizada) > 0, `${r.clave}/${c.nombre}: su equivalencia`);
+    }
   }
 });
 

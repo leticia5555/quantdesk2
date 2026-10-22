@@ -334,9 +334,25 @@ test('el registro documenta qué capturar y no inventa los números', async () =
     new URL('../api/_lib/mercado-cap-us-referencia.json', import.meta.url), 'utf8'));
   assert.ok(reg._clases_de_acciones, 'la sección que explica la cuenta');
   assert.match(reg._clases_de_acciones.la_cuenta, /Σ acciones_clase × equivalencia/);
-  // BRK.B está en pendientes y NO en `referencias`: escribir conteos de
-  // memoria en un archivo que se pinta es justo lo que la regla 2 prohíbe.
-  assert.ok(reg._pendientes_de_captura.some((x) => x.clave === 'BRK.B'));
-  assert.ok(!(reg.referencias || []).some((x) => x.clave === 'BRK.B'),
-    'BRK.B no entra al registro hasta que sus conteos sean reales');
+  // BRK.B YA ESTÁ CAPTURADO: Lety pasó los conteos de la portada del 10-Q
+  // (accession 0001193125-26-341032, conteo al 2026-07-29), así que salió de
+  // pendientes y entró a `referencias` con números reales.
+  //
+  // Lo que esta prueba fija es la REGLA, no el estado: nada entra a
+  // `referencias` con conteos en cero. Escribir números de memoria en un
+  // archivo que se pinta es lo que la regla 2 prohíbe, y un cero es la forma
+  // que tiene un número inventado de colarse.
+  const brk = (reg.referencias || []).find((x) => x.clave === 'BRK.B');
+  assert.ok(brk, 'BRK.B ya está capturado');
+  assert.ok(brk.fuente.includes('0001193125-26-341032'), 'con el accession de su filing');
+  for (const r of reg.referencias || []) {
+    for (const c of r.clases || []) {
+      assert.ok(Number(c.acciones) > 0, `${r.clave}/${c.nombre}: un conteo en cero sería un número inventado`);
+    }
+  }
+  // Y lo que sigue pendiente no se pinta: vive en su propia lista.
+  for (const p of reg._pendientes_de_captura || []) {
+    assert.ok(!(reg.referencias || []).some((x) => x.clave === p.clave),
+      `${p.clave} está pendiente y no puede estar en referencias a la vez`);
+  }
 });

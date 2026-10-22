@@ -55,6 +55,26 @@
       "capturada_en": "2026-09-23",
       "vigente_hasta": "2026-09-30",
       "nota": "múltiplo observado 0.8612 con cap declarada en EUR: éste sí se explica casi entero por el tipo de cambio, y aun así no se convierte"
+    },
+    {
+      "clave": "BRK.B",
+      "cotizada": "BRK.B",
+      "clases": [
+        {
+          "nombre": "Class A",
+          "acciones": 488450,
+          "equivalencia_en_cotizada": 1500
+        },
+        {
+          "nombre": "Class B",
+          "acciones": 1408035161,
+          "equivalencia_en_cotizada": 1
+        }
+      ],
+      "fuente": "portada del 10-Q de Berkshire Hathaway Inc., accession 0001193125-26-341032 (periodo 2026-06-30, presentado 2026-08-10, conteo al 2026-07-29)",
+      "capturada_en": "2026-10-22",
+      "vigente_hasta": "2026-11-21",
+      "nota": "Equivalencia 1 Clase A = 1,500 Clase B, del estatuto. Suma en equivalentes B: 488.450×1500 + 1.408.035.161 = 2.140.710.161. La cap NO se captura: se pinta con nuestro cierre diario de BRK.B."
     }
   ],
   "_clases_de_acciones": {
@@ -83,13 +103,5 @@
       "vigente_hasta": "YYYY-MM-DD"
     }
   },
-  "_pendientes_de_captura": [
-    {
-      "clave": "BRK.B",
-      "por_que": "Su cap salía con un múltiplo de 1,482× por mezclar clases: 1,482 es casi exactamente la razón de conversión A→B, que es la huella del defecto.",
-      "que_falta": "Los dos conteos de la portada del último 10-Q de Berkshire Hathaway (Clase A y Clase B) con su fecha. La equivalencia ya se sabe: 1 Clase A = 1,500 Clase B.",
-      "quien": "Lety, en Chrome",
-      "nota": "No se escriben números de memoria en este archivo: lo que está acá se pinta, y la regla 2 del encargo prohíbe estimar. Hasta que los conteos estén, BRK.B sigue gris con su causa."
-    }
-  ]
+  "_pendientes_de_captura": []
 }

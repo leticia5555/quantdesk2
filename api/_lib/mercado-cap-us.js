@@ -33,7 +33,7 @@
 // cuál fue: ~32× huele a tipo de cambio, ~5× a ratio de ADR, ~1e6 a unidades.
 // ═══════════════════════════════════════════════════════════════════════
 import { CRITERIOS, errorPct } from './mercado-fase0.js';
-import { veredictoCapEdgar, estadoEdgar } from './mercado-edgar.js';
+import { veredictoCapEdgar, estadoEdgar, UMBRAL_EDGAR_PCT } from './mercado-edgar.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
@@ -303,6 +303,32 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // no puede decir nada útil. La referencia de Yahoo despeja la razón y el
   // tamaño vuelve a ser NUESTRO cálculo con NUESTRO cierre.
   if (referencia) {
+    // ── VARIAS CLASES: LA SUMA DECLARADA MANDA ────────────────────────
+    // Es el caso de BRK.B. La equivalencia entre clases es estructural y los
+    // conteos se leyeron de la portada del 10-Q, donde SÍ están nombrados por
+    // clase. Lo que se pinta es la suma llevada a la clase cotizada por
+    // NUESTRO cierre, así que sigue al mercado todos los días.
+    if (esReferenciaDeClases(referencia)) {
+      const c = capPorClases(referencia, num(entrada.precio_usd));
+      if (c.cap_usd == null) {
+        return { ...base, estado: 'gris_punteado', auditable: false, cap_usd: null,
+          error_pct: null, multiplo: null, via: 'clases_declaradas', motivo: c.motivo };
+      }
+      const vig = referenciaVigente(referencia, hoy || new Date());
+      return {
+        ...base, estado: 'verificada', auditable: true,
+        cap_usd: c.cap_usd, error_pct: null, multiplo: null,
+        via: 'clases_declaradas',
+        fuente: `calc: clases declaradas × neon (${c.detalle.map((d) => `${d.nombre}×${d.equivalencia_en_cotizada}`).join(' + ')})`,
+        acciones_equivalentes: c.acciones_equivalentes,
+        clases_detalle: c.detalle,
+        // Vencer es una TAREA y no apaga el cuadro: los conteos derivan ~1%
+        // por trimestre de recompra, muy dentro de la tolerancia.
+        referencia_vigente_hasta: referencia.vigente_hasta || null,
+        referencia_a_recapturar: vig && vig.vencida === true,
+        motivo: null,
+      };
+    }
     // ── UNA REFERENCIA DESCARTADA NO SE USA, Y NO SE BORRA ───────────────
     // La captura de VALE resultó vieja: Yahoo la mostraba fechada el 18-sep y
     // el número no corresponde al precio con el que se leyó. Descartarla NO es
@@ -465,6 +491,52 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
 
   const ok = Math.abs(e) <= umbral;
   if (ok) {
+    // ── EL PAR DE FINNHUB CONCUERDA CONSIGO MISMO, NO CON LA REALIDAD ──
+    //
+    // Acá había un `return 'verificada'` directo, con este comentario más
+    // abajo: *"si el par de Finnhub ya concordaba, no se toca nada"*. El
+    // problema es que las dos cifras que concuerdan son
+    // `marketCapitalization` y `shareOutstanding × precio`, y Finnhub calcula
+    // su cap A PARTIR de su propio conteo: concuerdan por construcción.
+    //
+    // O sea que "verificada" quería decir, en la mayoría de los casos, que
+    // Finnhub concuerda consigo mismo — y EDGAR, que es la medición
+    // INDEPENDIENTE, nunca llegaba a discrepar.
+    //
+    // SPCX lo puso en evidencia: Finnhub daba ~14,200 M de acciones y $2,101
+    // mil M de cap —coherentes entre sí— mientras el 8-K de EDGAR daba
+    // 1,812.5 M. Ocho veces de diferencia, y el cuadro salía `verificada`
+    // (Lety, 2026-10-22).
+    //
+    // Dos mediciones independientes que difieren más de la tolerancia es
+    // exactamente la condición que este diseño dice que debe dar gris. No se
+    // elige cuál está bien: no se pinta, y se dicen las dos.
+    const edgarAcc = edgar && num(edgar.acciones) > 0 ? num(edgar.acciones) : null;
+    const px = num(entrada.precio_usd);
+    if (edgarAcc && px > 0) {
+      const capEdgar = edgarAcc * px;
+      const eEdgar = ((decl.cap - capEdgar) / capEdgar) * 100;
+      if (Math.abs(eEdgar) > UMBRAL_EDGAR_PCT) {
+        const mEdgar = decl.cap / capEdgar;
+        return {
+          ...base, estado: 'gris_punteado', auditable: true,
+          cap_usd: null, error_pct: eEdgar, multiplo: mEdgar,
+          via: 'finnhub_vs_edgar',
+          acciones_edgar_millones: edgarAcc / MILLON,
+          fecha_portada: (edgar && edgar.fecha_portada) || null,
+          motivo: `dos conteos de acciones independientes no cuadran: Finnhub da `
+            + `${(num(entrada.acciones) || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })} millones `
+            + `y la portada de EDGAR${edgar.fecha_portada ? ` del ${edgar.fecha_portada}` : ''} da `
+            + `${(edgarAcc / MILLON).toLocaleString('es-MX', { maximumFractionDigits: 0 })} millones `
+            + `(${mEdgar.toFixed(mEdgar > 10 ? 0 : 2)}× de diferencia). `
+            + 'El par de Finnhub concuerda consigo mismo porque su cap sale de su propio conteo, '
+            + 'así que esa concordancia no verifica nada. '
+            + 'Causa frecuente: la emisora tiene VARIAS CLASES de acciones — EDGAR separa la portada '
+            + 'por clase y `companyconcept` no trae los hechos con dimensión, así que de EDGAR llega '
+            + 'una sola clase. Se resuelve con una captura manual de las clases.',
+        };
+      }
+    }
     return {
       ...base, estado: 'verificada', auditable: true,
       // La cap que viaja es la DECLARADA, no un promedio: promediar dos fuentes
