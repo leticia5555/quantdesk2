@@ -148,16 +148,16 @@ console.log('lints: la tarjeta dice qué mide cada número');
 
 const app = readFileSync(new URL('../app.html', import.meta.url), 'utf8');
 const card = app.slice(app.indexOf('function ebLiveCard('), app.indexOf('\nfunction ebDiasHasta'));
-ok(/precio_tipo==='mid'/.test(card) && /mid del libro/.test(card), 'dice de QUÉ precio se habla (mid / outcomePrices)');
-ok(/'volumen '/.test(card) && /'liquidez '/.test(card) && /spread/.test(card), 'volumen, liquidez y spread junto al precio');
+ok(/precio_tipo==='mid'/.test(card) && /punto medio del libro/.test(card), 'dice de QUÉ precio se habla (punto medio / outcomePrices)');
+ok(/'volumen '/.test(card) && / liquidez '/.test(card) && /diferencia '/.test(card), 'volumen, liquidez y diferencia junto al precio');
 // El título se queda en inglés (cita de Polymarket); la traducción va DEBAJO, en gris chico.
 ok(/const titulo=m\.titulo\?String\(m\.titulo\)/.test(card), 'el título que se enlaza es el ORIGINAL en inglés');
-ok(/m\.titulo_es\?smL\('<div style="font-size:8px;color:#555;/.test(card), 'la traducción va en gris chico, solo si el endpoint la dio');
+ok(/m\.titulo_es\?'<div style="font-size:8px;color:#555;/.test(card), 'la traducción va en gris chico, solo si el endpoint la dio');
 ok(/\+link\+tituloEs\+/.test(card), 'y va justo debajo del título');
 // El track record SE QUEDA TAL CUAL (pedido explícito): titular, completo,
 // racha, sorpresa mediana y últimos trimestres.
-for (const [nombre, re] of [['titular N de M', /'Histórico: superó '/], ['histórico completo', /histórico completo: /], ['racha', /'Racha: '/],
-  ['sorpresa mediana', /'Sorpresa mediana: '/], ['últimos trimestres', /'ÚLTIMOS TRIMESTRES'/]]) {
+for (const [nombre, re] of [['titular N de M', /'Historial: superó '/], ['historial completo', /historial completo: /], ['racha', /'Racha: '/],
+  ['sorpresa mediana', /'Sorpresa mediana: '/], ['últimos trimestres', /ÚLTIMOS TRIMESTRES/]]) {
   ok(re.test(card), `el track record conserva: ${nombre}`);
 }
 

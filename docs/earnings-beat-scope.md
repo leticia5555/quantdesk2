@@ -1035,11 +1035,20 @@ endpoint: volver a tenerla es una decisión, no un descuido.
 |---|---|---|
 | **Polymarket** | Precio del Yes **dicho como mid** del libro, con bid · ask · spread, volumen y liquidez. "Resuelve sobre GAAP EPS de $6.31". | CLOB `/book` (token del Yes). Sin libro: `outcomePrices` de Gamma, dicho como tal. Métrica y umbral leídos del slug / la descripción. |
 | **Consenso de analistas** | `$X · métrica no declarada por la fuente`, o "no disponible (motivo)". | Finnhub `/calendar/earnings` (`epsEstimate`), UN request por vista; fila del símbolo a ±5 días de la resolución. Finnhub no declara si es GAAP o ajustado. |
-| **QuantDesk · track record** | **Tal cual**: superó N de 20, histórico completo, racha, sorpresa mediana, últimos 8 trimestres. Etiquetado "contando EPS ajustado (Alpha Vantage)". | `pead_earnings` (Alpha Vantage `reportedEPS`, ajustado). |
-| Título del mercado | **En inglés**, tal cual: es una cita de Polymarket ("Will Meta (META) beat quarterly earnings?"). Debajo, en gris chico y solo con la pantalla en español, su traducción: "¿Meta superará sus resultados trimestrales?". | `traduceTituloMercado`, por PLANTILLA: un título que no encaja en una forma conocida no se traduce (null), no se inventa. |
+| **QuantDesk · historial** | **Tal cual**: "Historial: superó N de 20", historial completo, racha, sorpresa mediana, últimos 8 trimestres. Etiquetado "contando EPS ajustado (Alpha Vantage)". | `pead_earnings` (Alpha Vantage `reportedEPS`, ajustado). |
+| Título del mercado | **En inglés**, tal cual: es una cita de Polymarket ("Will Meta (META) beat quarterly earnings?"). Debajo, en gris chico, su traducción: "¿Meta superará sus resultados trimestrales?". | `traduceTituloMercado`, por PLANTILLA: un título que no encaja en una forma conocida no se traduce (null), no se inventa. |
 | Línea neutral | Si la métrica del mercado no empata: "El mercado mide GAAP EPS, el histórico cuenta EPS ajustado." Si no se pudo leer: "Métrica del mercado: no determinada". | Informativa: no es advertencia ni bloquea nada. |
 
-Siguen igual: el disclaimer bilingüe, "el histórico no es predicción",
+**Idioma:** todo el panel de Polymarket va **solo en español** — encabezado, botón,
+etiquetas, disclaimer (ya no sale la copia en inglés debajo) y el pie ("El historial
+no es predicción."). Única excepción: el título del mercado, que es cita. Los códigos
+del JSON (`sin_ask`, `sin_fila_en_el_calendario`, `eps_gaap`…) no se traducen: son
+datos. `tests/earnings-beat-live.test.mjs` pinta la tarjeta con las funciones reales
+y falla si el texto renderizado dice beat, track record, streak, spread, bid, ask,
+volume, liquidity, threshold, not available, not determined, forecast, full
+history, last quarters o median surprise.
+
+Siguen igual: el disclaimer (ahora solo en español), "no es predicción",
 `probabilidad_quantdesk: null` y el **NO-GO** de la Fase 2.
 
 ### El lector de métrica (`extraeMetricaMercado`)
