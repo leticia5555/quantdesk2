@@ -193,19 +193,53 @@ test('cada descarte se cuenta por su causa: un cero tiene que poder depurarse', 
     ],
     universoPorSymbol: new Map(),
   });
-  assert.deepEqual(r.candidatos, ['MNST']);
-  // La forma del diagnóstico se fija entera a propósito: es lo que permite
-  // depurar un cero. Ahora trae además `excluidos`, que dice POR SÍMBOLO por
-  // qué quedó fuera — con 52 candidatos y SPCX gris, "N sin acciones" no
-  // alcanzaba para saber si SPCX era uno de ellos (Lety, 2026-10-22).
+  // NVDA está `verificada` y SIN conteo de EDGAR (el universo va vacío), así
+  // que SÍ es candidata: verificada por el par de Finnhub —que concuerda
+  // consigo mismo por construcción— no es estar verificada contra nada. Es el
+  // lazo que dejaba a SPCX afuera para siempre.
+  assert.deepEqual(r.candidatos, ['NVDA', 'MNST']);
   assert.deepEqual(r.diagnostico, {
-    filas: 5, sin_precio: 1, sin_acciones: 1, verificadas: 1, no_usd: 1, ya_con_edgar: 0, candidatos: 1,
+    filas: 5, sin_precio: 1, sin_acciones: 1, verificadas: 0, verificadas_sin_contraste: 1,
+    no_usd: 1, ya_con_edgar: 0, candidatos: 2,
     excluidos: [
       { symbol: 'SINPX', motivo: 'sin precio en USD' },
       { symbol: 'SINACC', motivo: 'sin conteo de acciones de Finnhub' },
       { symbol: 'TSM', motivo: 'la cap declarada está en TWD' },
     ],
   });
+});
+
+test('una verificada que SÍ se cruzó con EDGAR no se vuelve a preguntar', () => {
+  // La otra mitad de la regla: repreguntar las que ya tienen conteo gastaría
+  // la cuota de la SEC para confirmar lo que ya sabemos. Lo que no se puede
+  // es dar por confirmado lo que nadie confirmó.
+  const r = candidatosParaEdgar({
+    entradas: [entrada('AAPL'), entrada('SPCX')],
+    veredictos: [
+      { symbol: 'AAPL', moneda: 'USD', estado: 'verificada', auditable: true },
+      { symbol: 'SPCX', moneda: 'USD', estado: 'verificada', auditable: true },
+    ],
+    universoPorSymbol: new Map([
+      ['AAPL', { acciones_edgar_millones: 15200, edgar_regla: 2 }],
+      ['SPCX', { edgar_regla: 2, edgar_consultada_en: '2026-10-22' }],
+    ]),
+  });
+  assert.deepEqual(r.candidatos, ['SPCX']);
+  assert.equal(r.diagnostico.verificadas, 1, 'AAPL sale por verificada y cruzada');
+  assert.equal(r.diagnostico.verificadas_sin_contraste, 1, 'SPCX se cuenta aparte, no desaparece');
+});
+
+test('la suma por clases también cuenta como contraste', () => {
+  // BRK.B se pinta con la captura manual de clases, no con un conteo simple:
+  // repreguntarle a EDGAR por un dato que ya sabemos que esa API no entrega
+  // (los hechos con dimensión) sería gastar cuota para confirmar un hueco.
+  const r = candidatosParaEdgar({
+    entradas: [entrada('BRK.B')],
+    veredictos: [{ symbol: 'BRK.B', moneda: 'USD', estado: 'verificada', auditable: true }],
+    universoPorSymbol: new Map([['BRK.B', { acciones_edgar_suma_millones: 2140.7, edgar_regla: 2 }]]),
+  });
+  assert.deepEqual(r.candidatos, []);
+  assert.equal(r.diagnostico.verificadas, 1);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
