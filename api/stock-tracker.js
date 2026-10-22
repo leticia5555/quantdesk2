@@ -129,7 +129,7 @@ const FUNDS = [
 import { form4Completo, filasDeForm4, desentidad, xtag, xval } from './_lib/form4.js';
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import { beat } from './_lib/heartbeat.js';
-import { crearCliente } from './_lib/edgar.js';
+import { crearCliente, bajarTickerMap } from './_lib/edgar.js';
 import {
   urlIndiceDiario, diasHabiles, parseIndiceEdgar, form4DelIndice, coberturaDeDia,
   ownershipDeEnvio, urlDeArchivo, urlListadoTrimestre, diasPublicados, estadoDelDia,
@@ -1043,29 +1043,71 @@ export function tickerDeOpenFigi(data, { nombre = null } = {}) {
 }
 
 /**
- * El ticker, CONTRASTADO contra nuestro universo.
+ * EL TICKER, CONTRASTADO — Y SON DOS PREGUNTAS, NO UNA.
  *
- * Lety: *"que un ticker que no existe en el universo salga como «sin
- * resolver», no inventado"*. Un ticker que resolvió bien pero que no
- * cotizamos no se puede enlazar a ninguna ficha nuestra, así que mostrarlo
- * promete una pantalla que no existe.
+ * La primera versión de esto contrastaba contra el universo del mapa, y con
+ * eso NYT y ALLY —tickers perfectamente reales, que no están en el mapa por
+ * tamaño— salieron como "no está en nuestro universo" y la tarjeta mostró su
+ * CUSIP (Lety, 2026-10-22). Peor que antes: antes al menos salía el ticker.
  *
- * `universo` es un Set de símbolos; si viene vacío —porque la consulta
- * falló— NO se descarta nada: eso convertiría una caída de Neon en "ningún
- * ticker se pudo resolver", que es una afirmación distinta y falsa.
+ * El error fue conceptual, no de código: confundí dos preguntas distintas.
+ *
+ *   · ¿EXISTE este ticker? → lo dice `company_tickers.json`, la lista
+ *     completa de la SEC. Si la SEC no lo conoce, el CUSIP resolvió mal y
+ *     mostrarlo sería inventar.
+ *   · ¿PODEMOS ABRIRLE UNA FICHA? → lo dice el universo del mapa, que son
+ *     las ~611 que cosechamos. Eso decide si el ticker lleva enlace, no si
+ *     se muestra.
+ *
+ * Lety: *"si existe pero no tiene ficha, muestra el ticker sin link"*.
+ *
+ * Las dos listas FALLAN ABIERTO. Si `company_tickers.json` no cargó, no se
+ * descarta nada: convertir una caída de la SEC en "este ticker no existe" es
+ * cambiar una causa por otra, que es exactamente el error de arriba otra vez.
  */
-export function tickerValidado(resuelto, universo) {
+export function tickerValidado(resuelto, { sec = null, universo = null } = {}) {
   if (!resuelto || !resuelto.ticker) return resuelto || { ticker: null, motivo: 'sin resolver' };
-  if (!universo || !universo.size) {
-    return { ...resuelto, en_universo: null,
-      nota: 'no se pudo contrastar contra el universo (la lista no cargó)' };
+  const t = resuelto.ticker;
+
+  // ── ¿EXISTE? ──────────────────────────────────────────────────────────
+  if (sec && sec.size && !sec.has(t)) {
+    return {
+      ticker: null, exch: resuelto.exch, via: resuelto.via, existe: false,
+      motivo: `OpenFIGI devolvió "${t}" y la SEC no lo conoce en company_tickers.json: `
+        + 'el CUSIP resolvió mal, así que se muestra el nombre del filing',
+    };
   }
-  if (universo.has(resuelto.ticker)) return { ...resuelto, en_universo: true };
+  const existe = sec && sec.size ? true : null;
+
+  // ── ¿SE PUEDE ABRIR? ──────────────────────────────────────────────────
+  // Esto NO decide si se muestra: decide si lleva enlace.
+  const enUniverso = universo && universo.size ? universo.has(t) : null;
   return {
-    ticker: null, exch: resuelto.exch, via: resuelto.via, en_universo: false,
-    motivo: `OpenFIGI devolvió "${resuelto.ticker}" y ese símbolo no está en nuestro universo: `
-      + 'se muestra el nombre del filing en vez de un ticker que no podemos abrir',
+    ...resuelto,
+    existe,
+    en_universo: enUniverso,
+    enlazable: enUniverso === true,
+    nota: [
+      existe === null ? 'no se pudo contrastar contra company_tickers.json (la lista no cargó)' : null,
+      enUniverso === false ? 'existe pero no está en el mapa: se muestra sin enlace' : null,
+      enUniverso === null ? 'no se pudo contrastar contra el universo (la lista no cargó)' : null,
+    ].filter(Boolean).join('; ') || null,
   };
+}
+
+// La lista completa de la SEC, cacheada por instancia: cambia poco y pesa ~1 MB.
+let secTickersCache = null;
+async function secTickers() {
+  if (secTickersCache) return secTickersCache;
+  try {
+    const cli = crearCliente({ kind: 'ticker-map' });
+    const { map } = await bajarTickerMap(cli);
+    secTickersCache = new Set(Object.keys(map));
+  } catch {
+    // Falla abierto: un Set vacío hace que `tickerValidado` no descarte nada.
+    secTickersCache = new Set();
+  }
+  return secTickersCache;
 }
 
 // CUSIP→ticker vía OpenFIGI (gratis; sin key = 10 jobs/request). Falla →
@@ -1173,16 +1215,21 @@ async function build13F() {
     const filas = await sql('select symbol from mercado_universo_us');
     universo = new Set(filas.map((f) => String(f.symbol).toUpperCase()));
   } catch { /* sin universo no se descarta: lo dice `nota` */ }
+  const sec = await secTickers();
 
   for (const f of valid) {
     for (const bucket of Object.values(f.top)) {
       for (const p of bucket) {
-        const v = tickerValidado(tickers.get(p.cusip), universo);
+        const v = tickerValidado(tickers.get(p.cusip), { sec, universo });
         p.ticker = v.ticker || null;
         // La procedencia y la causa viajan: un `ticker: null` sin motivo deja
         // a la pantalla sin nada que decir (regla 2 y regla 3).
         p.ticker_via = v.via || null;
         p.ticker_motivo = v.ticker ? null : (v.motivo || 'sin resolver');
+        // `enlazable` es lo que decide si la pantalla le pone enlace: existe
+        // y además tenemos ficha. NYT y ALLY existen y no tienen ficha, así
+        // que salen con su ticker y sin enlace.
+        p.ticker_enlazable = v.enlazable === true;
         if (v.nota) p.ticker_nota = v.nota;
       }
     }

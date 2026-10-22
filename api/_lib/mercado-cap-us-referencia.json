@@ -56,5 +56,40 @@
       "vigente_hasta": "2026-09-30",
       "nota": "múltiplo observado 0.8612 con cap declarada en EUR: éste sí se explica casi entero por el tipo de cambio, y aun así no se convierte"
     }
+  ],
+  "_clases_de_acciones": {
+    "que_son": "Emisoras con dos clases cotizadas (BRK.A/BRK.B). La cap es la SUMA de cada clase por su precio, y se resuelve con la misma idea que la razón de un ADR: lo que se captura es ESTRUCTURAL —la equivalencia entre clases, que está en el estatuto— y el tamaño se pinta con NUESTRO cierre diario de la clase cotizada.",
+    "la_cuenta": "cap = (Σ acciones_clase × equivalencia_en_cotizada) × nuestro cierre de la clase cotizada. Para BRK: (acciones_A × 1500 + acciones_B) × cierre de BRK.B.",
+    "por_que_manual": "`companyconcept` de EDGAR devuelve los conteos de portada SIN etiquetar la clase —la clase vive en el contexto XBRL, que esa API no manda—, así que se tienen los dos números sin saber cuál es cuál. La portada del 10-Q sí los nombra. Decisión de Lety, 2026-10-22.",
+    "que_leer": "De la PORTADA del último 10-Q de la emisora: las líneas que dicen cuántas acciones de cada clase estaban en circulación, con su fecha. Y la equivalencia entre clases, del estatuto o de la nota de la propia emisora (BRK: 1 Clase A = 1,500 Clase B).",
+    "caducidad": "Los conteos SÍ envejecen, a diferencia de la razón de un ADR: una recompra los mueve. Un trimestre mueve ~1%, muy dentro del 5% de tolerancia, así que vencer es una TAREA (aparece en `referencias_a_recapturar`) y NO apaga el cuadro.",
+    "forma_de_una_fila": {
+      "clave": "BRK.B",
+      "cotizada": "BRK.B",
+      "clases": [
+        {
+          "nombre": "Class A",
+          "acciones": 0,
+          "equivalencia_en_cotizada": 1500
+        },
+        {
+          "nombre": "Class B",
+          "acciones": 0,
+          "equivalencia_en_cotizada": 1
+        }
+      ],
+      "fuente": "portada del 10-Q de <emisora>, <accession>",
+      "capturada_en": "YYYY-MM-DD",
+      "vigente_hasta": "YYYY-MM-DD"
+    }
+  },
+  "_pendientes_de_captura": [
+    {
+      "clave": "BRK.B",
+      "por_que": "Su cap salía con un múltiplo de 1,482× por mezclar clases: 1,482 es casi exactamente la razón de conversión A→B, que es la huella del defecto.",
+      "que_falta": "Los dos conteos de la portada del último 10-Q de Berkshire Hathaway (Clase A y Clase B) con su fecha. La equivalencia ya se sabe: 1 Clase A = 1,500 Clase B.",
+      "quien": "Lety, en Chrome",
+      "nota": "No se escriben números de memoria en este archivo: lo que está acá se pinta, y la regla 2 del encargo prohíbe estimar. Hasta que los conteos estén, BRK.B sigue gris con su causa."
+    }
   ]
 }
