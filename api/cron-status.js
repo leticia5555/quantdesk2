@@ -70,6 +70,10 @@ export const EXPECTED = [
   // tomó", no "operó". Sin esta fila el reporte de 3 números no tiene datos.
   { job: 'libro:equity',    path: '/api/libro?equity=1',             schedule: '5 21 * * 1-5',          cadence: 'días hábiles ~21:05', stale_after_h: 80 },
   { job: 'earnings-beat:precios',  path: '/api/earnings-beat-harvest?job=precios',  schedule: '40 23 * * *', cadence: '1×/día (CLOB)',       stale_after_h: 30 },
+  // earnings-beat v2 (papel): recalcula pm_earnings_v2_features después de que
+  // `precios` dejó el T-24h, y —solo con EARNINGS_V2_VIGENTE_ENABLED=1— captura
+  // el consenso vigente de AV. Ver docs/earnings-beat-v2.md.
+  { job: 'earnings-beat:v2',       path: '/api/earnings-beat-v2?job=diario',         schedule: '55 23 * * *', cadence: '1×/día (Neon + AV opc.)', stale_after_h: 30 },
   { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale
