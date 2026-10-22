@@ -633,6 +633,7 @@ export function estadoEdgar({ acciones = null, consultada_en = null, motivo = nu
  */
 export function candidatosParaEdgar({
   entradas = [], veredictos = [], universoPorSymbol = new Map(), hoy = new Date(),
+  traza = null,
 } = {}) {
   const hoyIso = (hoy instanceof Date ? hoy : new Date(hoy || Date.now())).toISOString().slice(0, 10);
   const porSymbol = new Map(entradas.map((e) => [e.symbol, e]));
@@ -648,12 +649,36 @@ export function candidatosParaEdgar({
   // ellos: hubo que inferirlo, y la inferencia puede estar mal. Ahora cada
   // símbolo excluido viaja con su motivo.
   const excluidos = [];
+  // ── UN SÍMBOLO, TODAS SUS COMPUERTAS ──────────────────────────────────
+  // `excluidos` se recorta a 40, y con 500 filas eso quiere decir que
+  // preguntar "¿y por qué no está SPCX?" no tiene respuesta: no aparece ni
+  // entre los candidatos ni entre los excluidos. Dos de las compuertas
+  // —verificada-y-cruzada, y ya-con-EDGAR— ni siquiera escriben en
+  // `excluidos`: sólo suman a un contador.
+  // `traza` sigue a UN símbolo por todas las compuertas, en orden, y dice en
+  // cuál se cayó. Es la misma lección del comentario de arriba —los contadores
+  // dicen cuántos, no cuáles— aplicada hasta el final (Lety, 2026-10-22).
+  const trazaSym = traza ? String(traza).toUpperCase() : null;
+  const pasos = [];
+  const anota = (sym, paso, pasa, detalle) => {
+    if (trazaSym && sym === trazaSym) pasos.push({ paso, pasa, ...(detalle ? { detalle } : {}) });
+  };
   const fuera = (sym, motivo) => { excluidos.push({ symbol: sym, motivo }); };
   for (const v of veredictos) {
     const e = porSymbol.get(v.symbol) || {};
     const u = universoPorSymbol.get(v.symbol) || {};
-    if (!(n(e.precio_usd) > 0)) { diagnostico.sin_precio++; fuera(v.symbol, 'sin precio en USD'); continue; }
-    if (!(n(e.acciones) > 0)) { diagnostico.sin_acciones++; fuera(v.symbol, 'sin conteo de acciones de Finnhub'); continue; }
+    anota(v.symbol, 'está en las entradas del mapa', true,
+      `estado=${v.estado} moneda=${v.moneda || '—'}`);
+    if (!(n(e.precio_usd) > 0)) {
+      anota(v.symbol, 'tiene precio en USD', false, `precio_usd=${e.precio_usd ?? 'null'}`);
+      diagnostico.sin_precio++; fuera(v.symbol, 'sin precio en USD'); continue;
+    }
+    anota(v.symbol, 'tiene precio en USD', true, String(e.precio_usd));
+    if (!(n(e.acciones) > 0)) {
+      anota(v.symbol, 'tiene conteo de acciones de Finnhub', false, `acciones=${e.acciones ?? 'null'}`);
+      diagnostico.sin_acciones++; fuera(v.symbol, 'sin conteo de acciones de Finnhub'); continue;
+    }
+    anota(v.symbol, 'tiene conteo de acciones de Finnhub', true, `${e.acciones} millones`);
     // ── EL LAZO: "VERIFICADA" NO PUEDE SER MOTIVO PARA NO PREGUNTAR ────
     // Acá decía `if (v.estado === 'verificada') continue;` a secas, y eso
     // cerraba un círculo del que SPCX no podía salir:
@@ -678,11 +703,22 @@ export function candidatosParaEdgar({
     // cruzaron de verdad y repreguntarlas gastaría la cuota de la SEC para
     // confirmar lo que ya sabemos.
     const yaCruzada = n(u.acciones_edgar_millones) > 0 || n(u.acciones_edgar_suma_millones) > 0;
-    if (v.estado === 'verificada' && yaCruzada) { diagnostico.verificadas++; continue; }
+    if (v.estado === 'verificada' && yaCruzada) {
+      anota(v.symbol, 'no es una verificada que YA se cruzó con EDGAR', false,
+        `acciones_edgar=${u.acciones_edgar_millones ?? 'null'} suma_clases=${u.acciones_edgar_suma_millones ?? 'null'}`);
+      diagnostico.verificadas++;
+      fuera(v.symbol, 'verificada y ya cruzada con EDGAR: repreguntarla gastaría cuota de la SEC');
+      continue;
+    }
+    anota(v.symbol, 'no es una verificada que YA se cruzó con EDGAR', true);
     if (v.estado === 'verificada') {
       diagnostico.verificadas_sin_contraste = (diagnostico.verificadas_sin_contraste || 0) + 1;
     }
-    if (v.moneda !== 'USD') { diagnostico.no_usd++; fuera(v.symbol, `la cap declarada está en ${v.moneda || 'otra moneda'}`); continue; }
+    if (v.moneda !== 'USD') {
+      anota(v.symbol, 'la cap declarada está en USD', false, `moneda=${v.moneda || 'null'}`);
+      diagnostico.no_usd++; fuera(v.symbol, `la cap declarada está en ${v.moneda || 'otra moneda'}`); continue;
+    }
+    anota(v.symbol, 'la cap declarada está en USD', true);
     // ── LA REPREGUNTA POR CAMBIO DE REGLA, ACOTADA ─────────────────────
     // Cuando la regla cambia, lo que la regla VIEJA dio por perdido hay que
     // volver a preguntarlo (SPCX). Pero NO todo: el cambio de la versión 2
@@ -702,13 +738,85 @@ export function candidatosParaEdgar({
       && String(u.acciones_edgar_portada).slice(0, 10) > hoyIso;
     const repreguntar = (reglaVieja && !tieneDato && !!u.edgar_consultada_en)
       || (reglaVieja && portadaFutura);
-    if (tieneDato && !repreguntar) { diagnostico.ya_con_edgar++; continue; }
+    if (tieneDato && !repreguntar) {
+      anota(v.symbol, 'no tiene ya un conteo de EDGAR vigente', false,
+        `acciones_edgar=${u.acciones_edgar_millones}`);
+      diagnostico.ya_con_edgar++;
+      fuera(v.symbol, 'ya tiene conteo de EDGAR con la regla vigente');
+      continue;
+    }
+    anota(v.symbol, 'no tiene ya un conteo de EDGAR vigente', true);
+
+    // ── EL ATORO: SIN DATO TAMBIÉN ES UNA RESPUESTA ────────────────────
+    // Una fila sin conteo caía acá SIEMPRE, consultada o no: `tieneDato` era
+    // false, así que el filtro de arriba no la frenaba y volvía a la cola en
+    // cada corrida. Con `limite=100`, las mismas ~100 ya preguntadas iban
+    // adelante en los siete lotes y empujaban a las nuevas: los `ok` bajaron
+    // 70 → 20 mientras `sin_dato` subía 29 → 79, y quedaron 158 sin preguntar
+    // nunca (Lety, 2026-10-22).
+    //
+    // El sello ya existía —`registroConsulta` graba `edgar_regla`— pero nadie
+    // lo leía para este caso: sólo servía para detectar la regla VIEJA. Ahora
+    // "se preguntó con la regla vigente y no dio conteo" es una respuesta
+    // cerrada, igual que un conteo. Se reabre sola el día que
+    // `REGLA_EDGAR_VERSION` suba, que es justo para lo que ese número existe.
+    //
+    // Lo que NO sella: un 5xx, un corte de red o un 429. Ésos no pasan por
+    // `registroConsulta`, así que `edgar_consultada_en` sigue vacío y la fila
+    // vuelve a la cola — que es lo correcto: no hubo respuesta, hubo un error.
+    const consultadaConEstaRegla = !!u.edgar_consultada_en && !reglaVieja;
+    if (!tieneDato && consultadaConEstaRegla && !portadaFutura) {
+      anota(v.symbol, 'no se le preguntó ya con la regla vigente', false,
+        `consultada_en=${u.edgar_consultada_en} regla=${u.edgar_regla} motivo=${u.edgar_consulta_motivo || '—'}`);
+      diagnostico.ya_preguntada_sin_dato = (diagnostico.ya_preguntada_sin_dato || 0) + 1;
+      fuera(v.symbol, `ya se le preguntó con la regla ${REGLA_EDGAR_VERSION} y EDGAR no dio conteo`
+        + `${u.edgar_consulta_motivo ? `: ${u.edgar_consulta_motivo}` : ''}`);
+      continue;
+    }
+    anota(v.symbol, 'no se le preguntó ya con la regla vigente', true,
+      u.edgar_consultada_en ? `consultada_en=${u.edgar_consultada_en} regla=${u.edgar_regla}` : 'nunca preguntada');
+
     if (repreguntar) {
       diagnostico.repregunta_por_regla = (diagnostico.repregunta_por_regla || 0) + 1;
     }
+    anota(v.symbol, 'ES CANDIDATA', true,
+      u.edgar_consultada_en ? 'repregunta' : 'nunca preguntada');
     diagnostico.candidatos++;
-    candidatos.push(v.symbol);
+    candidatos.push({ symbol: v.symbol, consultada_en: u.edgar_consultada_en || null });
   }
+
+  // ── PRIMERO LAS QUE NUNCA SE PREGUNTARON ──────────────────────────────
+  // Sin este orden, un lote de 100 vuelve a gastar su cuota en las de
+  // siempre. Las nunca preguntadas van primero; entre las repreguntas, la más
+  // vieja primero, para que ninguna se quede al fondo para siempre.
+  candidatos.sort((a, b) => {
+    const an = a.consultada_en ? 1 : 0;
+    const bn = b.consultada_en ? 1 : 0;
+    if (an !== bn) return an - bn;
+    if (an === 1) return String(a.consultada_en).localeCompare(String(b.consultada_en));
+    return a.symbol.localeCompare(b.symbol);
+  });
+  diagnostico.nunca_preguntadas = candidatos.filter((c) => !c.consultada_en).length;
+  // El recorte se queda, pero ahora se DICE cuántos quedaron afuera de la
+  // lista: "40 excluidos" sobre 500 se lee como si fueran 40.
+  diagnostico.excluidos_total = excluidos.length;
   diagnostico.excluidos = excluidos.slice(0, 40);
-  return { candidatos, diagnostico };
+  const salida = { candidatos: candidatos.map((c) => c.symbol), diagnostico };
+  if (trazaSym) {
+    salida.traza = {
+      symbol: trazaSym,
+      en_entradas: veredictos.some((v) => v.symbol === trazaSym),
+      pasos,
+      // La compuerta donde se cayó, dicha de una: es lo que se vino a
+      // preguntar.
+      se_cayo_en: (pasos.find((p) => !p.pasa) || {}).paso || null,
+      es_candidata: candidatos.some((c) => c.symbol === trazaSym),
+    };
+    if (!salida.traza.en_entradas) {
+      salida.traza.explica = 'no está en las entradas del mapa: o no tiene `market_cap`, '
+        + 'o no tiene `sector_etf` (el job mira sólo las que el mapa dibuja), o no está en '
+        + '`mercado_universo_us`. Corré `?job=universo` y revisá su fila.';
+    }
+  }
+  return salida;
 }

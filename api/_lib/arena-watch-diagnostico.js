@@ -51,49 +51,101 @@ export function horaValida(s, porDefecto = null) {
   return m ? `${m[1]}:${m[2]}:${m[3] || '00'}` : null;
 }
 
-// Las seis consultas, con sus parámetros. `$1` día, `$2` desde, `$3` hasta.
-// Todas empiezan por `select`: el guardia de solo-lectura lo comprueba.
+// ── CADA CONSULTA DECLARA SUS PROPIOS PARÁMETROS ─────────────────────
+// La primera versión guardaba sólo el texto y el handler le pasaba los mismos
+// tres a las seis. En producción las seis fallaron, cada una a su manera:
+//
+//   · `estado` no usa ninguno    → "supplies 3 parameters, but requires 0"
+//   · `dia_por_agente`, `anclas` → "supplies 3 … requires 1"
+//   · las otras tres usan $2 y $3 pero NO $1, y un parámetro que la consulta
+//     nunca menciona no tiene de dónde sacar su tipo
+//     → "could not determine data type of parameter $1"
+//
+// Y MI PRUEBA NO LO VIO, que es lo peor del asunto: preparaba cada consulta
+// con `prepare p (text, text, text) as …`, declarando a mano los tres tipos.
+// Esa declaración FABRICA la aridad y le inventa un tipo a `$1` justo donde
+// producción no puede. O sea que la prueba apagaba exactamente lo que se
+// rompió. Un fixture que no puede contradecirme, otra vez.
+//
+// Ahora la aridad es parte de la consulta: cada entrada trae su `params`, y
+// una prueba comprueba que los `$n` que el texto menciona sean exactamente
+// los que `params` entrega.
 export const CONSULTAS = {
   // 1 · TODO disparador journaleado en la ventana.
-  disparadores: `select w.fired_at, w.agent_id, w.symbol, w.trigger_type,
-                        w.fired, w.skip_reason, w.detail
-                 from arena_watch w
-                 where w.fired_at >= $2::timestamptz and w.fired_at < $3::timestamptz
-                 order by w.fired_at, w.agent_id`,
+  disparadores: {
+    sql: `select w.fired_at, w.agent_id, w.symbol, w.trigger_type,
+                 w.fired, w.skip_reason, w.detail
+          from arena_watch w
+          where w.fired_at >= $1::timestamptz and w.fired_at < $2::timestamptz
+          order by w.fired_at, w.agent_id`,
+    params: ({ desde, hasta }) => [desde, hasta],
+  },
 
   // 2 · El día entero por agente: separa enfriamiento de tope del día.
-  dia_por_agente: `select w.agent_id,
-                          count(*)::int as disparos,
-                          count(*) filter (where w.fired)::int as despachados,
-                          min(w.fired_at) as primero, max(w.fired_at) as ultimo,
-                          array_remove(array_agg(distinct w.skip_reason), null) as razones
-                   from arena_watch w
-                   where w.run_date = $1::date
-                   group by w.agent_id order by w.agent_id`,
+  dia_por_agente: {
+    sql: `select w.agent_id,
+                 count(*)::int as disparos,
+                 count(*) filter (where w.fired)::int as despachados,
+                 min(w.fired_at) as primero, max(w.fired_at) as ultimo,
+                 array_remove(array_agg(distinct w.skip_reason), null) as razones
+          from arena_watch w
+          where w.run_date = $1::date
+          group by w.agent_id order by w.agent_id`,
+    params: ({ dia }) => [dia],
+  },
 
   // 3 · Quién SÍ corrió, y cómo terminó. Refuta o confirma H7.
-  journal: `select j.created_at, j.agent_id, j.phase, j.status, j.model,
-                   left(coalesce(j.error, j.context ->> 'llm_error', ''), 400) as error
-            from arena_journal j
-            where j.created_at >= $2::timestamptz and j.created_at < $3::timestamptz
-            order by j.created_at`,
+  journal: {
+    sql: `select j.created_at, j.agent_id, j.phase, j.status, j.model,
+                 left(coalesce(j.error, j.context ->> 'llm_error', ''), 400) as error
+          from arena_journal j
+          where j.created_at >= $1::timestamptz and j.created_at < $2::timestamptz
+          order by j.created_at`,
+    params: ({ desde, hasta }) => [desde, hasta],
+  },
 
   // 4 · ¿El vigilante siquiera tickeó? Si esto está vacío, es H5/H6.
-  marcas: `select m.key, m.updated_at, left(m.value::text, 400) as value
-           from arena_watch_meta m
-           where m.updated_at >= $2::timestamptz and m.updated_at < $3::timestamptz
-           order by m.updated_at`,
+  marcas: {
+    sql: `select m.key, m.updated_at, left(m.value::text, 400) as value
+          from arena_watch_meta m
+          where m.updated_at >= $1::timestamptz and m.updated_at < $2::timestamptz
+          order by m.updated_at`,
+    params: ({ desde, hasta }) => [desde, hasta],
+  },
 
   // 5 · El único bloque que separa "detenido" de "sin disparador".
-  estado: `select s.agent_id, s.halted, s.halted_at, s.resumed_at, s.halted_reason
-           from arena_state s order by s.agent_id`,
+  estado: {
+    sql: `select s.agent_id, s.halted, s.halted_at, s.resumed_at, s.halted_reason
+          from arena_state s order by s.agent_id`,
+    params: () => [],
+  },
 
   // 6 · El ancla de ±3%: una marca re-fijada explica un agente sin disparador.
-  anclas: `select k.agent_id, k.symbol, k.price, k.marked_at, k.source
-           from arena_watch_mark k
-           where k.marked_at >= $1::date and k.marked_at < ($1::date + 2)
-           order by k.marked_at`,
+  anclas: {
+    sql: `select k.agent_id, k.symbol, k.price, k.marked_at, k.source
+          from arena_watch_mark k
+          where k.marked_at >= $1::date and k.marked_at < ($1::date + 2)
+          order by k.marked_at`,
+    params: ({ dia }) => [dia],
+  },
 };
+
+/** Los `$n` que el TEXTO de una consulta menciona, en orden, sin repetir. */
+export function parametrosQueUsa(sql) {
+  const vistos = new Set();
+  for (const m of String(sql || '').matchAll(/\$(\d+)/g)) vistos.add(Number(m[1]));
+  return [...vistos].sort((a, b) => a - b);
+}
+
+/**
+ * LOS BLOQUES DE LOS QUE DEPENDE EL VEREDICTO POR AGENTE.
+ *
+ * Si alguno de estos falla, no hay diagnóstico que dar: hay que decir que no
+ * se pudo medir. `dia_por_agente` y `anclas` son contexto —ayudan a leer el
+ * veredicto, no lo producen—, así que si fallan ellos el resumen sigue en pie
+ * y la respuesta lo marca igual en `bloques_fallidos`.
+ */
+export const BLOQUES_DEL_VEREDICTO = ['disparadores', 'journal', 'estado', 'marcas'];
 
 // ── LAS PALABRAS PROHIBIDAS, ARMADAS POR PARTES ──────────────────────
 // No es un adorno: `tests/agents-persistence.test.mjs` recorre todo `api/` y
@@ -120,7 +172,26 @@ export function soloLectura(consulta) {
  * `sin_tick` gana sobre todo lo demás: si el vigilante no corrió, preguntarse
  * por el enfriamiento de un agente es responder una pregunta que nadie hizo.
  */
-export function resumenPorAgente({ agentes = [], disparadores = [], journal = [], estado = [], huboTick = true } = {}) {
+export function resumenPorAgente({
+  agentes = [], disparadores = [], journal = [], estado = [], huboTick = true,
+  bloquesFallidos = [],
+} = {}) {
+  // ── SI NO SE PUDO MEDIR, NO HAY VEREDICTO ──────────────────────────
+  // En producción las seis consultas fallaron y este resumen igual contestó
+  // `sin_tick` para los siete agentes — porque `marcas` venía vacío, y un
+  // bloque que REVENTÓ viene vacío igual que uno que no encontró nada. Un
+  // diagnóstico que no distingue "no pasó" de "no pude mirar" es peor que no
+  // tener diagnóstico: suena a respuesta (Lety, 2026-10-22).
+  //
+  // Sólo los bloques de los que depende el veredicto cuentan acá; ver
+  // `BLOQUES_DEL_VEREDICTO`.
+  const rotos = (bloquesFallidos || []).filter((b) => BLOQUES_DEL_VEREDICTO.includes(b));
+  if (rotos.length) {
+    return agentes.map((id) => ({
+      agent_id: String(id), veredicto: 'no_medido', bloques_fallidos: rotos,
+      explica: `no se pudo medir: falló ${rotos.join(', ')}. Esto NO quiere decir que no haya pasado nada`,
+    }));
+  }
   const porAgente = new Map();
   for (const d of disparadores) {
     const k = String(d.agent_id || '');
