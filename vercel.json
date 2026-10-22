@@ -219,6 +219,10 @@
       "schedule": "40 23 * * *"
     },
     {
+      "path": "/api/earnings-beat-harvest?job=kpi",
+      "schedule": "20 23 * * *"
+    },
+    {
       "path": "/api/arena-universe",
       "schedule": "0 13 * * 1-5"
     },

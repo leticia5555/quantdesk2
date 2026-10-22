@@ -70,6 +70,9 @@ export const EXPECTED = [
   // tomó", no "operó". Sin esta fila el reporte de 3 números no tiene datos.
   { job: 'libro:equity',    path: '/api/libro?equity=1',             schedule: '5 21 * * 1-5',          cadence: 'días hábiles ~21:05', stale_after_h: 80 },
   { job: 'earnings-beat:precios',  path: '/api/earnings-beat-harvest?job=precios',  schedule: '40 23 * * *', cadence: '1×/día (CLOB)',       stale_after_h: 30 },
+  // Cosecha PARALELA de rangos de KPI (pm_kpi_markets). Flag propia
+  // EARNINGS_KPI_HARVEST_ENABLED; apagada late 'disabled'.
+  { job: 'earnings-kpi:snapshot',  path: '/api/earnings-beat-harvest?job=kpi',      schedule: '20 23 * * *', cadence: '1×/día (Polymarket)', stale_after_h: 30 },
   { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale
