@@ -23,7 +23,7 @@
 //     después de ver resultados (docs/earnings-beat-v2.md §"Qué no reproduce").
 // ═══════════════════════════════════════════════════════════════════
 
-import { extraeMetricaMercado, extraeConsensoEps, umbralDelSlug } from './earnings-beat.js';
+import { extraeMetricaMercado, extraeConsensoEps, umbralDelSlug, metricaDeFuente } from './earnings-beat.js';
 import { V0_UNIVERSE } from './pead-universe.js';
 
 // ─────────────────── criterios, congelados ───────────────────
@@ -79,27 +79,115 @@ function isoDia(v) {
 
 // ─────────────────── lectura del mercado ───────────────────
 
-// 'GAAP' | 'NONGAAP' | null. Reusa el lector v1 (slug + pregunta + descripción,
-// ignorando las cláusulas condicionales de respaldo).
-function metricaBarra(m) {
-  const r = extraeMetricaMercado(m || {});
-  return r.metrica === 'eps_gaap' ? 'GAAP' : r.metrica === 'eps_ajustado' ? 'NONGAAP' : null;
+// ── La métrica de la barra ──
+// Primero el lector v1 (slug + pregunta + descripción, ignorando las
+// oraciones condicionales de respaldo). Si v1 ve UNA métrica, esa es.
+//
+// Si v1 ve las DOS (conflicto), decide la ORACIÓN PRINCIPAL: la que define el
+// mercado, «This market will resolve to "Yes" if X reports <métrica> EPS
+// greater than $…». Es la regla por la que el mercado resuelve; todo lo demás
+// en la descripción es respaldo o definición. Pero solo decide si el slug y
+// la pregunta no la contradicen. Si la contradicen, o si no hay oración
+// principal, o si la principal nombra las dos, queda `metrica_ambigua`: no se
+// adivina.
+//
+// Por qué hizo falta (piloto oct-26, 9 de 22 en `sin_metrica`): la plantilla
+// nueva de Polymarket trae dos menciones a GAAP que el lector v1 no aparta:
+//   1. «…; or, if not published there, according to the GAAP EPS provided
+//      by SeekingAlpha.» — la COLA, después del «;», de un respaldo
+//      condicional. Como la cola no empieza con «If», v1 no la reconoce.
+//   2. «Note: For the purposes of this market, IFRS EPS will be treated as
+//      GAAP EPS.» — una nota de definición.
+// El lector v1 no se toca (v1 y sus tests quedan como estaban): la regla vive
+// solo en v2.
+const ORACION_PRINCIPAL_V2 = /\bresolves?\s+to\s+["“‘']?yes["”’']?\s+if\b/i;
+const CODIGO_V2 = { eps_gaap: 'GAAP', eps_ajustado: 'NONGAAP' };
+
+function oracionPrincipal(texto) {
+  if (!texto || typeof texto !== 'string') return null;
+  return texto.split(/(?<=[.!?;])\s+/).map((x) => x.trim()).find((c) => ORACION_PRINCIPAL_V2.test(c)) || null;
 }
+
+function leeMetrica(m) {
+  const v1 = extraeMetricaMercado(m || {});
+  if (CODIGO_V2[v1.metrica]) return { metrica: CODIGO_V2[v1.metrica], via: 'v1', motivo: null, oracion: null };
+  if (v1.motivo === 'sin_mencion') return { metrica: null, via: null, motivo: 'sin_metrica', oracion: null };
+  const oracion = oracionPrincipal(m && m.descripcion) || oracionPrincipal(m && m.pregunta);
+  const lee = oracion ? metricaDeFuente(oracion, { ignorarCondicionales: false }).lee : null;
+  if (!CODIGO_V2[lee]) return { metrica: null, via: null, motivo: 'metrica_ambigua', oracion };
+  // Testigos: slug y pregunta. Callados está bien; contradiciendo, no.
+  const testigos = [v1.por_fuente.slug.lee, v1.por_fuente.pregunta.lee].filter(Boolean);
+  if (testigos.some((t) => t !== lee)) return { metrica: null, via: null, motivo: 'metrica_ambigua', oracion };
+  return { metrica: CODIGO_V2[lee], via: 'oracion_principal', motivo: null, oracion };
+}
+
+// 'GAAP' | 'NONGAAP' | null.
+function metricaBarra(m) {
+  return leeMetrica(m).metrica;
+}
+
+// Fecha del slug: "imax-quarterly-earnings-nongaap-eps-10-22-2026-0pt88" →
+// 2026-10-22. Es la fecha ESTIMADA del reporte cuando nació el mercado; la
+// columna de fecha de la tabla puede moverse después (IMAX 10-22 quedó con
+// 2026-11-05 y se perdió del cruce).
+function fechaDelSlug(slug) {
+  const m = /-(\d{2})-(\d{2})-(\d{4})-(?:neg-?)?\d+pt\d+$/.exec(String(slug || '').toLowerCase());
+  return m ? `${m[3]}-${m[1]}-${m[2]}` : null;
+}
+
+// Consenso de creación en la plantilla nueva: «The Street consensus estimate
+// for Tesla’s non-GAAP EPS for the relevant quarter is $0.43 as of market
+// creation». El lector v1 busca el monto a ≤ 60 caracteres de "consensus" y
+// acá está más lejos; en producción no se notaba porque caía al consensus_pm
+// de la tabla. Este patrón lee la oración entera, con el monto pegado a
+// "as of market creation".
+const CONSENSO_PLANTILLA = /\bconsensus estimate for [^.$]{1,120}? is \$\s*(-?\d+(?:\.\d+)?) as of market creation/i;
 
 // La barra: el umbral del slug ("…-6pt31") y, si no está, el monto de la
 // descripción. consenso_creacion: lo que la descripción declara como consenso.
 function leeMercado(m) {
   const desc = (m && m.descripcion) || '';
-  const consenso = extraeConsensoEps(desc);
+  const plantilla = CONSENSO_PLANTILLA.exec(desc);
+  const consenso = plantilla ? { valor: Number(plantilla[1]), patron: 'consensus_monto' } : extraeConsensoEps(desc);
   const delSlug = umbralDelSlug(m && m.slug);
   const barra = delSlug !== null ? delSlug : consenso ? consenso.valor : null;
   const consenso_creacion = consenso && consenso.patron === 'consensus_monto' ? consenso.valor : null;
+  const met = leeMetrica(m);
   return {
-    metrica_barra: metricaBarra(m),
+    metrica_barra: met.metrica,
+    metrica_via: met.via,
+    metrica_motivo: met.motivo,
     barra,
     barra_fuente: delSlug !== null ? 'slug' : consenso ? 'descripcion' : null,
     consenso_creacion,
   };
+}
+
+// ── Qué mercado es cada fila del piloto ──
+// El piloto es "los 22 de la página al 21-oct 20:00 CT". Un mercado creado
+// DESPUÉS del corte no puede ser uno de esos 22 (LLY 7.01, creado el 23-oct,
+// se estaba colando en lugar del de 7.49). Entre los que existían al corte,
+// gana el que tiene la fecha del SLUG igual a la fecha de la lista; si ninguno,
+// la fecha de la tabla ± 1 día. Si queda más de uno, desempata la barra de la
+// semilla; si todavía queda más de uno, el más viejo, y se marca `ambiguo`.
+function eligeMercadoPiloto(candidatos, { symbol, fecha, barraSemilla = null, corte = CORTE_VALIDACION } = {}) {
+  const corteMs = Date.parse(corte);
+  const delSimbolo = (candidatos || []).filter((x) => x && x.symbol === symbol);
+  const alCorte = delSimbolo.filter((x) => !x.creado_ts || Date.parse(x.creado_ts) <= corteMs);
+  const descartados_por_corte = delSimbolo.length - alCorte.length;
+  let pool = alCorte.filter((x) => fechaDelSlug(x.slug) === fecha);
+  let via = 'fecha_slug';
+  if (!pool.length) {
+    pool = alCorte.filter((x) => x.fecha && Math.abs(Date.parse(x.fecha) - Date.parse(fecha)) <= 86400000);
+    via = 'fecha_tabla';
+  }
+  if (pool.length > 1 && barraSemilla !== null && barraSemilla !== undefined) {
+    const conBarra = pool.filter((x) => umbralDelSlug(x.slug) === Number(barraSemilla));
+    if (conBarra.length) pool = conBarra;
+  }
+  if (!pool.length) return { mercado: null, via: null, ambiguo: false, descartados_por_corte };
+  const orden = [...pool].sort((a, b) => String(a.creado_ts || '').localeCompare(String(b.creado_ts || '')));
+  return { mercado: orden[0], via, ambiguo: orden.length > 1, descartados_por_corte };
 }
 
 // ─────────────────── (2) sorpresa histórica, 8T ───────────────────
@@ -282,7 +370,7 @@ function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UN
 
   // Por qué falta prob_v2, en una palabra. "Sin dato" no es un cero.
   const faltante = fuera_universo ? 'fuera_universo'
-    : !metrica_barra ? 'sin_metrica'
+    : !metrica_barra ? (mk.metrica_motivo === 'metrica_ambigua' ? 'metrica_ambigua' : 'sin_metrica')
       : barra === null ? 'sin_barra'
         : (consenso_vigente ?? consenso_creacion) === null ? 'sin_consenso'
           : hist.sorpresa_mediana_8t === null ? 'sin_historial_8t'
@@ -291,7 +379,7 @@ function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UN
   return {
     market_id: mk.market_id || null, symbol, fecha,
     quarter_end: trimestreDelReporte(fecha),
-    metrica_barra, barra, consenso_creacion, consenso_vigente,
+    metrica_barra, metrica_via: mk.metrica_via || null, barra, consenso_creacion, consenso_vigente,
     consenso_usado: consenso_vigente !== null ? 'vigente' : consenso_creacion !== null ? 'creacion' : null,
     consenso_vs_barra_ok: consenso_creacion === null || barra === null ? null
       : Math.abs(consenso_creacion - barra) <= CRITERIOS_V2.tolerancia_consenso_barra + 1e-9,
@@ -632,7 +720,7 @@ function renderMdV21({ titulo, filas, veredicto = null, piloto = false, notas = 
 
 export {
   CRITERIOS_V2, CORTE_VALIDACION, VALIDACION_V2, UNIVERSO,
-  metricaBarra, leeMercado, sorpresaHistorica, trimestreDelReporte,
+  metricaBarra, leeMetrica, oracionPrincipal, fechaDelSlug, eligeMercadoPiloto, leeMercado, sorpresaHistorica, trimestreDelReporte,
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
   estimadoVigenteDeAv,

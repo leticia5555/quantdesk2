@@ -143,6 +143,62 @@ Cambios en las semillas del 23-oct, con las URL que abrió Lety (`docs/sql/earni
 - **LLY, AAL, PCG, AXP, PYPL, TDOC**: verificadas. PYPL guarda el texto literal ("low-single digit decline"); el rango 1.30–1.32 es interpretación.
 - **SSNC**: sigue sin verificar. La URL del 8-K del 23-jul está, pero desde la sesión no se puede abrir sec.gov.
 
+### Métrica y cruce del piloto (24-oct)
+
+El primer `?validacion=1` real dio **9 de 22 en `sin_metrica`**: TSLA, SSNC, TFX, IMAX ×2, BA, PJT, PYPL, LLY y XOM. Además, IMAX 10-22 salió sin mercado ni consenso.
+
+**Las 9 descripciones son la misma plantilla de Polymarket.** Está guardada verbatim en `tests/fixtures/earnings-beat-v2-plantilla-oct26.mjs`. El slug dice `nongaap-eps` y la oración que define el mercado dice "reports non-GAAP EPS greater than…", pero la descripción trae dos menciones a GAAP que el lector v1 no aparta. Como la descripción nombra las dos métricas, el lector la marca en conflicto con el slug y la métrica queda indeterminada.
+
+Estas son las redacciones exactas:
+
+1. «…; **or, if not published there, according to the GAAP EPS provided by SeekingAlpha.**» Es la cola, después del `;`, de un respaldo condicional («If no such figure is published within 96h…»). v1 corta en el `;` y la cola no empieza con «If», así que no la reconoce como condicional.
+2. «**Note: For the purposes of this market, IFRS EPS will be treated as GAAP EPS.**» Es una nota de definición.
+
+**Arreglo, solo en v2 (el lector v1 y sus pruebas no se tocan):**
+
+- Si v1 ve una sola métrica, esa es.
+- Si v1 ve las dos, decide la **oración principal**: «This market will resolve to "Yes" if X reports <métrica> EPS greater than $…». Es la regla por la que el mercado resuelve.
+- La oración principal solo decide si el slug y la pregunta no la contradicen.
+- Si la contradicen, si no hay oración principal o si la principal nombra las dos métricas, la fila queda `metrica_ambigua` (un faltante distinto de `sin_metrica`). No se adivina.
+- Ninguna de las 9 resultó ambigua: las 9 dicen non-GAAP en la oración principal y en el slug.
+
+**Consenso de creación:** en esta plantilla el monto está a más de 60 caracteres de "consensus" («The Street consensus estimate for Tesla’s non-GAAP EPS for the relevant quarter is $0.43 as of market creation»). v2 lee ahora esa oración entera. En producción no se notaba porque caía al `consensus_pm` de la tabla.
+
+**Cruce del piloto:** antes elegía el primer mercado del símbolo con fecha de tabla a ± 1 día. Tenía tres fallas:
+
+- **IMAX 10-22:** su mercado (slug `…-10-22-2026-0pt88`) tiene fecha de tabla 11-05, así que no lo encontraba.
+- **LLY:** se colaba el mercado de 7.01, creado el 23-oct, después del corte.
+- **XOM:** había dos mercados con la misma fecha de tabla.
+
+Ahora (`eligeMercadoPiloto`):
+
+1. Solo cuentan los mercados que existían al corte (21-oct 20:00 CT).
+2. Entre esos gana el que tiene la **fecha del slug** igual a la de la lista; si ninguno, la fecha de tabla ± 1 día.
+3. Si quedan varios, desempata la barra de la semilla; si todavía quedan, el más viejo, y la fila se marca `ambiguo`.
+4. El cruce elegido viaja en `piloto_cruce`.
+
+XOM 10-30 depende de cuándo nació el mercado de 4.11 (`5999289`): si existía al corte, es ese; si nació después, queda el de 3.87 (`5778597`).
+
+**Qué debería dar con los insumos reales del 23-oct.** Es una predicción hecha con las mismas sorpresas, std, brecha y guía del JSON; la cifra real es la del próximo `?validacion=1`:
+
+| Mercado | prob A | prob B |
+|---|---|---|
+| TSLA 10-20 | 50% | 50% |
+| SSNC 10-22 | 76% | 51% |
+| TFX 10-22 | 57% | 57% |
+| IMAX 10-22 | 83% | 83% |
+| IMAX 11-05 | 83% | 83% |
+| BA 10-27 | 46% | 46% |
+| PJT 10-27 | 68% | 68% |
+| PYPL 10-27 | 92% | 67% |
+| LLY 10-29 | 3% | 3% |
+| XOM 10-30 | 70% | 70% |
+
+Ninguna fila queda sin número.
+
+- **TSLA** da exactamente 50%: la regla de acierto lo cuenta como fallo (se pre-registró así).
+- **LLY** da 3% por el cargo de IPR&D de $4.57 marcado `afecta = AMBAS`, que se resta también de la barra non-GAAP. Es la columna (1) haciendo su trabajo, igual que con META. Se anota y no se toca.
+
 ## v2.1 — set pre-registrado
 
 **Corte: 23-oct-2026**, el día que se abre el PR de v2.1. El encargo pedía la fecha de merge, pero el PR se abre listo para merge y sin pushes después, así que la fecha no se puede escribir en el código una vez conocida. Se fija la de apertura, que es cuando quedaron escritos los criterios. Si el merge cae después, el set incluye además los mercados creados entre la apertura y el merge: es una ventana más ancha, no una elegida mirando datos. Congelado en `CRITERIOS_V21` y pineado por test.
