@@ -27,7 +27,15 @@ import { ensureLibroSchema, leerEstado, metricas, percentilSuerte, retornoMedioP
 import { libroLiveEnabled, libroModo } from './_lib/libro-alpaca.js';
 import { bajaSeries } from './_lib/yahoo-daily.js';
 
-export const maxDuration = 60; // api/*.js del vercel.json; una entrada propia rompe el build (unused_function)
+// 120s, como en `main`. Esta rama lo había bajado a 60 con la nota «una
+// entrada propia rompe el build (unused_function)», y eso era cierto el
+// 2026-10-18: `api/libro-report.js` todavía no existía, así que su patrón en
+// `vercel.json` no casaba con nada. Hoy el archivo existe, `main` tiene la
+// entrada de 120s y despliega verde. Bajar el techo a la mitad era el
+// workaround de un error que ya no pasa, no una decisión sobre cuánto tarda
+// el reporte — así que se conserva el 120 de `main` (resuelto al traer `main`
+// a esta rama, 2026-10-23).
+export const maxDuration = 120;
 
 function secretoAdmin() { return process.env.ADMIN_SECRET || process.env.CRON_SECRET || null; }
 function autorizado(req, q) {
