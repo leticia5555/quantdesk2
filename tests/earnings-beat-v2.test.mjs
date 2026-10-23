@@ -17,10 +17,11 @@ import {
   CRITERIOS_V2, VALIDACION_V2, CORTE_VALIDACION, UNIVERSO,
   leeMercado, sorpresaHistorica, trimestreDelReporte, brechaConocida, guiaImplicita, barraVsGuia,
   estimadoV2, normalCdf, probV2, filaV2, acierto, veredictoV2, renderMd, estimadoVigenteDeAv,
+  SET_PILOTO, CRITERIOS_V21, enSetV21, estimadoB, filaV21, veredictoV21, renderMdV21,
 } from '../api/_lib/earnings-beat-v2.js';
-import { SCHEMA_V2 } from '../api/_lib/earnings-beat-v2-db.js';
+import { SCHEMA_V2, upsertHist, upsertMercadosV2 } from '../api/_lib/earnings-beat-v2-db.js';
 import { SCHEMA as SCHEMA_V1 } from '../api/_lib/earnings-beat-db.js';
-import { CONSULTAS } from '../api/earnings-beat-v2.js';
+import { CONSULTAS, simbolosParaBuscar } from '../api/earnings-beat-v2.js';
 import { historia, GAPS, GUIAS, RESUELTOS } from './fixtures/earnings-beat-v2-resueltos.mjs';
 import { levantaPostgres, binDePostgres, SIN_POSTGRES, FALTA_POSTGRES } from './_postgres.mjs';
 
@@ -267,15 +268,208 @@ test('prob_v2 no aparece en ninguna página ni script del front', () => {
   }
 });
 
-// ── migración y semillas contra un Postgres real ───────────────
-const SQL_SEMILLAS = readFileSync('docs/sql/earnings-beat-v2.sql', 'utf8');
-const norm = (s) => s.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
+// ═══════════════════ v2.1 ═══════════════════
 
-test('la DDL del .sql es la misma que SCHEMA_V2', () => {
-  for (const q of SCHEMA_V2) assert.ok(norm(SQL_SEMILLAS).includes(norm(q)), q.slice(0, 60));
+test('CRITERIOS_V21 pre-registrados', () => {
+  assert.equal(SET_PILOTO, 'piloto-oct26');
+  assert.equal(CRITERIOS_V21.creado_desde, '2026-10-23');
+  assert.equal(CRITERIOS_V21.creado_hasta, '2026-11-30');
+  assert.equal(CRITERIOS_V21.resuelve_antes, '2026-12-31');
+  assert.equal(CRITERIOS_V21.min_mercados, 40);
+  assert.equal(CRITERIOS_V21.umbral_desacuerdo, 0.15);
+  assert.equal(CRITERIOS_V21.acierto_min_zona, 0.65);
+  assert.ok(Object.isFrozen(CRITERIOS_V21));
 });
 
-test('migración + semillas + consultas del endpoint, contra Postgres', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
+test('el set v2.1 lo define la fecha de creación y la de resolución, no una lista', () => {
+  assert.equal(enSetV21({ creado: '2026-10-23', fecha: '2026-11-04' }), true);
+  assert.equal(enSetV21({ creado: '2026-11-30T23:00:00Z', fecha: '2026-12-30' }), true);
+  assert.equal(enSetV21({ creado: '2026-10-22', fecha: '2026-11-04' }), false);  // antes del corte
+  assert.equal(enSetV21({ creado: '2026-12-01', fecha: '2026-12-10' }), false);  // creado tarde
+  assert.equal(enSetV21({ creado: '2026-11-10', fecha: '2026-12-31' }), false);  // resuelve tarde
+  assert.equal(enSetV21({ creado: null, fecha: '2026-11-04' }), false);
+});
+
+test('fórmula de B FIJADA: promedio(estimado A, medio de la guía), solo con guía de la misma métrica', () => {
+  assert.deepEqual(estimadoB(0.44, 0.41, 'NONGAAP', 'NONGAAP'), { estimado_B: 0.425, usa_guia: true });
+  assert.deepEqual(estimadoB(-0.285, -0.40, 'NONGAAP', 'NONGAAP'), { estimado_B: -0.3425, usa_guia: true });
+  assert.deepEqual(estimadoB(1.98, null, null, 'NONGAAP'), { estimado_B: 1.98, usa_guia: false });     // sin guía: B = A
+  assert.deepEqual(estimadoB(-0.25, -0.25, 'GAAP', 'NONGAAP'), { estimado_B: -0.25, usa_guia: false }); // otra métrica: B = A
+  assert.deepEqual(estimadoB(null, 0.41, 'NONGAAP', 'NONGAAP'), { estimado_B: null, usa_guia: false });
+});
+
+const fx = (sym) => RESUELTOS.find((r) => r.mercado.symbol === sym);
+const fila21 = (sym, { sorpresas, fuenteHist = 'pm_v2_hist' } = {}) => {
+  const r = fx(sym);
+  return filaV21({
+    mercado: r.mercado, historial: historia(sorpresas || r.sorpresas, r.base), fuenteHist,
+    gaps: GAPS[sym] || [], guia: GUIAS[sym] ? { ...GUIAS[sym] } : null,
+  });
+};
+
+test('v2.1: con historial de pm_v2_hist, AAL y PCG ya tienen número; la métrica de la sorpresa queda null', () => {
+  for (const sym of ['AAL', 'PCG']) {
+    const f = fila21(sym);
+    assert.notEqual(f.prob_A, null, sym);
+    assert.equal(f.universo_pead, false);
+    assert.equal(f.fuente_hist, 'pm_v2_hist');
+    assert.equal(f.sorpresa_metrica_match, null);
+    assert.equal(f.faltante, null);
+  }
+  const sin = filaV21({ mercado: fx('AAL').mercado, historial: [], fuenteHist: null });
+  assert.equal(sin.prob_A, null);
+  assert.equal(sin.faltante, 'sin_historial');
+});
+
+test('v2.1: PCG con +0.01 — A dice Yes (falla), B con la guía 0.41 dice No (acierta)', () => {
+  const f = fila21('PCG', { sorpresas: Array(8).fill(0.01) });
+  assert.equal(f.estimado_A, 0.44);
+  assert.equal(f.guia_q_implicita, 0.41);
+  assert.equal(f.estimado_B, 0.425);
+  assert.ok(f.prob_A > 0.5 && f.prob_B < 0.5, `${f.prob_A} / ${f.prob_B}`);
+});
+
+test('v2.1: AAL — A dice Yes (acierta), B con la guía −0.40 dice No (falla)', () => {
+  const f = fila21('AAL');
+  assert.equal(f.estimado_B, -0.3425);
+  assert.ok(f.prob_A > 0.5 && f.prob_B < 0.5, `${f.prob_A} / ${f.prob_B}`);
+});
+
+test('v2.1: sin guía, prob_B = prob_A (META, UNP, PG)', () => {
+  for (const sym of ['META', 'UNP', 'PG']) {
+    const f = fila21(sym, { fuenteHist: 'pead' });
+    assert.equal(f.prob_B, f.prob_A, sym);
+    assert.equal(f.B_usa_guia, false);
+    assert.equal(f.universo_pead, true);
+  }
+});
+
+const m21 = (o) => ({ creado: '2026-11-01', fecha: '2026-11-10', outcome: 'yes', faltante: null, prob_A: 0.5, prob_B: 0.5, prob_pm_t24: 0.5, ...o });
+const muchos = (n, f) => Array.from({ length: n }, (_, i) => m21(f(i)));
+
+test('veredicto v2.1: < 40 completos → INCONCLUSO', () => {
+  const v = veredictoV21(muchos(39, () => ({ prob_A: 0.9, prob_B: 0.9, prob_pm_t24: 0.5 })), { hoy: '2027-01-02' });
+  assert.equal(v.veredicto, 'INCONCLUSO');
+  assert.equal(v.completas, 39);
+});
+
+test('veredicto v2.1: ni A ni B le ganan a PM → NO-GO', () => {
+  const v = veredictoV21(muchos(40, () => ({ prob_A: 0.6, prob_B: 0.6, prob_pm_t24: 0.9 })), { hoy: '2027-01-02' });
+  assert.equal(v.veredicto, 'NO-GO');
+});
+
+test('veredicto v2.1: solo A gana y pasa la zona → GO por A', () => {
+  const v = veredictoV21(muchos(40, (i) => ({ prob_A: 0.9, prob_B: 0.5, prob_pm_t24: i < 10 ? 0.6 : 0.85 })), { hoy: '2027-01-02' });
+  assert.equal(v.veredicto, 'GO');
+  assert.equal(v.A.pasa, true);
+  assert.equal(v.B.gana_brier, false);
+  assert.match(v.motivo, /pasa A/);
+});
+
+test('veredicto v2.1: A y B pasan → GO, se dice cuál tiene mejor Brier y NO se elige', () => {
+  const v = veredictoV21(muchos(40, (i) => ({ prob_A: 0.9, prob_B: 0.95, prob_pm_t24: i < 10 ? 0.6 : 0.85 })), { hoy: '2027-01-02' });
+  assert.equal(v.veredicto, 'GO');
+  assert.match(v.motivo, /pasan A y B; mejor Brier: B\. No se elige/);
+});
+
+test('veredicto v2.1: gana el Brier pero la zona no llega al 65% → NO-GO', () => {
+  // 50 fuera de la zona donde A es mucho mejor; 10 en la zona, A acierta 4.
+  const v = veredictoV21(muchos(60, (i) => (i < 6 ? { prob_A: 0.45, prob_B: 0.45, prob_pm_t24: 0.7 }
+    : i < 10 ? { prob_A: 0.95, prob_B: 0.95, prob_pm_t24: 0.75 }
+      : { prob_A: 0.99, prob_B: 0.99, prob_pm_t24: 0.85 })), { hoy: '2027-01-02' });
+  assert.equal(v.A.gana_brier, true);
+  assert.equal(`${v.A.zona_aciertos}/${v.A.zona_n}`, '4/10');
+  assert.equal(v.veredicto, 'NO-GO');
+});
+
+test('veredicto v2.1: antes del 31-dic es provisional; fuera del set no cuenta', () => {
+  const filas = [...muchos(40, () => ({ prob_A: 0.9, prob_B: 0.9, prob_pm_t24: 0.5 })), m21({ creado: '2026-10-01' })];
+  const v = veredictoV21(filas, { hoy: '2026-11-15' });
+  assert.equal(v.en_set, 40);
+  assert.match(v.veredicto, /\(provisional\)$/);
+});
+
+test('el markdown v2.1 pone A, B y PM por resuelto, y el piloto va sin veredicto', () => {
+  const filas = [fila21('PCG', { sorpresas: Array(8).fill(0.01) })];
+  const md = renderMdV21({ titulo: 'x', filas, piloto: true });
+  assert.match(md, /Piloto piloto-oct26: SIN veredicto/);
+  assert.match(md, /\*\*PCG 2026-10-22\*\*: A dijo \d+% ✗, B dijo \d+% ✓, PM sin precio a T-24h, salió No \(0\.41\)\./);
+  assert.ok(!/Veredicto|GO/.test(md.split('\n').slice(0, 6).join('\n')));
+});
+
+test('búsqueda por símbolo: pedidos primero, sin universo cerrado, rotando por día', () => {
+  const a = simbolosParaBuscar({ cosechados: ['ZZZ', 'bad sym'], pedidos: ['AAL'], dia: 0 });
+  assert.equal(a[0], 'AAL');
+  assert.ok(a.includes('ZZZ') && a.includes('PCG') && a.includes('AAPL'));
+  assert.ok(!a.includes('bad sym'));
+  assert.equal(new Set(a).size, a.length);
+  const b = simbolosParaBuscar({ cosechados: ['ZZZ'], pedidos: [], dia: 1 });
+  const c = simbolosParaBuscar({ cosechados: ['ZZZ'], pedidos: [], dia: 2 });
+  assert.notEqual(b[0], c[0]);
+  assert.deepEqual([...b].sort(), [...c].sort());
+});
+
+// ── migración y semillas contra un Postgres real ───────────────
+const SQL_V2 = readFileSync('docs/sql/earnings-beat-v2.sql', 'utf8');
+const SQL_V21 = readFileSync('docs/sql/earnings-beat-v2-1.sql', 'utf8');
+const norm = (s) => s.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
+
+test('la DDL de los .sql es la misma que SCHEMA_V2', () => {
+  const ambos = norm(SQL_V2 + '\n' + SQL_V21);
+  for (const q of SCHEMA_V2) assert.ok(ambos.includes(norm(q)), q.slice(0, 60));
+});
+
+test('pm_earnings_markets_v2 tiene el MISMO esquema que v1 + universo_pead', () => {
+  const v1 = SCHEMA_V1[0];
+  assert.ok(SCHEMA_V2.includes(v1.replace(/pm_earnings_markets/g, 'pm_earnings_markets_v2')));
+  assert.ok(SCHEMA_V2.some((q) => /pm_earnings_markets_v2 add column if not exists universo_pead boolean/.test(q)));
+});
+
+// Puente Neon → psql: db.js habla HTTP con Neon; acá ese HTTP se ejecuta de
+// verdad en el Postgres efímero (PREPARE + EXECUTE con los parámetros como
+// literales), para que los upserts nuevos se prueben como SQL, no como texto.
+function literal(v) {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return `'${String(v).replace(/'/g, "''")}'`;
+}
+function sustituye(query, params) {
+  return query.replace(/\$(\d+)/g, (_, i) => literal(params[Number(i) - 1]));
+}
+function puenteNeon(psql) {
+  const corre = ({ query, params = [] }) => {
+    const q = sustituye(query, params).trim().replace(/;\s*$/, '');
+    const lee = /^(select|with)\b/i.test(q) ? `select coalesce(json_agg(t), '[]') from (${q}) t`
+      : /\breturning\b/i.test(q) ? `with t as (${q}) select coalesce(json_agg(t), '[]') from t`
+        : null;
+    if (!lee) { psql(q + ';'); return { fields: [], rows: [] }; }
+    const objs = JSON.parse(psql(lee + ';').trim() || '[]');
+    const nombres = objs.length ? Object.keys(objs[0]) : [];
+    const oid = (v) => (typeof v === 'number' ? 1700 : typeof v === 'boolean' ? 16 : v && typeof v === 'object' ? 3802 : 25);
+    const fields = nombres.map((n) => ({ name: n, dataTypeID: oid(objs.find((o) => o[n] !== null)?.[n] ?? null) }));
+    const rows = objs.map((o) => nombres.map((n) => (o[n] === null ? null
+      : typeof o[n] === 'object' ? JSON.stringify(o[n]) : typeof o[n] === 'boolean' ? (o[n] ? 't' : 'f') : String(o[n]))));
+    return { fields, rows };
+  };
+  return async (_url, init) => {
+    const body = JSON.parse(init.body);
+    const data = body.queries ? { results: body.queries.map(corre) } : corre(body);
+    return { ok: true, status: 200, json: async () => data };
+  };
+}
+
+function resFalsa() {
+  const r = { code: null, headers: {}, cuerpo: null };
+  r.setHeader = (k, v) => { r.headers[k] = v; };
+  r.status = (c) => { r.code = c; return r; };
+  r.json = (b) => { r.cuerpo = b; return r; };
+  r.send = (b) => { r.cuerpo = b; return r; };
+  r.end = () => r;
+  return r;
+}
+
+test('migración + semillas + consultas + upserts v2.1, contra Postgres', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
   const BIN = binDePostgres();
   assert.ok(BIN, FALTA_POSTGRES);
   const psql = levantaPostgres(t, { bin: BIN, puerto: 55437 });
@@ -283,17 +477,120 @@ test('migración + semillas + consultas del endpoint, contra Postgres', { skip: 
   psql(`create table if not exists pead_earnings (symbol text not null, fiscal_date_ending date not null,
           reported_date date not null, reported_eps numeric, estimated_eps numeric, surprise numeric,
           surprise_pct numeric, source text, ingested_at timestamptz default now(), primary key (symbol, reported_date));`);
-  psql(SQL_SEMILLAS);
-  psql(SQL_SEMILLAS);   // idempotente
+  for (let i = 0; i < 2; i++) { psql(SQL_V2); psql(SQL_V21); }   // idempotentes
   assert.equal(psql('select count(*) from pm_v2_validation').trim(), '22');
+  assert.equal(psql("select count(*) from pm_v2_validation where set = 'piloto-oct26'").trim(), '22');
   assert.equal(psql("select count(*) from pm_v2_validation where outcome is not null").trim(), '7');
   assert.equal(psql('select count(*) from pm_known_gaps').trim(), '5');
   assert.equal(psql('select count(*) from pm_company_guidance').trim(), '6');
   assert.equal(psql('select count(*) from pm_known_gaps where fuente_url is null').trim(), '0');
+  // lo que Lety abrió, verificado; lo que no, no
+  assert.equal(psql("select string_agg(symbol || ':' || concepto, ',' order by symbol, concepto) from pm_known_gaps where not verificada").trim(), 'GOOGL:multa_dma_ce_jul_2026');
+  assert.equal(psql("select string_agg(symbol, ',' order by symbol) from pm_company_guidance where not verificada").trim(), 'SSNC');
+  assert.equal(psql("select brecha_por_accion from pm_known_gaps where symbol = 'UNP'").trim(), '0.05');
+
   for (const [nombre, f] of Object.entries(CONSULTAS)) {
     const q = f(2);
-    const n = (q.match(/\$\d+/g) || []).length ? Math.max(...q.match(/\$\d+/g).map((x) => Number(x.slice(1)))) : 0;
-    const tipos = n ? `(${Array(n).fill(nombre === 'resueltos' ? 'int' : 'text').join(', ')})` : '';
+    const marcas = (q.match(/\$\d+/g) || []).map((x) => Number(x.slice(1)));
+    const n = marcas.length ? Math.max(...marcas) : 0;
+    const tipo = (i) => (['resueltos', 'pendientesPrecioV2'].includes(nombre) || (nombre === 'histFresco' && i === n) ? 'int' : 'text');
+    const tipos = n ? `(${Array.from({ length: n }, (_, i) => tipo(i + 1)).join(', ')})` : '';
     psql(`prepare q_${nombre}${tipos} as ${q}; deallocate q_${nombre};`);
+  }
+
+  // Los upserts nuevos, ejecutados de verdad.
+  const fetchOriginal = globalThis.fetch;
+  const dbOriginal = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgres://u:p@ep-prueba.region.aws.neon.tech/db';
+  globalThis.fetch = puenteNeon(psql);
+  try {
+    const ev = [
+      { fiscal_date_ending: '2026-06-30', reported_date: '2026-07-23', reported_eps: 0.95, estimated_eps: 0.84, surprise: 0.11 },
+      { fiscal_date_ending: '2026-09-30', reported_date: '2026-10-22', reported_eps: null, estimated_eps: -0.34, surprise: null },
+    ];
+    assert.equal(await upsertHist('AAL', ev), 1);   // el trimestre sin reportar NO entra
+    assert.equal(await upsertHist('AAL', ev), 1);   // idempotente
+    assert.equal(psql("select count(*) || '|' || max(reported_eps) from pm_v2_hist where symbol = 'AAL'").trim(), '1|0.95');
+
+    const fila = (precio, estado, outcome = null) => ({
+      market_id: 'm1', slug: 'aal-q3', question: 'Will American Airlines (AAL) beat quarterly earnings?', symbol: 'AAL',
+      symbol_via: 'ticker', camino: 'simbolo', filtro_motivo: 'ok', creado: '2026-10-01', report_date: null,
+      resolved_date: '2026-10-22', consensus_pm: -0.34, outcome, abierto: !outcome, yes_token_id: 't1',
+      yes_price_t24h: precio, yes_price_ts: null, yes_price_estado: estado, volume: 1000, raw: JSON.stringify({ id: 'm1' }), universo_pead: false,
+    });
+    await upsertMercadosV2([fila(0.62, 'valido')]);
+    await upsertMercadosV2([fila(0.10, 'error', 'yes')]);   // precio peor: no pisa; outcome sí entra
+    await upsertMercadosV2([fila(null, null, null)]);        // resuelto no vuelve a abierto
+    assert.equal(psql("select yes_price_t24h || '|' || yes_price_estado || '|' || outcome || '|' || abierto || '|' || universo_pead from pm_earnings_markets_v2").trim(), '0.62|valido|yes|false|false');
+    // la unión v1+v2 que leen las vistas: lo de v1 que v2 no tiene, entra
+    psql(`insert into pm_earnings_markets (market_id, symbol, filtro_motivo, resolved_date) values ('m1', 'AAL', 'ok', '2026-10-22'), ('m2', 'PG', 'ok', '2026-10-22');`);
+    assert.equal(psql(`prepare u as ${CONSULTAS.resueltos()}; execute u(10);`).trim().split('\n').length, 1);  // solo m1 tiene outcome
+    assert.equal(psql(`select count(*) from (${CONSULTAS.abiertos().replace(/order by[\s\S]*$/, '')}) x`).trim(), '0');
+
+    // ── El endpoint de punta a punta, sobre las semillas ──
+    // Lo que va a ver Lety después de correr los dos .sql, con la cosecha y el
+    // historial todavía vacíos (salvo el AAL de arriba).
+    const { default: handler } = await import('../api/earnings-beat-v2.js');
+    delete process.env.CRON_SECRET;
+    const r1 = resFalsa();
+    await handler({ method: 'GET', query: { validacion: '1', format: 'md' }, headers: {} }, r1);
+    assert.equal(r1.code, 200, JSON.stringify(r1.cuerpo));
+    assert.match(r1.cuerpo, /Piloto piloto-oct26: SIN veredicto\.\*\* 22 mercados · resueltos 7/);
+    assert.match(r1.cuerpo, /\*\*PCG 2026-10-22\*\*: A sin número, B sin número, PM sin precio a T-24h, salió No \(0\.41\)\. \[sin_historial\]/);
+    assert.match(r1.cuerpo, /\| PCG \| 2026-10-22 \| 0\.43 \| NONGAAP \| 0\.43 \|.*0\.405…0\.415 \(barra arriba\)/);
+    // AAL: tiene historial (1 trimestre, < 4): todavía sin número, pero ya no "fuera de universo"
+    assert.match(r1.cuerpo, /\*\*AAL 2026-10-22\*\*: A sin número.*\[sin_historial_8t\]/);
+    if (process.env.EB_V2_MD) (await import('node:fs')).writeFileSync(process.env.EB_V2_MD, r1.cuerpo);
+    const r2 = resFalsa();
+    await handler({ method: 'GET', query: { validacion: 'v21', format: 'md' }, headers: {} }, r2);
+    assert.equal(r2.code, 200, JSON.stringify(r2.cuerpo));
+    assert.match(r2.cuerpo, /Set v2\.1: INCONCLUSO \(provisional\)/);
+    const r3 = resFalsa();
+    await handler({ method: 'GET', query: { job: 'hist' }, headers: {} }, r3);
+    assert.equal(r3.cuerpo.apagado, true);   // sin la bandera no gasta AV
+
+    // ── job mercados_v2 contra un Gamma/CLOB falsos: un mercado de AAL (fuera
+    // del universo PEAD) tiene que entrar, con su Yes a T-24h y universo_pead
+    // = false. Lo que no es de Polymarket sigue yendo al puente de Neon.
+    const neon = globalThis.fetch;
+    const AAL_RAW = {
+      id: 'pm-aal', slug: 'aal-quarterly-earnings-nongaap-eps-10-22-2026-neg-0pt34',
+      question: 'Will American Airlines (AAL) beat quarterly earnings?',
+      description: 'This market will resolve to "Yes" if American Airlines reports non-GAAP EPS greater than -$0.34 for the quarter. The Street consensus estimate for non-GAAP EPS is $-0.34 as of market creation.',
+      outcomes: '["Yes","No"]', outcomePrices: '["1","0"]', clobTokenIds: '["tok-yes","tok-no"]',
+      endDate: '2026-10-22T20:00:00Z', closedTime: '2026-10-22T20:00:00Z', createdAt: '2026-10-01T12:00:00Z',
+      closed: true, active: false, volumeNum: 5000,
+    };
+    const pedidos = [];
+    const resp = (body) => ({ ok: true, status: 200, headers: new Headers(), json: async () => body });
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.startsWith('https://gamma-api.polymarket.com/public-search')) {
+        const q = new URL(u).searchParams.get('q') || '';
+        pedidos.push(q);
+        return resp({ events: q.startsWith('AAL ') ? [{ slug: 'aal-q3', markets: [AAL_RAW] }] : [] });
+      }
+      if (u.startsWith('https://clob.polymarket.com/prices-history')) {
+        const fin = Date.parse('2026-10-22T20:00:00Z') / 1000;
+        return resp({ history: [{ t: fin - 30 * 3600, p: 0.58 }, { t: fin - 25 * 3600, p: 0.61 }, { t: fin - 2 * 3600, p: 0.9 }] });
+      }
+      return neon(url, init);
+    };
+    try {
+      const r4 = resFalsa();
+      await handler({ method: 'GET', query: { job: 'mercados_v2', symbols: 'AAL' }, headers: {} }, r4);
+      assert.equal(r4.code, 200, JSON.stringify(r4.cuerpo));
+      assert.equal(pedidos[0], 'AAL quarterly earnings');   // los pedidos van primero
+      assert.equal(r4.cuerpo.filtro.aceptados, 1, JSON.stringify(r4.cuerpo.filtro));
+      assert.equal(r4.cuerpo.filtro.fuera_universo_pead, 1);
+      assert.equal(psql("select symbol || '|' || universo_pead || '|' || yes_price_estado || '|' || yes_price_t24h || '|' || outcome from pm_earnings_markets_v2 where market_id = 'pm-aal'").trim(),
+        'AAL|false|valido|0.61|yes');
+      assert.equal(psql("select count(*) from pm_earnings_markets").trim(), '2');   // v1 intacta
+    } finally {
+      globalThis.fetch = neon;
+    }
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    if (dbOriginal === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = dbOriginal;
   }
 });

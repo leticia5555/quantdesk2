@@ -308,6 +308,154 @@ function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UN
   };
 }
 
+// ═══════════════════ v2.1 — universo abierto, dos reglas ═══════════════════
+//
+// Decisiones de Lety (23-oct), pre-registradas acá y no elegidas después:
+//   · prob_A = la fórmula de v2 tal cual (consenso + sorpresa mediana − brecha).
+//   · prob_B = igual, pero si hay guía (trimestral o implícita de la anual) de
+//     la MISMA métrica que la barra: estimado_B = promedio(estimado_A, medio de
+//     la guía). Sin guía, o con guía de otra métrica, prob_B = prob_A.
+//     Lo de "misma métrica" es la única regla que agregué: promediar una guía
+//     GAAP con una barra non-GAAP mezcla dos números distintos.
+//   · No se elige entre A y B. Si las dos pasan, se reporta cuál tiene mejor
+//     Brier y la elección espera a un tercer set.
+//   · El set de 22 queda como piloto ('piloto-oct26'), SIN veredicto.
+
+const SET_PILOTO = 'piloto-oct26';
+
+// El set v2.1 no es una lista: lo define la cosecha. Mercados de earnings de
+// Polymarket CREADOS desde la fecha de corte y hasta el 30-nov-2026, que
+// RESUELVAN antes del 31-dic-2026.
+//
+// FECHA DE CORTE: el encargo dice "la fecha de merge". El merge no tiene fecha
+// todavía y el PR se abre listo para merge, sin pushes después. Así que el
+// corte queda en el día que se abre el PR, que es cuando los criterios
+// quedaron escritos. Si el merge cae después, entran los mercados creados
+// entre la apertura y el merge: es una ventana más ANCHA, nunca una elegida
+// mirando datos (docs/earnings-beat-v2.md §"v2.1").
+const CRITERIOS_V21 = Object.freeze({
+  set: 'v2.1',
+  creado_desde: '2026-10-23', /* date-lint-ok: fecha de corte pre-registrada de v2.1 (apertura del PR) */
+  creado_hasta: '2026-11-30', /* date-lint-ok: fin de la ventana de creación del set v2.1, pre-registrado */
+  resuelve_antes: '2026-12-31', /* date-lint-ok: fin del set v2.1, pre-registrado */
+  min_mercados: 40,            // con TODOS los datos (prob_A, prob_B, PM a T-24h, resolución)
+  umbral_desacuerdo: 0.15,     // |prob − PM| > 15 pts
+  acierto_min_zona: 0.65,      // la regla ganadora acierta ≥ 65% en esa zona
+});
+
+// ¿El mercado entra al set v2.1? creado: createdAt de Gamma; fecha: la de
+// resolución/reporte.
+function enSetV21(m, c = CRITERIOS_V21) {
+  const creado = isoDia(m && m.creado);
+  const fecha = isoDia(m && m.fecha);
+  return !!(creado && fecha && creado >= c.creado_desde && creado <= c.creado_hasta && fecha < c.resuelve_antes);
+}
+
+// estimado_B: promedio con el medio de la guía, solo si la guía es de la misma
+// métrica que la barra. Devuelve null si no hay estimado_A.
+function estimadoB(estimado_A, guia_q_implicita, guia_metrica, metrica_barra) {
+  const a = num(estimado_A);
+  if (a === null) return { estimado_B: null, usa_guia: false };
+  const g = num(guia_q_implicita);
+  const misma = !guia_metrica || !metrica_barra || guia_metrica === metrica_barra;
+  if (g === null || !misma) return { estimado_B: a, usa_guia: false };
+  return { estimado_B: redondea((a + g) / 2), usa_guia: true };
+}
+
+// Una fila v2.1. A diferencia de filaV2, el universo es "tiene historial":
+// pead_earnings para los 99, pm_v2_hist para el resto. fuenteHist dice de dónde
+// vino; con pm_v2_hist la métrica de la sorpresa NO se sabe (AV no distingue
+// GAAP de non-GAAP en reportedEPS) → sorpresa_metrica_match = null.
+function filaV21({ mercado, historial = [], fuenteHist = null, gaps = [], guia = null, universoPead = UNIVERSO }) {
+  const mk = mercado || {};
+  const symbol = mk.symbol || null;
+  const base = filaV2({ mercado: mk, historial, gaps, guia, universo: new Set(symbol ? [symbol] : []) });
+  const universo_pead = !!(symbol && universoPead.has(symbol));
+  const sorpresa_metrica_match = fuenteHist === 'pm_v2_hist' ? null : base.sorpresa_metrica_match;
+  const faltante = !symbol ? 'sin_simbolo'
+    : !fuenteHist && base.faltante === 'sin_historial_8t' ? 'sin_historial'
+      : base.faltante;
+
+  const { estimado_B, usa_guia } = estimadoB(base.estimado_v2, base.guia_q_implicita, guia && guia.metrica, base.metrica_barra);
+  const margen_B = estimado_B !== null && base.barra !== null ? redondea(estimado_B - base.barra) : null;
+  const prB = probV2(margen_B, base.sorpresa_std_8t, base.beats_8t, sorpresa_metrica_match, { barra: base.barra });
+  const pm = base.prob_pm_t24;
+  return {
+    ...base,
+    // En v2.1 "fuera_universo" es fuera del universo PEAD, informativo: ya no
+    // impide el número si hay historial en pm_v2_hist.
+    fuera_universo: !universo_pead,
+    universo_pead, fuente_hist: fuenteHist, sorpresa_metrica_match, faltante,
+    estimado_A: base.estimado_v2, margen_A: base.margen_v2, prob_A: base.prob_v2,
+    estimado_B, margen_B, prob_B: prB.prob_v2, B_usa_guia: usa_guia,
+    estimado_b: estimado_B, prob_b: prB.prob_v2,   // nombres de columna en pm_earnings_v2_features
+    desacuerdo_A: base.prob_v2 !== null && pm !== null ? redondea(base.prob_v2 - pm) : null,
+    desacuerdo_B: prB.prob_v2 !== null && pm !== null ? redondea(prB.prob_v2 - pm) : null,
+    creado: isoDia(mk.creado),
+  };
+}
+
+// Veredicto v2.1 (pre-registrado):
+//   GO         si Brier(A) < Brier(PM) o Brier(B) < Brier(PM), sobre ≥ 40
+//              mercados con todos los datos, Y la regla ganadora acierta ≥ 65%
+//              donde |desacuerdo| > 15 pts.
+//   NO-GO      si ninguna le gana al Brier de PM con ≥ 40 mercados.
+//   INCONCLUSO si < 40 mercados con datos completos al 31-dic.
+// Lo que la regla no dice, declarado antes de mirar (igual que en v2):
+//   · regla ganadora con zona VACÍA → no cuenta como ganadora que pase;
+//   · ganadora(s) que no llegan al 65% en la zona → NO-GO (no es GO);
+//   · si A y B pasan, GO, se reporta cuál tiene mejor Brier, y NO se elige.
+//   · antes del 31-dic el veredicto es PROVISIONAL (estado 'abierto').
+function veredictoV21(filas, { criterios = CRITERIOS_V21, hoy = null } = {}) {
+  const enSet = filas.filter((f) => enSetV21(f, criterios));
+  const resueltas = enSet.filter((f) => f.outcome === 'yes' || f.outcome === 'no');
+  const completas = resueltas.filter((f) => f.prob_A !== null && f.prob_B !== null && f.prob_pm_t24 !== null);
+  const y = (f) => (f.outcome === 'yes' ? 1 : 0);
+  const brier_pm = brier(completas.map((f) => [f.prob_pm_t24, y(f)]));
+  const regla = (k) => {
+    const b = brier(completas.map((f) => [f[k], y(f)]));
+    const zona = completas.filter((f) => Math.abs(f[k] - f.prob_pm_t24) > criterios.umbral_desacuerdo);
+    const ac = zona.filter((f) => acierto(f[k], f.outcome)).length;
+    const gana = b !== null && brier_pm !== null && b < brier_pm;
+    const pasa_zona = zona.length > 0 && ac / zona.length >= criterios.acierto_min_zona;
+    return { brier: b, gana_brier: gana, zona_n: zona.length, zona_aciertos: ac,
+      acierto_zona: zona.length ? redondea(ac / zona.length) : null, pasa: gana && pasa_zona };
+  };
+  const A = regla('prob_A');
+  const B = regla('prob_B');
+  const faltan = {};
+  for (const f of resueltas.filter((x) => !completas.includes(x))) {
+    const k = f.prob_pm_t24 === null && f.faltante === null ? 'sin_precio_pm' : (f.faltante || 'sin_precio_pm');
+    faltan[k] = (faltan[k] || 0) + 1;
+  }
+  const abierto = !hoy || isoDia(hoy) < criterios.resuelve_antes;
+  const base = {
+    set: criterios.set, estado: abierto ? 'abierto' : 'cerrado',
+    en_set: enSet.length, resueltas: resueltas.length, completas: completas.length,
+    pendientes: enSet.length - resueltas.length, motivos_faltan: faltan,
+    brier_pm, A, B,
+  };
+  let veredicto, motivo;
+  if (completas.length < criterios.min_mercados) {
+    veredicto = 'INCONCLUSO';
+    motivo = `${completas.length} mercados con datos completos (< ${criterios.min_mercados}): falla de frontera, no veredicto`;
+  } else if (!A.gana_brier && !B.gana_brier) {
+    veredicto = 'NO-GO';
+    motivo = `ni A (${A.brier}) ni B (${B.brier}) le ganan al Brier de PM (${brier_pm})`;
+  } else if (A.pasa || B.pasa) {
+    veredicto = 'GO';
+    const pasan = [A.pasa && 'A', B.pasa && 'B'].filter(Boolean);
+    const mejor = pasan.length === 2 ? (A.brier <= B.brier ? 'A' : 'B') : pasan[0];
+    motivo = pasan.length === 2
+      ? `pasan A y B; mejor Brier: ${mejor}. No se elige: eso espera a un tercer set`
+      : `pasa ${mejor} (Brier ${mejor === 'A' ? A.brier : B.brier} < PM ${brier_pm}, zona ${mejor === 'A' ? `${A.zona_aciertos}/${A.zona_n}` : `${B.zona_aciertos}/${B.zona_n}`})`;
+  } else {
+    veredicto = 'NO-GO';
+    motivo = 'le gana al Brier de PM pero en la zona de desacuerdo no llega al 65% (o la zona está vacía)';
+  }
+  return { ...base, veredicto: abierto ? `${veredicto} (provisional)` : veredicto, motivo };
+}
+
 // ─────────────────── consenso vigente (Alpha Vantage) ───────────────────
 
 // events: salida de parseEarnings (av-earnings.js). El trimestre que viene
@@ -433,10 +581,60 @@ function renderMd({ titulo, filas, veredicto = null, notas = [] }) {
   return out.join('\n');
 }
 
+// ── markdown v2.1: prob_A y prob_B lado a lado ──
+function tablaMdV21(filas) {
+  const head = '| Símbolo | Fecha | Barra | Métrica | Consenso | Sorpresa med. 8T | Hist. | Brecha | Guía impl. | Est. A | Est. B | prob A | prob B | prob PM | d A | d B | Falta |';
+  const sep = '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+  const rows = filas.map((f) => {
+    const cons = f.consenso_vigente ?? f.consenso_creacion;
+    const guia = f.guia_q_implicita === null || f.guia_q_implicita === undefined ? '—'
+      : `${n3(f.guia_q_min)}…${n3(f.guia_q_max)}${f.barra_vs_guia ? ` (barra ${f.barra_vs_guia})` : ''}`;
+    const sorp = f.sorpresa_mediana_8t === null || f.sorpresa_mediana_8t === undefined ? '—'
+      : `${f.sorpresa_mediana_8t > 0 ? '+' : ''}${f.sorpresa_mediana_8t.toFixed(2)}${f.sorpresa_metrica_match === null ? '‡' : f.sorpresa_metrica_match === false ? '*' : ''}`;
+    const hist = !f.n_8t ? '—' : `${f.beats_8t}/${f.n_8t} ${f.fuente_hist === 'pm_v2_hist' ? 'AV' : 'PEAD'}`;
+    const falta = f.faltante || (f.prob_pm_t24 === null ? 'sin_precio_pm' : '');
+    return `| ${f.symbol} | ${f.fecha} | ${n2(f.barra)} | ${f.metrica_barra || '—'} | ${n2(cons)}${f.consenso_usado === 'vigente' ? ' (vig.)' : ''} | ${sorp} | ${hist} | ${n2(f.brecha_aplicada)} | ${guia} | ${n2(f.estimado_A)} | ${n2(f.estimado_B)}${f.B_usa_guia || f.estimado_B === null ? '' : ' (=A)'} | ${pct(f.prob_A)}${f.std_fallback ? '†' : ''} | ${pct(f.prob_B)} | ${pct(f.prob_pm_t24)} | ${sgn(f.desacuerdo_A)} | ${sgn(f.desacuerdo_B)} | ${falta} |`;
+  });
+  return [head, sep, ...rows].join('\n');
+}
+
+function lineaResueltoV21(f) {
+  const sale = f.outcome === 'yes' ? 'Yes' : 'No';
+  const act = f.actual_eps === null || f.actual_eps === undefined ? '' : ` (${n2(f.actual_eps)})`;
+  const v = (k, nombre) => (f[k] === null ? `${nombre} sin número` : `${nombre} dijo ${pct(f[k])}${acierto(f[k], f.outcome) ? ' ✓' : ' ✗'}`);
+  const pm = f.prob_pm_t24 === null ? 'PM sin precio a T-24h' : `PM dijo ${pct(f.prob_pm_t24)}${acierto(f.prob_pm_t24, f.outcome) ? ' ✓' : ' ✗'}`;
+  const motivo = f.prob_A === null && f.faltante ? ` [${f.faltante}]` : '';
+  return `- **${f.symbol} ${f.fecha}**: ${v('prob_A', 'A')}, ${v('prob_B', 'B')}, ${pm}, salió ${sale}${act}.${motivo}`;
+}
+
+// piloto: sin veredicto (decisión del 23-oct). veredicto: el de v2.1, o null.
+function renderMdV21({ titulo, filas, veredicto = null, piloto = false, notas = [] }) {
+  const out = [`# ${titulo}`, ''];
+  out.push('Papel. Aritmética, no recomendación. Nada de esto va a la tab EARNINGS. No se elige entre A y B.', '');
+  if (piloto) {
+    const res = filas.filter((f) => f.outcome);
+    const con = (k) => res.filter((f) => f[k] !== null).length;
+    out.push(`**Piloto ${SET_PILOTO}: SIN veredicto.** ${filas.length} mercados · resueltos ${res.length} · con prob A ${con('prob_A')} · con prob B ${con('prob_B')} · con PM a T-24h ${con('prob_pm_t24')}.`, '');
+  }
+  if (veredicto) {
+    const r = (x) => `Brier ${x.brier ?? '—'} (${x.gana_brier ? 'gana' : 'no gana'} a PM) · zona |d|>15: ${x.zona_aciertos}/${x.zona_n}`;
+    out.push(`**Set ${veredicto.set}: ${veredicto.veredicto}** — ${veredicto.motivo}.`, '');
+    out.push(`En el set ${veredicto.en_set} · resueltos ${veredicto.resueltas} · completos ${veredicto.completas} · pendientes ${veredicto.pendientes} · faltan (${Object.entries(veredicto.motivos_faltan).map(([k, v]) => `${k}: ${v}`).join(', ') || '—'})`);
+    out.push(`Brier PM ${veredicto.brier_pm ?? '—'} · A: ${r(veredicto.A)} · B: ${r(veredicto.B)}`, '');
+  }
+  out.push(tablaMdV21(filas), '');
+  out.push('`‡` historial de Alpha Vantage para un símbolo fuera del universo PEAD: no se sabe si es GAAP o non-GAAP (sorpresa_metrica_match = null). `*` sorpresa ajustada contra barra GAAP. `†` std de respaldo. `(=A)` sin guía de la misma métrica: prob B = prob A.', '');
+  const res = filas.filter((f) => f.outcome);
+  if (res.length) out.push('## Resueltos', '', ...res.map(lineaResueltoV21), '');
+  if (notas.length) out.push('## Notas', '', ...notas.map((n) => `- ${n}`), '');
+  return out.join('\n');
+}
+
 export {
   CRITERIOS_V2, CORTE_VALIDACION, VALIDACION_V2, UNIVERSO,
   metricaBarra, leeMercado, sorpresaHistorica, trimestreDelReporte,
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
   estimadoVigenteDeAv,
+  SET_PILOTO, CRITERIOS_V21, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
 };

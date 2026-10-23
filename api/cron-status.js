@@ -74,6 +74,12 @@ export const EXPECTED = [
   // `precios` dejó el T-24h, y —solo con EARNINGS_V2_VIGENTE_ENABLED=1— captura
   // el consenso vigente de AV. Ver docs/earnings-beat-v2.md.
   { job: 'earnings-beat:v2',       path: '/api/earnings-beat-v2?job=diario',         schedule: '55 23 * * *', cadence: '1×/día (Neon + AV opc.)', stale_after_h: 30 },
+  // v2.1: cosecha SIN filtro de universo (Gamma + CLOB) y el historial de AV
+  // para los símbolos que no están en pead_earnings. `hist` late 'disabled'
+  // mientras EARNINGS_V2_HIST_ENABLED no sea 1: el latido dice que el cron
+  // corre, no que gaste cupo de AV.
+  { job: 'earnings-beat:v2-mercados', path: '/api/earnings-beat-v2?job=mercados_v2', schedule: '20 22 * * *', cadence: '1×/día (Polymarket)', stale_after_h: 30 },
+  { job: 'earnings-beat:v2-hist',     path: '/api/earnings-beat-v2?job=hist',        schedule: '50 22 * * *', cadence: '1×/día (AV, opc.)',   stale_after_h: 30 },
   { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale

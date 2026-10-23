@@ -17,6 +17,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { sql, sqlBatch } from './db.js';
+import { SCHEMA as SCHEMA_V1, CALIDAD_PRECIO } from './earnings-beat-db.js';
 
 const SCHEMA_V2 = [
   `create table if not exists pm_earnings_v2_features (
@@ -96,6 +97,31 @@ const SCHEMA_V2 = [
      capturado_en     timestamptz not null default now(),
      primary key (symbol, fecha_mercado)
    )`,
+  // ── v2.1 ──
+  // El set de 22 queda como piloto: se etiqueta, no se borra.
+  `alter table pm_v2_validation add column if not exists set text not null default 'piloto-oct26'`,
+  // Historial para símbolos FUERA de pead_earnings. Alpha Vantage EARNINGS,
+  // una llamada por símbolo. reported_date no estaba en el encargo y es
+  // imprescindible: sin él no hay forma de cortar "solo trimestres reportados
+  // ANTES del mercado" (cero look-ahead).
+  `create table if not exists pm_v2_hist (
+     symbol             text not null,
+     fiscal_quarter_end date not null,
+     reported_date      date,
+     reported_eps       numeric,
+     estimated_eps      numeric,
+     surprise           numeric,
+     fuente             text not null default 'alphavantage',
+     capturado_en       timestamptz not null default now(),
+     primary key (symbol, fiscal_quarter_end)
+   )`,
+  // Cosecha v2.1: MISMO esquema que pm_earnings_markets (se deriva de la DDL
+  // de v1, no se copia a mano) + universo_pead. v1 no se toca.
+  ...SCHEMA_V1.map((q) => q.replace(/pm_earnings_markets/g, 'pm_earnings_markets_v2')),
+  `alter table pm_earnings_markets_v2 add column if not exists universo_pead boolean not null default false`,
+  // prob_v2 de la tabla de features ES prob_A; prob_B va al lado.
+  `alter table pm_earnings_v2_features add column if not exists estimado_b numeric`,
+  `alter table pm_earnings_v2_features add column if not exists prob_b numeric`,
 ];
 
 let listo = false;
@@ -110,7 +136,7 @@ const COLS_FEATURES = [
   'consenso_vigente', 'sorpresa_mediana_8t', 'sorpresa_std_8t', 'n_8t', 'beats_8t',
   'sorpresa_metrica_match', 'brecha_gaap_adj', 'cargo_ambas_metricas', 'guia_q_implicita', 'guia_q_min',
   'guia_q_max', 'estimado_v2', 'margen_v2', 'prob_v2', 'std_fallback', 'prob_pm_t24', 'desacuerdo',
-  'fuera_universo', 'faltante', 'outcome',
+  'fuera_universo', 'faltante', 'outcome', 'estimado_b', 'prob_b',
 ];
 
 // Upsert por market_id. consenso_vigente NO se escribe acá (lo escribe
@@ -154,4 +180,92 @@ async function guardaVigente(market_id, valor) {
   return rows.length;
 }
 
-export { SCHEMA_V2, ensureSchemaV2, upsertFeatures, guardaVigente, COLS_FEATURES };
+// ─────────────────── v2.1: historial AV ───────────────────
+
+// events: salida de parseEarnings. Solo trimestres REPORTADOS (con
+// reported_eps): el que viene sin reportar es el consenso vigente, otra cosa.
+async function upsertHist(symbol, events) {
+  const filas = (events || []).filter((e) => e && e.fiscal_date_ending && e.reported_eps !== null && e.reported_eps !== undefined);
+  if (!filas.length) return 0;
+  let n = 0;
+  const values = [];
+  const params = [];
+  for (const e of filas) {
+    values.push(`($${++n}, $${++n}, $${++n}, $${++n}, $${++n}, $${++n})`);
+    params.push(symbol, e.fiscal_date_ending, e.reported_date || null, e.reported_eps, e.estimated_eps ?? null, e.surprise ?? null);
+  }
+  const rows = await sql(
+    `insert into pm_v2_hist (symbol, fiscal_quarter_end, reported_date, reported_eps, estimated_eps, surprise)
+     values ${values.join(', ')}
+     on conflict (symbol, fiscal_quarter_end) do update set
+       reported_date = coalesce(excluded.reported_date, pm_v2_hist.reported_date),
+       reported_eps = excluded.reported_eps,
+       estimated_eps = coalesce(excluded.estimated_eps, pm_v2_hist.estimated_eps),
+       surprise = coalesce(excluded.surprise, pm_v2_hist.surprise),
+       capturado_en = now()
+     returning symbol`,
+    params
+  );
+  return rows.length;
+}
+
+// ─────────────────── v2.1: cosecha ───────────────────
+
+// Las mismas dos reglas del upsert de v1 (earnings-beat-db.js): un mercado
+// resuelto no vuelve a abierto y el precio a T-24h solo se reemplaza HACIA
+// ARRIBA en calidad. Se reescribe acá en vez de parametrizar el de v1 porque
+// v1 no se toca; la escala de calidad sí se importa (CALIDAD_PRECIO), así que
+// no pueden divergir.
+const calidad = (expr) => `(case ${expr} ${Object.entries(CALIDAD_PRECIO).map(([k, v]) => `when '${k}' then ${v}`).join(' ')} else -1 end)`;
+const COLS_V2 = ['market_id', 'slug', 'question', 'symbol', 'symbol_via', 'camino', 'filtro_motivo',
+  'creado', 'report_date', 'resolved_date', 'consensus_pm', 'outcome', 'abierto',
+  'yes_token_id', 'yes_price_t24h', 'yes_price_ts', 'yes_price_estado', 'volume', 'raw', 'universo_pead'];
+
+async function upsertMercadosV2(filas) {
+  const validas = (filas || []).filter((f) => f && f.market_id);
+  if (!validas.length) return { insertados: 0, actualizados: 0 };
+  let n = 0;
+  const values = [];
+  const params = [];
+  for (const f of validas) {
+    const ph = COLS_V2.map(() => `$${++n}`);
+    ph[COLS_V2.indexOf('raw')] = `${ph[COLS_V2.indexOf('raw')]}::jsonb`;
+    values.push(`(${ph.join(', ')})`);
+    for (const c of COLS_V2) params.push(c === 'universo_pead' ? !!f[c] : f[c] ?? null);
+  }
+  const t = 'pm_earnings_markets_v2';
+  const mejora = `${calidad('excluded.yes_price_estado')} > ${calidad(`${t}.yes_price_estado`)}`;
+  const rows = await sql(
+    `insert into ${t} (${COLS_V2.join(', ')})
+     values ${values.join(', ')}
+     on conflict (market_id) do update set
+       slug = excluded.slug,
+       question = excluded.question,
+       symbol = coalesce(excluded.symbol, ${t}.symbol),
+       symbol_via = coalesce(excluded.symbol_via, ${t}.symbol_via),
+       camino = coalesce(${t}.camino, excluded.camino),
+       creado = coalesce(excluded.creado, ${t}.creado),
+       report_date = coalesce(excluded.report_date, ${t}.report_date),
+       resolved_date = coalesce(excluded.resolved_date, ${t}.resolved_date),
+       consensus_pm = coalesce(excluded.consensus_pm, ${t}.consensus_pm),
+       outcome = coalesce(${t}.outcome, excluded.outcome),
+       abierto = (coalesce(${t}.outcome, excluded.outcome) is null),
+       yes_token_id = coalesce(excluded.yes_token_id, ${t}.yes_token_id),
+       yes_price_t24h = case when ${mejora} then excluded.yes_price_t24h else ${t}.yes_price_t24h end,
+       yes_price_ts = case when ${mejora} then excluded.yes_price_ts else ${t}.yes_price_ts end,
+       yes_price_estado = case when ${mejora} then excluded.yes_price_estado else ${t}.yes_price_estado end,
+       volume = coalesce(excluded.volume, ${t}.volume),
+       raw = coalesce(excluded.raw, ${t}.raw),
+       universo_pead = excluded.universo_pead,
+       updated_at = now()
+     returning (xmax = 0) as insertado`,
+    params
+  );
+  const insertados = rows.filter((r) => r.insertado === true || r.insertado === 't').length;
+  return { insertados, actualizados: rows.length - insertados };
+}
+
+export {
+  SCHEMA_V2, ensureSchemaV2, upsertFeatures, guardaVigente, COLS_FEATURES,
+  upsertHist, upsertMercadosV2, COLS_V2,
+};

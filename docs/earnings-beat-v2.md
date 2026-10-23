@@ -4,6 +4,8 @@ Extiende el experimento earnings-beat (v1: docs/earnings-beat-scope.md) **sin to
 
 Papel. Nada se apuesta. `prob_v2` vive solo en el endpoint y en las tablas hasta que haya veredicto: **no va a la tab EARNINGS**. El lint que prohíbe lenguaje de pronóstico sigue vigente, y `tests/earnings-beat-v2.test.mjs` falla si alguna página o script del front menciona v2.
 
+> **Estado al 23-oct-2026.** El set de 22 pasó a ser el **piloto `piloto-oct26`, sin veredicto** (decisión de Lety). Los criterios de abajo quedan escritos como estaban, pero no se aplican. El experimento sigue en **v2.1**: universo abierto, dos reglas (A y B) pre-registradas y un set definido por la cosecha. Ver §"Piloto oct-26" y §"v2.1 — set pre-registrado", al final.
+
 ## Por qué existe
 
 Observación del 21–22 oct 2026, sobre los mercados de /finance/earnings que resolvieron esos días. Un lector humano con noticias sacó 2 de 4 (empate con el mercado). Tres reglas aritméticas, sin leer una sola noticia, habrían sacado 5 de 5:
@@ -36,7 +38,7 @@ Tres columnas aritméticas producen una probabilidad con Brier menor que Polymar
 - `beats_8t` y `metrica_match` viajan en la firma, pero no mueven el número: el encargo no define cómo deberían hacerlo.
 - La **guía implícita es una columna, no entra al estimado**. Es lo pre-registrado; meterla ahora sería mover la portería.
 
-### Criterios (sobre los 22, cuando resuelvan, aprox. 5-nov)
+### Criterios (sobre los 22) — ya no se aplican: el set es piloto
 
 - **GO**: `Brier(prob_v2) < Brier(prob_pm_t24)` **y**, en la zona `|desacuerdo| > 15 pts`, v2 acierta ≥ 70%.
 - **NO-GO**: `Brier(prob_v2) ≥ Brier(prob_pm_t24)`.
@@ -105,9 +107,89 @@ Es el `estimatedEPS` de Alpha Vantage `EARNINGS` del trimestre sin reportar. Lo 
 
 | Ruta | Qué devuelve |
 |---|---|
-| `GET /api/earnings-beat-v2?format=md&secret=…` | Los mercados abiertos hoy, ordenados por \|desacuerdo\| descendente. |
-| `GET /api/earnings-beat-v2?resueltos=1&format=md` | Los resueltos, con `acierto_v2` y `acierto_pm`. Acierto = el lado > 50% coincide con la resolución. |
-| `GET /api/earnings-beat-v2?validacion=1&format=md` | Los 22 y el veredicto pre-registrado. |
-| `GET /api/earnings-beat-v2?job=diario` | El cron (`55 23 * * *`, latido `earnings-beat:v2`). |
+| `GET /api/earnings-beat-v2?format=md&secret=…` | Los mercados abiertos hoy, ordenados por \|desacuerdo A\| descendente. |
+| `GET /api/earnings-beat-v2?resueltos=1&format=md` | Los resueltos, con `acierto_A`, `acierto_B` y `acierto_pm`. Acierto = el lado > 50% coincide con la resolución. |
+| `GET /api/earnings-beat-v2?validacion=1&format=md` | El piloto de 22, con A y B, **sin veredicto**. |
+| `GET /api/earnings-beat-v2?validacion=v21&format=md` | El set v2.1 y su veredicto (provisional hasta el 31-dic). |
+| `GET /api/earnings-beat-v2?job=mercados_v2` | Cron `20 22 * * *`, latido `earnings-beat:v2-mercados`. Cosecha sin universo. |
+| `GET /api/earnings-beat-v2?job=hist[&symbols=AAL,PCG]` | Cron `50 22 * * *`, latido `earnings-beat:v2-hist`. Historial de AV; apagado sin `EARNINGS_V2_HIST_ENABLED=1`. |
+| `GET /api/earnings-beat-v2?job=diario` | Cron `55 23 * * *`, latido `earnings-beat:v2`. Features + consenso vigente. |
 
-En la vista de abiertos, `prob_pm` es el precio válido a T-24h si ya existe. Si no existe, es el último precio de Gamma, marcado `prob_pm_fuente = gamma_ahora`.
+Los mercados se leen de `pm_earnings_markets_v2` y, para lo que esa cosecha todavía no vio, de `pm_earnings_markets` (v1). En la vista de abiertos, `prob_pm` es el precio válido a T-24h si ya existe. Si no existe, es el último precio de Gamma, marcado `prob_pm_fuente = gamma_ahora`. Las vistas no escriben datos, pero sí crean las tablas si faltan (antes de la primera cosecha v2.1, la unión con v1 fallaría).
+
+## Piloto oct-26 (sin veredicto)
+
+El set de 22 se conserva en `pm_v2_validation` con `set = 'piloto-oct26'`. **No tiene veredicto** y la fórmula no se ajusta después de haber visto estos datos. Lo valioso fue lo que mostró: el "5 de 5" de la observación del 21–22 oct **no aguanta con las reglas escritas**.
+
+Tabla de los 7 resueltos tal como se reportó el 22-oct. Las series de sorpresa de META, UNP y PG son **sintéticas**: esa sesión no tenía acceso a Neon. Ninguno tenía precio de Polymarket a T-24h en la tabla.
+
+| Mercado | v2 dijo | Salió | Nota |
+|---|---|---|---|
+| TSLA 10-20 | sin número (sin barra en la semilla) | Yes (0.48) | |
+| WDFC 10-21 | sin número (fuera del universo) | No (1.06) | |
+| META 10-21 | 3% | No (3.83) | Acierta; robusto hasta una sorpresa mediana de +3.30. |
+| UNP 10-22 | 35% (mediana sintética +0.03) | No (3.49) | Acierta solo si la mediana real es < +0.05 (con brecha 0.04). |
+| PG 10-22 | 97% si el consenso de la descripción es 1.94 | Yes (2.00) | Con consenso 1.90 da 39% y falla. |
+| AAL 10-22 | sin número (fuera del universo) | Yes (−0.28) | Ninguna de las tres columnas explica el Yes. |
+| PCG 10-22 | sin número (fuera del universo) | No (0.41) | Lo resolvía la guía, que no estaba en la fórmula. |
+
+Con v2.1, el piloto se vuelve a mostrar con A y B (`?validacion=1`) a medida que llegue el historial de AV. Sigue sin veredicto.
+
+Cambios en las semillas del 23-oct, con las URL que abrió Lety (`docs/sql/earnings-beat-v2-1.sql`):
+
+- **UNP**: la brecha pasa a **0.05**, la del último 8-K antes del mercado (Q2 2026, $35M). La de Q3 real fue 0.04 y no se usa, porque es posterior.
+- **META**: la fuente es el comunicado del 26-ago citado por CNBC (verificada); el número final de $9.9B está en el 8-K de Q3.
+- **GOOGL**: PriceRunner se reconoció en Q2, así que la brecha de Q3 es 0 (10-Q Q2, nota 10, verificada). La multa DMA queda `verificada = false`: no hay documento primario.
+- **LLY, AAL, PCG, AXP, PYPL, TDOC**: verificadas. PYPL guarda el texto literal ("low-single digit decline"); el rango 1.30–1.32 es interpretación.
+- **SSNC**: sigue sin verificar. La URL del 8-K del 23-jul está, pero desde la sesión no se puede abrir sec.gov.
+
+## v2.1 — set pre-registrado
+
+**Corte: 23-oct-2026**, el día que se abre el PR de v2.1. El encargo pedía la fecha de merge, pero el PR se abre listo para merge y sin pushes después, así que la fecha no se puede escribir en el código una vez conocida. Se fija la de apertura, que es cuando quedaron escritos los criterios. Si el merge cae después, el set incluye además los mercados creados entre la apertura y el merge: es una ventana más ancha, no una elegida mirando datos. Congelado en `CRITERIOS_V21` y pineado por test.
+
+### Universo
+
+Todos los símbolos que tengan mercado de earnings en Polymarket, no solo los 99 de PEAD. La cosecha de v1 no se toca; v2.1 tiene la suya:
+
+- **`?job=mercados_v2`** escribe en `pm_earnings_markets_v2`. El esquema es el mismo que v1 (se deriva de su DDL) más `universo_pead`.
+  - Usa la búsqueda por símbolo, el camino que ganó en la Fase 0, sobre una lista abierta: los 99, el piloto, todo símbolo ya cosechado y los que se pidan con `&symbols=`.
+  - La búsqueda por frase corre igual y es la que trae símbolos nuevos.
+  - La lista rota por día para cubrirse entera aunque no entre en una corrida.
+  - El símbolo se resuelve solo por ticker explícito (`(AAL)`, `$AAL`) o por alias de nombre: sin universo, el mapa de nombres de Finnhub mete coincidencias absurdas.
+  - Captura el Yes a T-24h como v1 y completa los pendientes con el tiempo que sobra.
+- **`?job=hist`** guarda el historial en `pm_v2_hist`.
+  - Hace una llamada a AV `EARNINGS` por símbolo, que devuelve unos 20 trimestres.
+  - Los símbolos que están en `pead_earnings` no se piden: se leen de ahí.
+  - Tope de 10 llamadas por corrida, respeta el cupo diario compartido (`pead_api_budget`, 25/día) y está apagado sin `EARNINGS_V2_HIST_ENABLED=1`.
+  - Un símbolo con historial de menos de 80 días no se vuelve a pedir (salvo `&forzar=1`). Si AV dice rate limit, la corrida para.
+  - **Costo de llenar el piloto: 10 llamadas.** Son 11 mercados fuera del universo PEAD pero 10 símbolos distintos (IMAX aparece dos veces), así que entran en una sola corrida y usan 10 de las 25 llamadas diarias compartidas.
+- **`reported_date`** se agregó a `pm_v2_hist` aunque no estaba en el encargo: sin esa fecha no hay forma de usar solo los trimestres reportados antes del mercado (cero look-ahead).
+- **Limitación, documentada y no resuelta:** AV no distingue GAAP de non-GAAP en `reportedEPS`. Para los símbolos con historial de `pm_v2_hist`, `sorpresa_metrica_match = null`.
+
+### Las dos reglas (las dos pre-registradas, ninguna se elige después)
+
+- **prob_A**: la fórmula de v2 tal cual. `estimado_A = consenso + sorpresa mediana 8T − brecha`.
+- **prob_B**: igual, pero si hay guía trimestral o implícita de la anual: `estimado_B = promedio(estimado_A, punto medio de la guía)`.
+  - Sin guía, `prob_B = prob_A`.
+  - La guía se usa solo si es de la **misma métrica** que la barra (GAAP con GAAP, non-GAAP con non-GAAP). Es la única regla que agregué, porque promediar una guía GAAP con una barra non-GAAP mezcla dos números distintos. Una guía de otra métrica no entra y `prob_B = prob_A`.
+- Las dos usan la misma Normal, la misma regla de empate de medio centavo, la misma std de respaldo y el mismo clamp.
+
+Lo que la fórmula de B hace con el piloto, pineado en el test con series sintéticas:
+
+- **PCG** con sorpresa +0.01: A da Yes (falla) y B, con la guía 0.41, da No (acierta).
+- **AAL**: A da Yes (acierta) y B, con la guía −0.40, da No (falla).
+
+Ninguna de las dos reglas saca los dos.
+
+### Criterios
+
+El set son todos los mercados de earnings de Polymarket creados entre el **23-oct** y el **30-nov-2026** que resuelvan antes del **31-dic-2026**. No hay lista a mano: lo define la cosecha.
+
+- **GO**: `Brier(prob_A) < Brier(PM a T-24h)` **o** `Brier(prob_B) < Brier(PM a T-24h)`, sobre ≥ 40 mercados con todos los datos (A, B, PM a T-24h y resolución), **y** la regla ganadora acierta ≥ 65% donde |desacuerdo| > 15 pts.
+- **NO-GO**: ninguna de las dos le gana al Brier de PM con ≥ 40 mercados.
+- **INCONCLUSO**: menos de 40 mercados con datos completos al 31-dic. Es una falla de frontera, no un veredicto.
+- Si las dos reglas pasan, se reporta cuál tiene mejor Brier, pero **no se elige** hasta un tercer set.
+- Lo que la regla no dice, declarado antes de mirar (igual que en v2):
+  - Una regla ganadora con la zona de desacuerdo vacía no cuenta como ganadora que pase.
+  - Si gana el Brier pero ninguna llega al 65% en la zona, es NO-GO.
+  - Antes del 31-dic el veredicto se marca `(provisional)`.
