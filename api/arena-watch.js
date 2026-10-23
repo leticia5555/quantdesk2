@@ -53,6 +53,7 @@ import { sql, ensureSchema } from './_lib/db.js';
 import { checkLecturaAuth } from './_lib/arena-admin.js';
 import {
   CONSULTAS as DIAG_CONSULTAS, diaValido, horaValida, resumenPorAgente, soloLectura, HIPOTESIS,
+  BLOQUES_DEL_VEREDICTO, parametrosQueUsa,
 } from './_lib/arena-watch-diagnostico.js';
 import { getCalendar, getAccount, getPositions, getSnapshots, getAvgDailyVolume } from './_lib/alpaca.js';
 import { registrarEquity } from './_lib/arena-equity.js';
@@ -681,39 +682,61 @@ async function diagnosticoDelHueco(req, auth) {
   // El guardia de solo-lectura corre EN LA PETICIÓN, no sólo en la prueba: si
   // alguien agrega una consulta que escribe, este endpoint se niega a correrla
   // en vez de hacerlo y contarlo después.
-  const escriben = Object.entries(DIAG_CONSULTAS).filter(([, c]) => !soloLectura(c)).map(([k]) => k);
+  const escriben = Object.entries(DIAG_CONSULTAS).filter(([, c]) => !soloLectura(c.sql)).map(([k]) => k);
   if (escriben.length) {
     return { status: 500, body: { error: 'El diagnóstico es de SOLO LECTURA y una de sus consultas no lo es.', consultas: escriben } };
   }
 
   const bloques = {};
   const errores = {};
-  for (const [nombre, consulta] of Object.entries(DIAG_CONSULTAS)) {
-    // Una consulta que falla NO tumba a las otras cinco: con un hueco por
-    // explicar, cinco bloques valen muchísimo más que un 500.
-    try { bloques[nombre] = await sql(consulta, [dia, desdeTs, hastaTs]); }
+  for (const [nombre, c] of Object.entries(DIAG_CONSULTAS)) {
+    // CADA CONSULTA LLEVA SUS PROPIOS PARÁMETROS. Pasarle los mismos tres a
+    // las seis fue lo que las reventó a todas en producción: las que no
+    // mencionan `$1` no tienen de dónde sacarle el tipo, y las que usan uno
+    // solo reciben tres. Ver el encabezado de `_lib/arena-watch-diagnostico.js`.
+    try { bloques[nombre] = await sql(c.sql, c.params({ dia, desde: desdeTs, hasta: hastaTs })); }
     catch (err) { bloques[nombre] = []; errores[nombre] = String((err && err.message) || err); }
   }
 
-  const huboTick = (bloques.marcas || []).length > 0;
+  const fallidos = Object.keys(errores);
+  const rotosDelVeredicto = fallidos.filter((b) => BLOQUES_DEL_VEREDICTO.includes(b));
+  // `hubo_tick` es null, NO false, cuando `marcas` no se pudo leer: false
+  // quiere decir "miré y no había", y eso sería mentir sobre lo que se miró.
+  const huboTick = errores.marcas ? null : (bloques.marcas || []).length > 0;
+
   const resumen = resumenPorAgente({
     agentes: activeAgents().map((a) => a.id),
     disparadores: bloques.disparadores || [],
     journal: bloques.journal || [],
     estado: bloques.estado || [],
-    huboTick,
+    huboTick: huboTick === true,
+    bloquesFallidos: fallidos,
   });
 
-  return { status: 200, body: {
+  // Si NINGÚN bloque se pudo leer, esto no es una lectura con huecos: es una
+  // lectura que no ocurrió, y un 200 la haría pasar por buena.
+  const status = fallidos.length === Object.keys(DIAG_CONSULTAS).length ? 502 : 200;
+
+  return { status, body: {
     ventana: { dia, desde: desdeTs, hasta: hastaTs },
     solo_lectura: true,
     auth: { via: auth.via || null, abierto: !!auth.abierto, aviso: auth.aviso || null },
-    // Lo PRIMERO que hay que mirar: si el vigilante no dejó marcas en la
-    // ventana, el hueco no es de ningún agente (H5/H6) y lo demás sobra.
+    // ARRIBA DE TODO, antes que cualquier veredicto: si esto es false, lo que
+    // sigue es lo que se pudo leer, no lo que pasó.
+    medicion_completa: fallidos.length === 0,
+    ...(fallidos.length ? { bloques_fallidos: fallidos } : {}),
+    ...(rotosDelVeredicto.length
+      ? { aviso: `No se pudo medir: falló ${rotosDelVeredicto.join(', ')}. `
+          + 'El resumen dice `no_medido` a propósito — un bloque que reventó viene '
+          + 'vacío igual que uno sin filas, y confundirlos convierte un error en un hallazgo.' }
+      : {}),
+    // Lo PRIMERO que hay que mirar cuando la medición SÍ está completa: si el
+    // vigilante no dejó marcas en la ventana, el hueco no es de ningún agente
+    // (H5/H6) y lo demás sobra. `null` = no se pudo leer.
     hubo_tick: huboTick,
     resumen,
     bloques,
-    ...(Object.keys(errores).length ? { errores } : {}),
+    ...(fallidos.length ? { errores } : {}),
     hipotesis: HIPOTESIS,
   } };
 }

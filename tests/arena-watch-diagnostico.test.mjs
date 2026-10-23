@@ -22,18 +22,41 @@ import { levantaPostgres, binDePostgres, SIN_POSTGRES, FALTA_POSTGRES } from './
 
 import {
   CONSULTAS, diaValido, horaValida, resumenPorAgente, soloLectura, HIPOTESIS,
+  parametrosQueUsa, BLOQUES_DEL_VEREDICTO,
 } from '../api/_lib/arena-watch-diagnostico.js';
 import { SCHEMA } from '../api/_lib/db.js';
 
 const PUERTO = 55441;
 const BIN = SIN_POSTGRES ? null : binDePostgres();
 
+// LOS MISMOS VALORES QUE ARMA EL HANDLER. Si esto se escribiera distinto de
+// `diagnosticoDelHueco`, la prueba mediría otra cosa que la que corre.
+const CTX = { dia: '2026-10-21', desde: '2026-10-21T18:00:00Z', hasta: '2026-10-21T19:30:00Z' };
+const comillas = (v) => `'${String(v).replace(/'/g, "''")}'`;
+
 // ── SOLO LECTURA ──────────────────────────────────────────────────────
 test('las seis consultas son de solo lectura', () => {
   const nombres = Object.keys(CONSULTAS);
   assert.equal(nombres.length, 6, 'seis bloques, uno por grupo de hipótesis');
-  for (const [nombre, q] of Object.entries(CONSULTAS)) {
-    assert.ok(soloLectura(q), `${nombre} no es de solo lectura`);
+  for (const [nombre, c] of Object.entries(CONSULTAS)) {
+    assert.ok(soloLectura(c.sql), `${nombre} no es de solo lectura`);
+  }
+});
+
+test('cada consulta entrega EXACTAMENTE los parámetros que su texto menciona', () => {
+  // El defecto de producción en una línea: el handler le pasaba los mismos
+  // tres a las seis. `estado` no usa ninguno, `anclas` usa uno, y tres usan
+  // $1 y $2 — un parámetro de más no es inofensivo, es un error de bind.
+  for (const [nombre, c] of Object.entries(CONSULTAS)) {
+    const usa = parametrosQueUsa(c.sql);
+    const entrega = c.params(CTX);
+    assert.equal(entrega.length, usa.length,
+      `${nombre}: el texto menciona ${usa.length} parámetro(s) y params() entrega ${entrega.length}`);
+    // Y numerados desde $1 sin huecos: `$2` sin `$1` es justo lo que daba
+    // "could not determine data type of parameter $1".
+    assert.deepEqual(usa, usa.map((_, i) => i + 1),
+      `${nombre}: los parámetros tienen que ir de $1 en adelante, sin saltos — son ${usa.join(',')}`);
+    for (const v of entrega) assert.ok(v != null && v !== '', `${nombre}: un parámetro vacío`);
   }
 });
 
@@ -147,58 +170,57 @@ test('las seis consultas se preparan contra un Postgres real', { skip: SIN_POSTG
     }
   });
 
-  await t.test('PREPARE: cada columna existe y cada parámetro liga con su tipo', () => {
-    // PREPARE parsea Y resuelve nombres: si la DDL y la consulta se
-    // desincronizan, esto es rojo. Un `explain` no alcanzaría.
-    // Los tres parámetros se declaran por TIPO —`(text, text, text)`—, que es
-    // lo que la sintaxis de PREPARE pide; `($1 text, …)` es un error de
-    // sintaxis, no otra forma de escribirlo.
-    psql(Object.entries(CONSULTAS)
-      .map(([nombre, q]) => `prepare d_${nombre} (text, text, text) as ${q};`)
-      .join('\n'));
+  await t.test('PREPARE SIN declarar tipos: igual que Neon, que los infiere', () => {
+    // ── POR QUÉ `prepare p AS …` Y NO `prepare p (text, text, text) AS …` ──
+    // La primera versión de esta prueba declaraba los tres tipos a mano. Esa
+    // declaración FABRICA la aridad y le inventa un tipo a un `$1` que la
+    // consulta nunca menciona — justo las dos cosas que producción no puede
+    // hacer. Las seis pasaron en verde acá y las seis reventaron en Neon.
+    //
+    // Sin lista de tipos, Postgres los infiere del texto, que es exactamente
+    // lo que hace Neon. Si una consulta vuelve a traer un parámetro que no
+    // usa, esto se pone rojo con el mismo mensaje que vio Lety.
+    for (const [nombre, c] of Object.entries(CONSULTAS)) {
+      psql(`prepare d_${nombre} as ${c.sql};`);
+    }
   });
 
-  await t.test('y devuelven lo que el caso del 2026-10-21 necesita leer', () => {
-    // Filas con la FORMA del caso: un agente que recibió el 402, uno frenado
-    // por enfriamiento, uno apagado por presupuesto, uno detenido, y un ancla
-    // re-fijada. Si un bloque queda mudo por un tipo o un rango mal puestos,
-    // acá se ve — y no pasa por "no había nada".
-    psql(`
-      insert into arena_watch (run_date, agent_id, symbol, trigger_type, fired, skip_reason, detail, fired_at) values
-        ('2026-10-21','openai','NVDA','move_3pct',true,  null, '{}', '2026-10-21 18:15:00+00'),
-        ('2026-10-21','grok',  'TSLA','move_3pct',false,'enfriamiento: corrió hace 9 min', '{}', '2026-10-21 18:31:00+00'),
-        ('2026-10-21','gemini','AMD', 'buffet_move',false,'presupuesto en escalón 2', '{}', '2026-10-21 18:44:00+00'),
-        ('2026-10-21','grok',  'TSLA','move_3pct',false,'enfriamiento', '{}', '2026-10-21 23:00:00+00');
-      insert into arena_journal (id, run_date, phase, status, model, agent_id, error, context, created_at) values
-        ('j1','2026-10-21','watch','error','openrouter/gpt','openai','OpenRouter HTTP 402: requires more credits','{"llm_error":"cuenta"}','2026-10-21 18:15:04+00');
-      insert into arena_watch_meta (key, value, updated_at) values
-        ('reconcile:2026-10-21','{"at":"x"}','2026-10-21 18:30:00+00');
-      insert into arena_state (id, agent_id, halted, halted_at, halted_reason) values
-        (1,'deepseek',true,'2026-10-21 17:50:00+00','tope de pérdida diaria');
-      insert into arena_watch_mark (agent_id, symbol, price, marked_at, source) values
-        ('llama','MSFT',512.40,'2026-10-21 18:26:00+00','watch_trigger');
-    `);
-    // Cada llamada a psql es una SESIÓN nueva, y un `prepare` muere con su
-    // sesión: el prepare y el execute tienen que ir en la misma llamada. (La
-    // primera versión los separó y el error —"prepared statement does not
-    // exist"— no se parece en nada a la causa.)
-    const corre = (nombre) => psql(
-      `prepare p (text, text, text) as ${CONSULTAS[nombre]};\n`
-      + `execute p('2026-10-21','2026-10-21T18:00:00Z','2026-10-21T19:30:00Z');`)
-      .trim().split('\n').filter(Boolean);
+  await t.test('y EXECUTE con los parámetros REALES del handler', () => {
+    // La otra mitad: que la cantidad que el handler entrega sea la que la
+    // consulta pide. "supplies 3 parameters, but requires 1" sólo aparece al
+    // ejecutar, no al preparar.
+    for (const [nombre, c] of Object.entries(CONSULTAS)) {
+      const ps = c.params(CTX).map(comillas).join(', ');
+      psql(`prepare e_${nombre} as ${c.sql};\nexecute e_${nombre}${ps ? `(${ps})` : ''};`);
+    }
+  });
 
-    // La VENTANA recorta de verdad: el cuarto disparo de grok es de las 23:00
-    // y no puede estar. Sin esta comprobación, un rango mal puesto se leería
-    // como "hubo más actividad de la que hubo".
-    assert.equal(corre('disparadores').length, 3, 'tres en la ventana, no los cuatro del día');
-    // El bloque del día SÍ los cuenta todos: es su trabajo separar
-    // enfriamiento de tope.
-    const dia = corre('dia_por_agente');
-    assert.ok(dia.some((l) => l.startsWith('grok|2|0')), `grok con 2 disparos y 0 despachados: ${dia.join(' / ')}`);
-    assert.equal(corre('journal').length, 1);
-    assert.equal(corre('marcas').length, 1);
-    assert.equal(corre('estado').length, 1);
-    assert.equal(corre('anclas').length, 1);
+  await t.test('y la prueba SE PONE ROJA si alguien vuelve a pasarle tres a todas', () => {
+    // La mutación que reproduce el caso de producción. Sin esto, nada impide
+    // que el handler vuelva a mandar `[dia, desde, hasta]` a las seis.
+    const tres = [CTX.dia, CTX.desde, CTX.hasta].map(comillas).join(', ');
+    const rotas = [];
+    for (const [nombre, c] of Object.entries(CONSULTAS)) {
+      try {
+        psql(`prepare m_${nombre} as ${c.sql};\nexecute m_${nombre}(${tres});`);
+      } catch (err) { rotas.push(nombre); }
+    }
+    // ── UN LÍMITE DE ESTE ARNÉS, DECLARADO ──────────────────────────
+    // Cinco de las seis, no las seis. `estado` no lleva parámetros, y el
+    // `EXECUTE` de psql —protocolo simple— se come los argumentos de más sin
+    // chistar. Neon usa el protocolo EXTENDIDO, donde el mensaje `Bind` sí es
+    // estricto: por eso en producción `estado` SÍ falló ("supplies 3
+    // parameters, but requires 0") y acá no puede reproducirse.
+    //
+    // No se disfraza con un `>= 5`: se nombra cuál falta y por qué, y ese caso
+    // queda cubierto EXACTAMENTE por la prueba de aridad de arriba, que
+    // compara `parametrosQueUsa()` contra `params().length` sin depender de
+    // qué protocolo hable el cliente.
+    assert.deepEqual(rotas.sort(),
+      ['anclas', 'dia_por_agente', 'disparadores', 'journal', 'marcas'],
+      'las cinco con parámetros tienen que fallar con los tres de siempre');
+    assert.ok(!rotas.includes('estado'),
+      'si `estado` empieza a fallar acá, psql cambió de protocolo y este comentario quedó viejo');
   });
 });
 
@@ -307,18 +329,92 @@ test('una ventana al revés se rechaza en vez de devolver vacío', async () => {
   assert.equal(consultas.length, 0);
 });
 
-test('una consulta que falla no tumba a las otras cinco', async () => {
-  // Con un hueco por explicar, cinco bloques valen mucho más que un 500.
-  let n = 0;
+// ── EL VEREDICTO CUANDO NO SE PUDO MEDIR ──────────────────────────────
+// Lo grave del caso de producción no fue que las consultas fallaran: fue que
+// el resumen igual dijo `sin_tick` para los siete agentes. Un bloque que
+// REVENTÓ viene vacío igual que uno sin filas, y confundirlos convierte un
+// error en un hallazgo.
+function fallaEn(cuales) {
+  consultas = [];
+  return async (_url, opts) => {
+    const q = String(JSON.parse(opts.body).query || '');
+    consultas.push(q);
+    if (cuales.some((frag) => q.includes(frag))) throw new Error('Neon: could not determine data type of parameter $1');
+    return { ok: true, status: 200, json: async () => ({ fields: [], rows: [] }) };
+  };
+}
+
+test('si falla un bloque del veredicto, NADIE sale diagnosticado', async () => {
+  global.fetch = fallaEn(['arena_watch_meta']);   // el bloque `marcas`
+  const res = mockRes();
+  await watchHandler(GET({ job: 'diagnostico', key: 'llave-de-prueba' }), res);
+  assert.equal(res.code, 200);
+  assert.equal(res.body.medicion_completa, false);
+  // `null`, no `false`: false quiere decir "miré y no había".
+  assert.equal(res.body.hubo_tick, null);
+  assert.ok(res.body.resumen.every((r) => r.veredicto === 'no_medido'),
+    `ninguno puede salir con diagnóstico: ${JSON.stringify(res.body.resumen)}`);
+  assert.ok(res.body.resumen.every((r) => r.bloques_fallidos.includes('marcas')));
+  assert.match(res.body.aviso, /No se pudo medir/);
+});
+
+test('y NO sale `sin_tick`, que es lo que pasó en producción', async () => {
+  // La mutación exacta: con `marcas` reventado, el resumen anterior leía su
+  // arreglo vacío y concluía que el vigilante no había tickeado.
+  global.fetch = fallaEn(['arena_watch_meta']);
+  const res = mockRes();
+  await watchHandler(GET({ job: 'diagnostico', key: 'llave-de-prueba' }), res);
+  assert.ok(!res.body.resumen.some((r) => r.veredicto === 'sin_tick'),
+    'un bloque que reventó no puede leerse como "no pasó nada"');
+});
+
+test('un bloque de CONTEXTO que falla no borra el veredicto, pero se marca', async () => {
+  // `anclas` y `dia_por_agente` ayudan a LEER el veredicto, no lo producen.
+  // Tirar la lectura entera por uno de ellos sería perder cinco bloques
+  // buenos; callarlo sería lo otro.
+  global.fetch = fallaEn(['arena_watch_mark']);   // el bloque `anclas`
+  const res = mockRes();
+  await watchHandler(GET({ job: 'diagnostico', key: 'llave-de-prueba' }), res);
+  assert.equal(res.body.medicion_completa, false);
+  assert.deepEqual(res.body.bloques_fallidos, ['anclas']);
+  assert.equal(res.body.aviso, undefined, 'el veredicto no depende de anclas');
+  assert.ok(res.body.resumen.every((r) => r.veredicto === 'sin_tick'));
+  assert.ok(BLOQUES_DEL_VEREDICTO.every((b) => b !== 'anclas'));
+});
+
+test('si fallan las SEIS, 502: eso no es una lectura con huecos', async () => {
+  // Es la lectura que no ocurrió, y un 200 la haría pasar por buena. Es
+  // literalmente lo que devolvió producción el 2026-10-22.
   global.fetch = async (_url, opts) => {
     consultas.push(String(JSON.parse(opts.body).query || ''));
-    if (++n === 2) throw new Error('Neon: connection reset');
-    return { ok: true, status: 200, json: async () => ({ fields: [], rows: [] }) };
+    throw new Error('Neon: could not determine data type of parameter $1');
   };
   consultas = [];
   const res = mockRes();
   await watchHandler(GET({ job: 'diagnostico', key: 'llave-de-prueba' }), res);
-  assert.equal(res.code, 200, JSON.stringify(res.body));
-  assert.ok(res.body.errores, 'el bloque que falló se NOMBRA en vez de desaparecer');
-  assert.equal(Object.keys(res.body.errores).length, 1);
+  assert.equal(res.code, 502, JSON.stringify(res.body).slice(0, 200));
+  assert.equal(res.body.medicion_completa, false);
+  assert.equal(res.body.bloques_fallidos.length, 6);
+  assert.ok(res.body.resumen.every((r) => r.veredicto === 'no_medido'));
+});
+
+test('cada consulta sale con SU cantidad de parámetros, no con tres', async () => {
+  // El defecto de producción, por el camino real del handler.
+  const binds = [];
+  global.fetch = async (_url, opts) => {
+    const b = JSON.parse(opts.body);
+    binds.push({ q: String(b.query || ''), n: (b.params || []).length });
+    return { ok: true, status: 200, json: async () => ({ fields: [], rows: [] }) };
+  };
+  consultas = [];
+  await watchHandler(GET({ job: 'diagnostico', dia: '2026-10-21', desde: '18:00', hasta: '19:30',
+    key: 'llave-de-prueba' }), mockRes());
+  assert.equal(binds.length, 6);
+  for (const b of binds) {
+    const usa = parametrosQueUsa(b.q).length;
+    assert.equal(b.n, usa, `esta consulta usa ${usa} parámetro(s) y se mandaron ${b.n}: ${b.q.slice(0, 70)}`);
+  }
+  // Y que de verdad NO sean tres en todas, que es como estaba.
+  assert.ok(new Set(binds.map((b) => b.n)).size > 1,
+    'si todas llevan la misma cantidad, volvimos al bug');
 });
