@@ -176,6 +176,17 @@ export const MARGEN_MS = 15000;
 // hace que entren más vueltas condenadas. El valor tiene que ser el mínimo en
 // que una vuelta tiene ALGUNA chance, no el mínimo que deja pasar el if.
 export const PISO_VUELTA_MS = Number(process.env.ARENA_VUELTA_PISO_MS) || 10000;
+// DE DÓNDE SALIÓ el piso vigente, para el catálogo de relojes de arena-smoke.
+// El 2026-10-23 pasó de 10s a 30s por env (32 vueltas con techo < 30s en la
+// T3: 6 salieron, 26 las cortamos). Sin esto, verificar que la variable entró
+// obliga a adivinarlo desde un aborto.
+export const PISO_VUELTA_ORIGEN = (() => {
+  const crudo = process.env.ARENA_VUELTA_PISO_MS;
+  if (crudo == null || crudo === '') return 'default del código (10000 ms): ARENA_VUELTA_PISO_MS no está puesta';
+  return Number(crudo)
+    ? `env ARENA_VUELTA_PISO_MS=${crudo}`
+    : `env ARENA_VUELTA_PISO_MS=${JSON.stringify(crudo)} IGNORADA (no es un número distinto de 0) → default del código (10000 ms)`;
+})();
 
 // Lo que tiene que quedar para que valga la pena empezar OTRA vuelta. Se
 // exporta para que la prueba verifique la derivación y no un número copiado.
