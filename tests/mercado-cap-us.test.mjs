@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { veredictoCapUs, auditaCapUs, candidatasCapUs } from '../api/_lib/mercado-cap-us.js';
+import { veredictoCapUs, auditaCapUs, candidatasCapUs, capPorClases } from '../api/_lib/mercado-cap-us.js';
 
 // Una estadounidense sana: la declarada en USD cuadra con acciones×precio.
 const NVDA = { symbol: 'NVDA', moneda: 'USD', declarada: 4_000_000, acciones: 24_400, precio_usd: 163.93 };
@@ -720,4 +720,97 @@ test('una clase sola no abre la puerta de la suma', () => {
   // suma de una sola clase sería el conteo suelto que justamente no vale.
   const f = filaVeredictoCapUs({ ...BX, acciones_edgar_clases: 1 }, { precio_usd: 140 });
   assert.equal(f.edgar_clases, null);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// SPCX: LA CAPTURA MANUAL GANA SOBRE LA SUMA AUTOMÁTICA, Y ESO SE ELIGIÓ
+//
+// SPCX podía resolverse sola por `edgar_suma_clases`: la suma de las dos
+// clases (13.581.063.709) y el conteo de Finnhub (~14.216 M) concuerdan al
+// 4,68%, debajo del techo de 5%. Entra — por 0,32 puntos.
+//
+// Lety eligió la captura manual igual, y la razón es buena: entrar por
+// centésimas no es estar verificada, es estar a un movimiento de Finnhub de
+// caerse a gris. Un cuadro que parpadea entre verde y gris según se mueva un
+// tercero no informa nada (2026-10-23).
+//
+// La equivalencia es 1:1 y eso NO se dedujo de que los números cuadren: está
+// en la nota 12 del 10-Q. Las clases se diferencian en VOTOS (una contra
+// diez) y la clase B convierte 1:1 en A al transferirse. Diez votos no son
+// diez acciones: lo que fija el reclamo económico es la conversión.
+// ═══════════════════════════════════════════════════════════════════════
+const SPCX_REF = REFERENCIAS.referencias.find((r) => r.clave === 'SPCX');
+
+test('SPCX: la fila capturada pinta la suma de las dos clases por nuestro cierre', () => {
+  const c = capPorClases(SPCX_REF, 154.70);
+  assert.equal(c.acciones_equivalentes, 13_581_063_709,
+    'Class A 8.246.541.218 + Class B 5.334.522.491, las dos 1:1');
+  assert.equal(Math.round(c.cap_usd / 1e9), 2101);
+});
+
+test('SPCX: la equivalencia es 1 en las DOS clases, y la nota dice por qué', () => {
+  // Si alguien lee "diez votos" y escribe equivalencia 10, la cap se va a
+  // cinco veces su tamaño. La nota está para que ese alguien lea antes.
+  for (const cl of SPCX_REF.clases) {
+    assert.equal(cl.equivalencia_en_cotizada, 1, `${cl.nombre}: 1:1`);
+  }
+  assert.match(SPCX_REF.nota, /convert into one share of Class A/,
+    'la frase del estatuto, no mi resumen de ella');
+  assert.match(SPCX_REF.nota, /VOTOS, no economica/i);
+});
+
+test('SPCX: la clase C NO está en la lista, y eso está dicho', () => {
+  // Está autorizada pero su conteo es cero: se reclasificó a Class A en la
+  // IPO. Agregarla con 0 rompería la cap entera, porque `capPorClases`
+  // rechaza —con razón— una clase sin conteo utilizable.
+  assert.equal(SPCX_REF.clases.length, 2);
+  assert.ok(!SPCX_REF.clases.some((c) => /Class C/i.test(c.nombre)));
+  assert.match(SPCX_REF.nota, /CLASE C NO VA EN LA LISTA/);
+  // Y la mutación: con la C en 0, no se pinta nada.
+  const conC = { ...SPCX_REF, clases: [...SPCX_REF.clases, { nombre: 'Class C', acciones: 0, equivalencia_en_cotizada: 1 }] };
+  assert.equal(capPorClases(conC, 154.70).cap_usd, null);
+});
+
+test('SPCX: la captura manual GANA sobre la suma automática de EDGAR', () => {
+  // Es la decisión de Lety hecha código. Con las dos fuentes presentes, el
+  // veredicto tiene que salir por `clases_declaradas`; si saliera por
+  // `edgar_suma_clases`, la captura sería decorativa.
+  const v = veredictoCapUs({
+    symbol: 'SPCX', moneda: 'USD', declarada: 2_101_000, acciones: 14_216,
+    precio_usd: 154.70, referencia: SPCX_REF,
+    edgar_clases: { clases: 2, suma: 13_581_063_709, fecha_portada: '2026-09-30' },
+    hoy: new Date('2026-10-23T12:00:00Z'),
+  });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.via, 'clases_declaradas');
+  assert.equal(v.acciones_equivalentes, 13_581_063_709);
+});
+
+test('y NO se cae a gris si Finnhub se mueve más allá del 5%', () => {
+  // La razón entera de preferir la captura. Con Finnhub en 15.500 M, el
+  // acuerdo automático (4,68% hoy) se rompe —14,1% de diferencia— y el camino
+  // de `edgar_suma_clases` mandaría el cuadro a gris. La captura no depende
+  // de Finnhub, así que el cuadro sigue pintado con el MISMO número.
+  const v = veredictoCapUs({
+    symbol: 'SPCX', moneda: 'USD', declarada: 2_397_850, acciones: 15_500,
+    precio_usd: 154.70, referencia: SPCX_REF,
+    edgar_clases: { clases: 2, suma: 13_581_063_709, fecha_portada: '2026-09-30' },
+    hoy: new Date('2026-10-23T12:00:00Z'),
+  });
+  assert.equal(v.estado, 'verificada', 'el movimiento de un tercero no apaga el cuadro');
+  assert.equal(v.via, 'clases_declaradas');
+  assert.equal(Math.round(v.cap_usd / 1e9), 2101, 'y el tamaño es el mismo');
+});
+
+test('SPCX: vencer es una TAREA, no un apagón', () => {
+  // Los conteos envejecen (una recompra los mueve), pero un trimestre mueve
+  // ~1%: muy dentro de la tolerancia. Vencida se marca para recapturar y se
+  // sigue pintando.
+  const v = veredictoCapUs({
+    symbol: 'SPCX', moneda: 'USD', declarada: 2_101_000, acciones: 14_216,
+    precio_usd: 154.70, referencia: SPCX_REF,
+    hoy: new Date('2027-03-01T12:00:00Z'),
+  });
+  assert.equal(v.estado, 'verificada');
+  assert.equal(v.referencia_a_recapturar, true);
 });
