@@ -1,0 +1,30 @@
+{
+  "_nota": "PROVISIONAL — NO son órdenes reales. Forma exacta de arena_journal.actions tras el reconcile (runArenaReconcile: order_status, filled_qty, filled_avg_price, filled_at). Se reemplaza por un día real del journal (consulta en el PR) antes de mergear.",
+  "journal": [
+    {
+      "id": "arena-claude-objetivo-2026-10-21T19:55:00.000Z", "agent_id": "claude", "run_date": "2026-10-21",
+      "actions": [
+        { "symbol": "MU", "side": "buy", "qty": 40, "limit_price": 118.6, "result": "approved", "order_status": "filled", "filled_qty": 40, "filled_avg_price": 118.4, "filled_at": "2026-10-21T19:58:02Z", "client_order_id": "arena-claude-f-2026-10-21-MU-buy", "alpaca_order_id": "o1", "intencion": "buy", "origin": "objetivo" },
+        { "symbol": "PGR", "side": "sell", "qty": 10, "limit_price": 264.9, "result": "approved", "order_status": "filled", "filled_qty": 10, "filled_avg_price": 265.1, "filled_at": "2026-10-21T19:58:05Z", "client_order_id": "arena-claude-f-2026-10-21-PGR-sell", "alpaca_order_id": "o2", "intencion": "sell", "origin": "objetivo" },
+        { "symbol": "DVA", "side": "buy", "qty": 30, "limit_price": 150.0, "result": "approved", "order_status": "canceled", "filled_qty": 0, "filled_avg_price": null, "filled_at": null, "client_order_id": "arena-claude-f-2026-10-21-DVA-buy", "alpaca_order_id": "o3", "intencion": "buy", "origin": "objetivo" }
+      ]
+    },
+    {
+      "id": "arena-control-objetivo-2026-10-21T19:55:00.000Z", "agent_id": "control", "run_date": "2026-10-21",
+      "actions": [
+        { "symbol": "MU", "side": "buy", "qty": 50, "limit_price": 118.6, "result": "approved", "order_status": "partially_filled", "filled_qty": 20, "filled_avg_price": 118.5, "filled_at": "2026-10-22T00:30:00Z", "client_order_id": "arena-control-f-2026-10-21-MU-buy", "alpaca_order_id": "o4", "intencion": "buy", "origin": "objetivo" },
+        { "symbol": "ZZZQ", "side": "buy", "qty": 5, "limit_price": 10.0, "result": "approved", "order_status": "filled", "filled_qty": 5, "filled_avg_price": 10.0, "filled_at": "2026-10-21T19:59:00Z", "client_order_id": "arena-control-f-2026-10-21-ZZZQ-buy", "alpaca_order_id": "o5", "intencion": "buy", "origin": "objetivo" }
+      ]
+    },
+    {
+      "id": "arena-claude-objetivo-2026-10-27T19:55:00.000Z", "agent_id": "claude", "run_date": "2026-10-27",
+      "actions": [
+        { "symbol": "MU", "side": "sell", "qty": 40, "limit_price": 121.0, "result": "approved", "order_status": "filled", "filled_qty": 40, "filled_avg_price": 121.0, "filled_at": "2026-10-27T19:58:00Z", "client_order_id": "arena-claude-f-2026-10-27-MU-sell", "alpaca_order_id": "o6", "intencion": "sell", "origin": "objetivo" }
+      ]
+    }
+  ],
+  "cierres": [
+    ["MU", "2026-10-21", 118.0], ["MU", "2026-10-22", 120.0], ["MU", "2026-10-23", 117.0], ["MU", "2026-10-24", 122.0], ["MU", "2026-10-27", 121.5], ["MU", "2026-10-28", 125.0], ["MU", "2026-10-29", 119.0],
+    ["PGR", "2026-10-21", 265.0], ["PGR", "2026-10-22", 260.0], ["PGR", "2026-10-23", 266.0], ["PGR", "2026-10-27", 270.0], ["PGR", "2026-10-28", 262.0], ["PGR", "2026-10-29", 255.0]
+  ]
+}

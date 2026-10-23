@@ -47,6 +47,7 @@ import { sql } from './db.js';
 import { tickersDeFila } from './noticias.js';
 import { runHistoria } from './arena-tools-historia.js';
 import { runEventos, DIAS_DEFAULT as EVENTOS_DIAS_DEFAULT, DIAS_MAX as EVENTOS_DIAS_MAX } from './arena-tools-eventos.js';
+import { fichaTecnicosActiva, tecnicosPorSimbolo, lineaTecnicos } from './tecnicos.js';
 
 // Tope DURO de llamadas por corrida. Las rondas fijas tienen 8; una corrida por
 // disparador tiene 3 (está acotada a un nombre — no necesita explorar).
@@ -763,6 +764,15 @@ export async function runFicha(args, ctx) {
   else lineas.push('precio: no está entre los nombres que el tablero cubre hoy (no es que no cotice — es que no está en ningún extremo del tablero).');
   if (mia) lineas.push(`TU POSICIÓN: peso ${n2(mia.weight_pct)}% · entrada ${n2(mia.avg_entry)} · desde tu entrada ${sg(mia.pnl_since_entry_pct)}%`);
   if (w) lineas.push(`52 semanas: máx ${n2(w.high_52w)} (${sg(w.pct_from_high)}%) · mín ${n2(w.low_52w)} (+${n2(w.pct_from_low)}%)`);
+  // ── TÉCNICOS, APAGADOS EN LA T3 (ARENA_FICHA_TECNICOS) ─────────────
+  // Lo mismo que /liga publica por posición. Apagado, esta rama no corre: no
+  // consulta nada y la ficha sale idéntica byte a byte a la de antes (lo
+  // prueba tests/arena-ficha-tecnicos.test.mjs contra la ficha de main).
+  if (ctx.fichaTecnicos) {
+    const tec = await tecnicosPorSimbolo([tk], { creds: ctx.creds, now: ctx.now, deps: ctx.deps });
+    const linea = tec.error ? `técnicos: no disponibles (${tec.error}) — no son cero.` : lineaTecnicos(tec.por_simbolo[tk]);
+    if (linea) lineas.push(linea);
+  }
   if (dive && dive.profile) lineas.push(`${dive.profile.name || ''} · ${dive.profile.industry || 'sector s/d'} · mcap ${dive.profile.marketCapM != null ? '$' + (dive.profile.marketCapM / 1000).toFixed(1) + 'B' : '—'}`);
   if (dive && dive.fundamentals) {
     const f = dive.fundamentals;
@@ -857,6 +867,8 @@ export function createToolExecutor({
   // las usa `ficha`, para dar el precio de lo que el agente ya tiene.
   posiciones = [], equity = null,
   herramientas = herramientasActivas(),
+  // Los técnicos en la ficha: APAGADOS salvo ARENA_FICHA_TECNICOS=1 (T4).
+  fichaTecnicos = fichaTecnicosActiva(),
 } = {}) {
   const sectorOf = deps.sectorOf || (() => null);
   const newsSymbols = new Set();
@@ -875,7 +887,7 @@ export function createToolExecutor({
   const asumidos = new Set(((universe && universe.market_caps_asumidos) || []).map((x) => String(x || '').toUpperCase()));
   const capEsAsumido = deps.capEsAsumido || ((sym) => asumidos.has(String(sym || '').toUpperCase()));
   const tenencias = tenenciasDe(posiciones, equity);
-  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf, tenencias };
+  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf, tenencias, fichaTecnicos };
   const sequence = [];
   // DOS CONTADORES, Y LA DIFERENCIA ES LA MITAD DEL BUG REPORTADO.
   //   `used`     = llamadas EJECUTADAS. Nunca puede pasar del techo.

@@ -504,6 +504,59 @@ export async function getPriceAndDollarVolume(symbols = [], { creds, now = new D
   return { data: {}, feed: null, symbols: 0, intentos };
 }
 
+// ── CIERRES DIARIOS LARGOS, PAGINADOS (2026-10-23) ──────────────────
+// Para los técnicos de /liga (RSI14, SMA50/SMA200, retornos a 6m) hacen falta
+// ~215 sesiones por símbolo. El `limit` de /v2/stocks/bars es por PÁGINA y
+// cuenta barras de TODOS los símbolos del lote, así que con 70 símbolos × 215
+// barras la respuesta viene en varias páginas: sin seguir `next_page_token`,
+// los últimos símbolos del lote llegan sin historia — y un SMA200 null que en
+// realidad es "no pedimos la página dos" se lee como "cotiza hace poco".
+//
+// AJUSTADAS POR SPLIT (no por dividendo): un split 2:1 dentro de la ventana
+// sería un −50% inventado en el retorno a 6m y en la SMA200.
+//
+// Solo velas CERRADAS (la de hoy se excluye), en orden cronológico. El feed
+// sale del veredicto compartido (`conFeedDeDatos`), igual que el resto del
+// módulo. Lanza si Alpaca no contesta: el que llama decide (los técnicos lo
+// convierten en null con su motivo).
+const BARS_POR_PAGINA = 10000;
+export async function getCierresDiarios(symbols = [], { creds = null, now = new Date(), sesiones = 215, feed: feedPedido = null } = {}) {
+  const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  if (!wanted.length) return { data: {}, feed: null };
+  const hoy = now.toISOString().slice(0, 10);
+  const start = new Date(now.getTime() - diasDeCalendario(sesiones) * 86400000).toISOString().slice(0, 10);
+  const pedir = async (feed) => {
+    const out = {};
+    for (const batch of chunk(wanted, DATA_CHUNK)) {
+      let token = null;
+      // Tope de páginas: 100 símbolos × ~315 días de calendario caben en 4
+      // páginas de 10.000; 20 es holgura, no un número esperado.
+      for (let pagina = 0; pagina < 20; pagina++) {
+        const q = `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Day&start=${start}&limit=${BARS_POR_PAGINA}&adjustment=split&feed=${feed}${token ? '&page_token=' + encodeURIComponent(token) : ''}`;
+        const data = await alpacaDataFetch(q, creds);
+        for (const [sym, list] of Object.entries((data && data.bars) || {})) {
+          const k = String(sym).toUpperCase();
+          (out[k] = out[k] || []).push(...(Array.isArray(list) ? list : []));
+        }
+        token = (data && data.next_page_token) || null;
+        if (!token) break;
+      }
+    }
+    const cierres = {};
+    for (const [sym, list] of Object.entries(out)) {
+      cierres[sym] = list
+        .filter((b) => b && String(b.t || '').slice(0, 10) !== hoy)
+        .sort((a, b) => String(a.t).localeCompare(String(b.t)))
+        .map((b) => Number(b.c)).filter((x) => Number.isFinite(x) && x > 0)
+        .slice(-sesiones);
+    }
+    return cierres;
+  };
+  if (feedPedido) return { data: await pedir(feedPedido), feed: feedPedido };
+  const { data, feed } = await conFeedDeDatos(pedir, creds);
+  return { data, feed };
+}
+
 // ── CUÁNTAS VELAS HACEN FALTA, Y POR QUÉ ESTABA MAL ──────────────────
 // EL BUG (visto en el diag del 2026-09-16: `ret_1m: null` para DELL y COP, o
 // sea para los 535 nombres): las velas se recortaban con `.slice(-days)` y

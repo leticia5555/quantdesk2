@@ -180,6 +180,10 @@
       "destination": "/api/liga-libros"
     },
     {
+      "source": "/api/liga/decisiones",
+      "destination": "/api/liga-decisiones"
+    },
+    {
       "source": "/api/liga/equity",
       "destination": "/api/liga-equity"
     },

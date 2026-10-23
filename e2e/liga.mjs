@@ -62,6 +62,20 @@ const LEADERBOARD = { enabled: true, agents: [agente('grok', 'Grok', 1), agente(
   saldo_openrouter: { usd: 6.79, piso: 10, bajo: true, fuente: 'credits', at: '2026-10-21T18:10:00.000Z',
     aviso: 'SALDO DE OPENROUTER BAJO: $6.79, por debajo del piso de $10. Los cinco agentes de OpenRouter dependen de esa cuenta: sin créditos, cada corrida aborta con causa "cuenta" (nuestra, no del modelo).' } };
 
+// Técnicos por posición (2026-10-23): MU con historia completa y SPCX recién
+// listada (sin SMA200 ni 6m) → "n/d", nunca 0. Salen de la MISMA función que
+// usa /api/leaderboard.
+const { tecnicosDeCierres } = await import('../api/_lib/tecnicos.js');
+LEADERBOARD.agents[0].positions = [
+  { symbol: 'MU', qty: 40, avg_entry: 110, market_value: 12000, unrealized_pl: 400, unrealized_plpc: 0.034,
+    tecnicos: tecnicosDeCierres(Array.from({ length: 215 }, (_, i) => 100 + i + (i % 3 === 0 ? -2 : 0))) },
+  { symbol: 'SPCX', qty: 10, avg_entry: 50, market_value: 1100, unrealized_pl: 100, unrealized_plpc: 0.1,
+    tecnicos: tecnicosDeCierres(Array.from({ length: 60 }, (_, i) => 50 + i)) },
+  // Recién llegada al feed: 10 sesiones, ni RSI(14). Todo n/d.
+  { symbol: 'NEWX', qty: 5, avg_entry: 20, market_value: 100, unrealized_pl: 0, unrealized_plpc: 0,
+    tecnicos: tecnicosDeCierres(Array.from({ length: 10 }, (_, i) => 20 + i)) },
+];
+
 const nav = globalThis.process;
 const browser = await chromium.launch();
 async function abrir(ruta, { librosOk = true } = {}) {
@@ -103,6 +117,21 @@ async function abrir(ruta, { librosOk = true } = {}) {
   report('un filtro vacío de verdad es "0 nombres", no una falla', /screener\(rvol_top, sector=XLK\) → 0 nombres/.test(ds));
   const href = await page.locator('.row', { hasText: 'Grok' }).locator('.decide a').getAttribute('href');
   report('enlaza a todas sus corridas', href === '/liga/libros?agente=grok', href);
+  // ── técnicos por posición ──
+  const tecs = page.locator('.row', { hasText: 'Grok' }).locator('details.tecs');
+  report('Grok trae la tabla de técnicos de sus 3 posiciones', (await tecs.count()) === 1 && /técnicos de sus 3 posiciones/i.test(await tecs.locator('summary').innerText()));
+  await tecs.locator('summary').click();
+  const filaMu = await tecs.locator('tr', { hasText: 'MU' }).innerText();
+  const tMu = LEADERBOARD.agents[0].positions[0].tecnicos;
+  report('MU: RSI, vs SMA50/SMA200 y 1m/3m/6m con los números del endpoint',
+    filaMu.includes(tMu.rsi14.toFixed(1)) && filaMu.includes('+' + tMu.vs_sma200_pct.toFixed(1) + '%') && filaMu.includes('+' + tMu.ret_6m_pct.toFixed(1) + '%'), filaMu.replace(/\s+/g, ' '));
+  const filaSp = (await tecs.locator('tr', { hasText: 'SPCX' }).innerText()).replace(/\s+/g, ' ');
+  report('SPCX con 60 sesiones: n/d en SMA200, 3m y 6m, nunca 0', (filaSp.match(/n\/d/g) || []).length === 3 && !/ 0\.0%/.test(filaSp), filaSp);
+  const filaNx = (await tecs.locator('tr', { hasText: 'NEWX' }).innerText()).replace(/\s+/g, ' ');
+  report('NEWX con 10 sesiones: las seis columnas en n/d, ni un 0', (filaNx.match(/n\/d/g) || []).length === 6 && !/\b0\.0/.test(filaNx), filaNx);
+  report('los agentes sin posiciones no traen tabla', (await page.locator('details.tecs').count()) === 1);
+  const ancho = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  report('la tabla no desborda la página en 390 px (se desplaza adentro)', ancho);
   await page.screenshot({ path: nav.env.LIGA_SHOT || '/tmp/liga.png', fullPage: true });
   await page.close();
 }
