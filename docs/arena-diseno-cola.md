@@ -120,3 +120,26 @@ termina bien.
 `ctx.tools.cuerpos_vacios`), y que `cortesDelCierre` lo lea de ahí además de
 `llm_error`. Toca el journaleo del camino que decide: va en su propio PR, con
 una sombra que lo pruebe.
+
+## 6. `mercado_precios_us` no cubre todo lo que opera la liga
+
+**Qué se vio (2026-10-23, al cargar el 21-oct en `liga_decisiones`).** De los
+36 símbolos que la liga operó ese día, 35 están en `mercado_precios_us`;
+**ANET no**. Esa tabla la siembra el mapa (`mercado_universo_us`, ~611 nombres
+con sector y market cap, desde Yahoo), no el universo del Arena. Las 4 órdenes
+de ANET (deepseek: una compra de 167 y tres ventas) salen en la vista con
+resultado `null`, como corresponde, pero no tienen resultado.
+
+**Por qué importa.** `liga_decisiones` mide el acierto de cada decisión a 1, 3
+y 5 sesiones. Cada símbolo operado que falta en la tabla es una decisión que no
+se puede juzgar, y no es un hueco al azar: son justo los nombres que el Arena
+encuentra fuera del índice (movers del día, recién listadas).
+
+**La propuesta (NO ahora).** Guardar al cierre de cada día, desde Alpaca, el
+cierre de cada símbolo que la liga operó o tiene en cartera, para que
+`liga_decisiones` no dependa del universo del mapa. Hay que decidir:
+- **dónde se guarda:** la misma `mercado_precios_us` con una marca de fuente,
+  o una tabla propia;
+- **qué hacer cuando Yahoo y Alpaca difieren** en un cierre;
+- **el ajuste:** la vista compara contra el cierre SIN ajustar, porque el
+  precio de ejecución tampoco está ajustado.

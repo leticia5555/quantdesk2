@@ -148,6 +148,15 @@ section{padding:20px 0 4px;}
 .opnl{font-family:var(--mono);font-size:9px;letter-spacing:.02em;}
 .opnl b{font-weight:700;}
 .ofalta{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.02em;line-height:1.45;}
+/* Técnicos por posición: tabla compacta que se desplaza sola en móvil. */
+.tecs{margin-top:10px;}
+.tecs summary{cursor:pointer;font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:.04em;text-transform:uppercase;}
+.tecs .tw{overflow-x:auto;margin-top:6px;}
+.tecs table{border-collapse:collapse;font-family:var(--mono);font-size:10px;width:100%;min-width:420px;}
+.tecs th,.tecs td{padding:3px 6px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap;}
+.tecs th{color:var(--text3);font-weight:500;}
+.tecs th:first-child,.tecs td:first-child{text-align:left;}
+.tecs .nd{color:var(--text3);}
 .ores{font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:.03em;
   margin-top:3px;padding-top:6px;border-top:1px solid var(--border);}
 .ores b{font-weight:700;}
@@ -421,6 +430,27 @@ function tradesHtml(a){
     (j.ordenes.length>lista.length?'<div class="ofalta">y '+(j.ordenes.length-lista.length)+' más — el detalle completo en <a href="/liga/libros">/liga/libros</a>.</div>':'')+
     resumen+'</div>';
 }
+// ── TÉCNICOS POR POSICIÓN (2026-10-23) ──
+// RSI(14), precio vs SMA50/SMA200 y retornos 1m/3m/6m al último cierre, de
+// /api/leaderboard. Solo lectura: no entra a ningún prompt. "n/d" es falta de
+// historia — nunca se pinta como 0.
+function tecnicosHtml(a){
+  const ps=Array.isArray(a.positions)?a.positions:[];
+  if(!ps.length) return '';
+  const nd='<span class="nd">n/d</span>';
+  const num=x=>x==null?nd:x.toFixed(1);
+  const pc=x=>x==null?nd:'<span class="'+pctClass(x)+'">'+(x>0?'+':'')+x.toFixed(1)+'%</span>';
+  const filas=[...ps].sort((x,y)=>(y.market_value||0)-(x.market_value||0)).map(p=>{
+    const t=p.tecnicos||{};
+    return '<tr><td>'+esc(p.symbol)+'</td><td>'+num(t.rsi14)+'</td><td>'+pc(t.vs_sma50_pct)+'</td><td>'+pc(t.vs_sma200_pct)+
+      '</td><td>'+pc(t.ret_1m_pct)+'</td><td>'+pc(t.ret_3m_pct)+'</td><td>'+pc(t.ret_6m_pct)+'</td></tr>';
+  }).join('');
+  return '<details class="tecs"><summary>técnicos de sus '+ps.length+' posiciones</summary><div class="tw"><table>'+
+    '<thead><tr><th>símbolo</th><th>RSI14</th><th>vs SMA50</th><th>vs SMA200</th><th>1m</th><th>3m</th><th>6m</th></tr></thead>'+
+    '<tbody>'+filas+'</tbody></table></div>'+
+    '<div class="ofalta">al último cierre · n/d = sin historia suficiente, no es cero'+
+    (a.tecnicos_error?' · <span style="color:var(--amber)">'+esc(a.tecnicos_error)+'</span>':'')+'</div></details>';
+}
 // ── CÓMO DECIDIÓ: la cadena de herramientas y la tesis de cada posición ──
 // Sale de /api/liga/libros (la última corrida EN VIVO de cada agente). La
 // etiqueta y el resultado de cada paso los arma el servidor: /liga/libros
@@ -558,7 +588,7 @@ function rowHtml(a){
         '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
       '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
-    plan+decideHtml(a)+tradesHtml(a)+
+    plan+decideHtml(a)+tradesHtml(a)+tecnicosHtml(a)+
     '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
     // ── NO HAY TOPE DE POSICIONES, Y EL "/8" DECÍA QUE SÍ ─────────────
     // El 8 era del CONTRATO DE ACCIONES (el guard viejo), que el contrato de

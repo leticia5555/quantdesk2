@@ -64,6 +64,7 @@ import { margenDeLaTabla } from './_lib/arena-piso-retorno.js';
 import { ordenesDeActions, resumenDeOrdenes } from './_lib/arena-fills.js';
 import { manosDeLaLiga } from './_lib/arena-manos.js';
 import { CLAVE_META as CLAVE_SALDO } from './_lib/openrouter-saldo.js';
+import { tecnicosPorSimbolo } from './_lib/tecnicos.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -349,6 +350,28 @@ export default async function handler(req, res) {
     }
     return out;
   }));
+
+  // ── LOS TÉCNICOS DE CADA POSICIÓN (2026-10-23) ──────────────────────
+  // RSI(14), precio vs SMA50/SMA200 y retornos 1m/3m/6m, al último cierre.
+  // SOLO LECTURA: nada de esto viaja a ningún prompt de la T3. Una consulta a
+  // Alpaca para la UNIÓN de símbolos de los siete libros, con tope de tiempo:
+  // si no contesta, las posiciones salen igual, cada técnico en null y el
+  // motivo en `tecnicos_error`. Falta de historia = null, nunca 0.
+  try {
+    const simbolos = rows.flatMap((r) => (r.positions || []).map((p) => p.symbol));
+    if (simbolos.length) {
+      const creds = agents.map(agentAlpacaCreds).find(Boolean) || null;
+      let corte;
+      const reloj = new Promise((resolve) => { corte = setTimeout(() => resolve({ por_simbolo: {}, error: 'Alpaca no contestó las barras en 9s' }), 9000); });
+      const tec = await Promise.race([tecnicosPorSimbolo(simbolos, { creds }), reloj]).finally(() => clearTimeout(corte));
+      for (const r of rows) {
+        for (const p of r.positions || []) p.tecnicos = tec.por_simbolo[String(p.symbol).toUpperCase()] || null;
+        if (tec.error && (r.positions || []).length) r.tecnicos_error = tec.error;
+      }
+    }
+  } catch (err) {
+    for (const r of rows) if ((r.positions || []).length) r.tecnicos_error = String((err && err.message) || err);
+  }
 
   // ── EL BENCHMARK ─────────────────────────────────────────────────────
   // Best-effort de punta a punta: si Neon o Alpaca no contestan, la liga se
