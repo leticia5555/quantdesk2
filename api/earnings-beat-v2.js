@@ -76,7 +76,7 @@ const CONSULTAS = {
             metrica_barra, barra, consenso_creacion, prob_pm_t24, outcome, actual_eps
        from pm_v2_validation`,
   validacion: (n) => `${SELECT_MERCADO}
-     where symbol in (${ph(n)}) and coalesce(report_date, resolved_date) between '2026-10-19' and '2026-11-06'`, // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
+     where symbol in (${ph(n)}) and coalesce(report_date, resolved_date) between '2026-10-19' and '2026-11-06'`, /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
 };
 
 // Fila de pm_earnings_markets → entrada de filaV2 (sin historial).

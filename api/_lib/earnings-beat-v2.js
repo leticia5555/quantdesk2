@@ -47,16 +47,16 @@ const CRITERIOS_V2 = Object.freeze({
 // Set de validación CONGELADO: los 22 mercados de /finance/earnings al
 // 21-oct-2026 20:00 CT. El market_id se busca en pm_earnings_markets por
 // símbolo + fecha; los que no estén ahí (fuera del universo v1) igual cuentan.
-const CORTE_VALIDACION = '2026-10-21T20:00:00-05:00'; // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
+const CORTE_VALIDACION = '2026-10-21T20:00:00-05:00'; /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
 const VALIDACION_V2 = Object.freeze([
-  ['TSLA', '2026-10-20'], ['WDFC', '2026-10-21'], ['META', '2026-10-21'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
-  ['UNP', '2026-10-22'], ['SSNC', '2026-10-22'], ['PG', '2026-10-22'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
-  ['AAL', '2026-10-22'], ['TFX', '2026-10-22'], ['PCG', '2026-10-22'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
-  ['IMAX', '2026-10-22'], ['AXP', '2026-10-23'], ['SOFI', '2026-10-27'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
-  ['BA', '2026-10-27'], ['PJT', '2026-10-27'], ['CZR', '2026-10-27'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
-  ['PYPL', '2026-10-27'], ['GOOGL', '2026-10-27'], ['TDOC', '2026-10-28'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
-  ['AMZN', '2026-10-29'], ['LLY', '2026-10-29'], ['XOM', '2026-10-30'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
-  ['IMAX', '2026-11-05'], // date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy")
+  ['TSLA', '2026-10-20'], ['WDFC', '2026-10-21'], ['META', '2026-10-21'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
+  ['UNP', '2026-10-22'], ['SSNC', '2026-10-22'], ['PG', '2026-10-22'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
+  ['AAL', '2026-10-22'], ['TFX', '2026-10-22'], ['PCG', '2026-10-22'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
+  ['IMAX', '2026-10-22'], ['AXP', '2026-10-23'], ['SOFI', '2026-10-27'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
+  ['BA', '2026-10-27'], ['PJT', '2026-10-27'], ['CZR', '2026-10-27'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
+  ['PYPL', '2026-10-27'], ['GOOGL', '2026-10-27'], ['TDOC', '2026-10-28'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
+  ['AMZN', '2026-10-29'], ['LLY', '2026-10-29'], ['XOM', '2026-10-30'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
+  ['IMAX', '2026-11-05'], /* date-lint-ok: set de validación v2 congelado (hecho fijo, no "hoy") */
 ].map(([symbol, fecha]) => Object.freeze({ symbol, fecha })));
 
 const UNIVERSO = new Set(V0_UNIVERSE);
