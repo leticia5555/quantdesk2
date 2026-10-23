@@ -222,6 +222,14 @@
       "schedule": "40 23 * * *"
     },
     {
+      "path": "/api/earnings-beat-v2?job=mercados_v2",
+      "schedule": "20 22 * * *"
+    },
+    {
+      "path": "/api/earnings-beat-v2?job=hist",
+      "schedule": "50 22 * * *"
+    },
+    {
       "path": "/api/earnings-beat-v2?job=diario",
       "schedule": "55 23 * * *"
     },
