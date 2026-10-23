@@ -78,6 +78,7 @@ import {
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
+import { leeHistoricoPead } from './_lib/historial-pead.js';
 
 // Paginar Gamma + bajar historiales del CLOB + sondas de revisiones no entra
 // en los 60s de default. Misma medicina que pead-analyze/pead-harvest.
@@ -587,20 +588,11 @@ async function vistaLive(ctx) {
   let errorHistorico = null;
   if (simbolos.length) {
     try {
-      const ph = simbolos.map((_, i) => `$${i + 1}`).join(', ');
-      const filas = await sql(
-        `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date,
-                reported_eps, estimated_eps, surprise_pct
-           from pead_earnings
-          where symbol in (${ph})
-          order by reported_date desc`,
-        simbolos
-      );
-      const porSimbolo = new Map();
-      for (const f of filas) {
-        if (!porSimbolo.has(f.symbol)) porSimbolo.set(f.symbol, []);
-        porSimbolo.get(f.symbol).push(f);
-      }
+      // EL MISMO SELECT QUE EL PANEL EPS HISTORY (api/earnings.js?ticker=). Si
+      // la tarjeta y el panel leyeran consultas distintas, podrían volver a
+      // decir "15 de 20" y "0 de 4" sobre la misma empresa en la misma pantalla
+      // (NFLX, 2026-10-20). Ver tests/earnings-tab-coherencia.test.mjs.
+      const porSimbolo = await leeHistoricoPead(simbolos);
       for (const s of simbolos) historico[s] = estadisticasHistoricas(porSimbolo.get(s) || []);
     } catch (e) {
       errorHistorico = String((e && e.message) || e).slice(0, 200);

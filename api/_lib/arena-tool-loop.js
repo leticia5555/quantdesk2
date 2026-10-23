@@ -541,7 +541,9 @@ export async function runToolLoop({
       bytes: llm && llm.bytes != null ? llm.bytes : null,
       ok: !!(llm && llm.status === 200 && llm.data),
       vacio: !!(llm && llm.emptyBody),
-      reloj_nuestro: !!(llm && llm.timedOutLeyendo),
+      // NUESTRO reloj, corte antes de las cabeceras (`timedOut`) o leyendo el
+      // cuerpo (`timedOutLeyendo`): los dos son nuestros y los dos cuentan.
+      reloj_nuestro: !!(llm && (llm.timedOutLeyendo || llm.timedOut)),
       techo_ms: llm && llm.techo_ms != null ? llm.techo_ms : techo,
       proveedor: (llm && llm.proveedor) || null,
     });

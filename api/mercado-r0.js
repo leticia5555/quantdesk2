@@ -956,7 +956,7 @@ async function jobAuditoriaCap({ ahora } = {}) {
 const EDGAR_POR_MINUTO = 300;        // 5/s, la mitad del techo que publica la SEC.
 let CIKS = null;                     // el mapa ticker→CIK, una vez por proceso.
 
-async function jobAccionesEdgar({ ahora, t0, limite }) {
+async function jobAccionesEdgar({ ahora, t0, limite, traza = null, forzar = null }) {
   await ensureSchema();
   const ua = process.env.SEC_USER_AGENT;
   if (!ua) {
@@ -978,8 +978,8 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
   // POR QUÉ NO HAY CANDIDATOS, cuando no hay. El filtro vive en la librería para
   // poder probarlo: acá fue donde `num(null) === 0` descartó a los 21 en
   // silencio.
-  const { candidatos, diagnostico: diag } = candidatosParaEdgar({
-    entradas, veredictos, universoPorSymbol: porSymbol,
+  const { candidatos, diagnostico: diag, traza: rastro } = candidatosParaEdgar({
+    entradas, veredictos, universoPorSymbol: porSymbol, traza, forzar,
   });
 
   const tope = Number.isFinite(limite) && limite > 0 ? limite : candidatos.length;
@@ -1118,6 +1118,10 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
 
   return {
     job: 'acciones-edgar',
+    // `?symbol=SPCX` sigue a UN símbolo por todas las compuertas y dice en
+    // cuál se cayó. Existe porque `excluidos` se recorta a 40 y, con 500
+    // filas, "¿por qué no está SPCX?" no tenía respuesta en ningún lado.
+    ...(rastro ? { traza: rastro } : {}),
     umbral_pct: UMBRAL_EDGAR_PCT,
     nota: `el contraste con EDGAR usa su propio techo de ${UMBRAL_EDGAR_PCT}%, separado del ${CRITERIOS.g2_max_error_pct}% de G2: las acciones son de la portada del trimestre y el precio es el de hoy, así que algo de deriva es lo esperado y no un error de nadie`,
     umbral_acuerdo_acciones_pct: UMBRAL_ACUERDO_ACCIONES_PCT,
@@ -1340,7 +1344,11 @@ export default async function handler(req, res) {
   try {
     let out;
     if (job === 'auditoria-cap') out = await jobAuditoriaCap({ ahora });
-    else if (job === 'acciones-edgar') out = await jobAccionesEdgar({ ahora, t0, limite: Number(q.limite) || null });
+    else if (job === 'acciones-edgar') out = await jobAccionesEdgar({ ahora, t0, limite: Number(q.limite) || null,
+      traza: q.symbol || null,
+      // `&forzar=1` sólo tiene sentido junto con `?symbol=`: reabre ESA fila,
+      // no las 500. Sin `symbol`, se ignora.
+      forzar: (q.forzar === '1' || q.forzar === 'true') && q.symbol ? q.symbol : null });
     else if (job === 'razon-adr') out = await jobRazonAdr({ ahora, manual });
     else if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY, t0 });
     else if (job === 'unidades') out = await jobUnidades({ ahora, manual });

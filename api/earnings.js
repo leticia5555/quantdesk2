@@ -1,4 +1,5 @@
 import { EXCLUDED_SECURITY_TYPES, NON_EQUITY_TYPES } from './_lib/arena-guard.js';
+import { leeHistoricoPead, leeHorasPead, historiaDesdePead, historiaDesdeFinnhub, revenueTrimestral } from './_lib/historial-pead.js';
 
 // ── MEGA-CAPS: universo curado para el calendario de /hoy ────────
 // El calendario de Finnhub trae TODOS los earnings del rango (cientos). Para
@@ -154,13 +155,53 @@ async function nextEarningsFromCalendar(calRes, sym) {
             revenue_estimate: next.revenueEstimate || null,
             quarter: next.quarter || null,
             year: next.year || null,
-            time: next.hour === 'bmo' ? 'Before market open' : next.hour === 'amc' ? 'After market close' : 'TBD'
+            time: next.hour === 'bmo' ? 'Before market open' : next.hour === 'amc' ? 'After market close' : 'TBD',
+            // El código crudo: el implied move elige la expiración con él
+            // (un reporte AMC necesita la primera expiración DESPUÉS del día).
+            hour: next.hour || null
           };
         }
       }
     }
   } catch (e) { /* cae a null */ }
   return null;
+}
+
+// Calendario de Finnhub SIN el corte silencioso.
+//
+// /calendar/earnings tiene tope de filas por respuesta y las devuelve en orden
+// de fecha DESCENDENTE: en temporada de reportes una ventana de 30 días se
+// trunca y lo que sobrevive son las fechas MÁS TARDÍAS. Por eso el 20-oct el
+// calendario "empezaba" el 10-nov — no era el rango ni el sort ascendente de
+// abajo, eran las 3 semanas tempranas (NFLX incluido) recortadas en origen.
+//
+// Si la fecha más temprana recibida es posterior a `from`, se vuelve a pedir
+// [from, esa fecha] (inclusive: ese día pudo quedar a medias) hasta cubrir el
+// rango, sin progreso, o MAX_TRAMOS. Fuera de temporada: 1 request, como antes.
+// Devuelve el array de filas (dedupe symbol|date) o null si la 1a respuesta no
+// es un calendario válido.
+const MAX_TRAMOS = 8;
+async function fetchCalendarCompleto(fromDate, toDate, finnhubKey, symbol) {
+  const filas = new Map();
+  let hasta = toDate;
+  let minPrevio = null;
+  for (let i = 0; i < MAX_TRAMOS; i++) {
+    const r = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromDate}&to=${hasta}`
+      + (symbol ? `&symbol=${encodeURIComponent(symbol)}` : '') + `&token=${finnhubKey}`);
+    const contentType = (r && r.headers && r.headers.get('content-type')) || '';
+    const data = contentType.includes('application/json') ? await r.json() : null;
+    if (!data || !Array.isArray(data.earningsCalendar)) return i === 0 ? null : [...filas.values()];
+    let min = null;
+    for (const e of data.earningsCalendar) {
+      if (!e || !e.symbol || !e.date) continue;
+      filas.set(`${e.symbol}|${e.date}`, e);
+      if (min === null || e.date < min) min = e.date;
+    }
+    if (min === null || min <= fromDate || (minPrevio !== null && min >= minPrevio)) break;
+    minPrevio = min;
+    hasta = min;
+  }
+  return [...filas.values()];
 }
 
 export default async function handler(req, res) {
@@ -194,49 +235,68 @@ export default async function handler(req, res) {
 
     // Top-level guard: if ANYTHING throws, return a clean JSON error
     try {
-      if (!finnhubKey) {
-        return res.status(200).json({ ticker: sym, history: [], error: 'FINNHUB_API_KEY not configured' });
-      }
-
       const now = Math.floor(Date.now() / 1000);
-      const twoYearsAgo = now - 730 * 24 * 3600;
+      // 8 trimestres de reacción necesitan algo más de 2 años de precios: el
+      // reporte más viejo de la lista cae ~24 meses atrás y le hace falta el
+      // cierre previo.
+      const desdePrecios = now - 900 * 24 * 3600;
 
       const today = new Date();
       const todayStr = today.toISOString().split('T')[0];
       const futureStr = new Date(today.getTime() + 120 * 24 * 3600 * 1000).toISOString().split('T')[0];
+      const pastStr = new Date(today.getTime() - 900 * 24 * 3600 * 1000).toISOString().split('T')[0];
 
+      // ── LA FUENTE DE VERDAD PRIMERO: pead_earnings ──
+      // Es la base de la tarjeta de Polymarket de esta misma tab. Si el símbolo
+      // está ahí, el panel cuenta beats sobre ESOS datos y con la MISMA función
+      // (ver api/_lib/historial-pead.js). Neon caído o sin DATABASE_URL → se
+      // sigue con Finnhub, etiquetado como respaldo, y se dice por qué.
+      const peadP = leeHistoricoPead([sym])
+        .then((m) => ({ filas: m.get(sym) || [], error: null }))
+        .catch((e) => ({ filas: [], error: String((e && e.message) || e).slice(0, 160) }));
+      const horasP = leeHorasPead(sym).catch(() => new Map());
+
+      const fh = (url) => (finnhubKey ? fetch(url).catch(() => null) : Promise.resolve(null));
       // All fetches have .catch fallback to null so Promise.all never rejects
-      const [epsRes, yahooRes, calRes, finRes] = await Promise.all([
-        fetch(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`)
-          .catch(() => null),
+      const [epsRes, yahooRes, calRes, finRes, calPastRes, pead, horas] = await Promise.all([
+        fh(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${finnhubKey}`),
         fetch(
-          `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?period1=${twoYearsAgo}&period2=${now}&interval=1d&range=2y`,
+          `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?period1=${desdePrecios}&period2=${now}&interval=1d`,
           { headers: { 'User-Agent': 'Mozilla/5.0' } }
         ).catch(() => null),
-        fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${todayStr}&to=${futureStr}&symbol=${sym}&token=${finnhubKey}`)
-          .catch(() => null),
-        fetch(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=quarterly&token=${finnhubKey}`)
-          .catch(() => null)
+        fh(`https://finnhub.io/api/v1/calendar/earnings?from=${todayStr}&to=${futureStr}&symbol=${sym}&token=${finnhubKey}`),
+        fh(`https://finnhub.io/api/v1/stock/financials-reported?symbol=${sym}&freq=quarterly&token=${finnhubKey}`),
+        // El calendario PASADO es el único lugar de Finnhub con la FECHA DE
+        // REPORTE (y el revenue del trimestre, no el acumulado fiscal).
+        fh(`https://finnhub.io/api/v1/calendar/earnings?from=${pastStr}&to=${todayStr}&symbol=${sym}&token=${finnhubKey}`),
+        peadP,
+        horasP,
       ]);
 
-      // ── EPS HISTORY (Finnhub) ──
-      let epsData = null;
-      try {
-        if (epsRes && epsRes.ok) {
-          const ct = epsRes.headers.get('content-type') || '';
-          if (ct.includes('application/json')) {
-            epsData = await epsRes.json();
+      const leeJson = async (r) => {
+        try {
+          if (r && r.ok) {
+            const ct = (r.headers && r.headers.get('content-type')) || '';
+            if (ct.includes('application/json')) return await r.json();
           }
-        }
-      } catch (e) { epsData = null; }
+        } catch (e) { /* null */ }
+        return null;
+      };
 
-      if (!Array.isArray(epsData) || epsData.length === 0) {
+      // ── EPS HISTORY (Finnhub) — respaldo, y contraste ──
+      const epsJson = await leeJson(epsRes);
+      const epsData = Array.isArray(epsJson) ? epsJson : null;
+
+      // ── UPCOMING EARNINGS (Finnhub calendar) ──
+      const nextEarnings = await nextEarningsFromCalendar(calRes, sym);
+
+      const tienePead = pead.filas.length > 0;
+      if (!tienePead && (!epsData || epsData.length === 0)) {
         // IPO sin historial de EPS (aún no reporta su 1er trimestre): NO cortamos
         // en seco. El próximo earnings vive en el calendario y debe salir igual —
         // es justo el caso de una IPO reciente (p.ej. SPCX) antes de su 1er reporte.
         // Con próximo confirmado, next_earnings alcanza y no marcamos error; sin él,
         // se conserva la nota informativa (plan restriction / ticker no soportado).
-        const nextEarnings = await nextEarningsFromCalendar(calRes, sym);
         return res.status(200).json({
           ticker: sym,
           history: [],
@@ -246,11 +306,11 @@ export default async function handler(req, res) {
           avg_surprise_pct: 0,
           avg_stock_reaction_pct: null,
           next_earnings: nextEarnings,
-          ...(nextEarnings ? {} : { error: 'No EPS history returned from Finnhub (may be plan restriction or unsupported ticker)' })
+          ...(nextEarnings ? {} : { error: finnhubKey
+            ? 'No EPS history returned from Finnhub (may be plan restriction or unsupported ticker)'
+            : 'FINNHUB_API_KEY not configured' })
         });
       }
-
-      const quarters = epsData.slice(0, 8);
 
       // ── YAHOO PRICE LOOKUP ──
       let priceLookup = null;
@@ -269,120 +329,33 @@ export default async function handler(req, res) {
         }
       } catch (e) { priceLookup = null; }
 
-      // ── REVENUE LOOKUP from financials-reported ──
-      // Build map: "YYYY-QN" → {revenue, period} for quick cross-reference with earnings
-      let revenueByPeriod = {};
-      try {
-        if (finRes && finRes.ok) {
-          const ct = finRes.headers.get('content-type') || '';
-          if (ct.includes('application/json')) {
-            const finJson = await finRes.json();
-            const reports = (finJson && finJson.data) || [];
-            reports.forEach(r => {
-              const ic = r.report && r.report.ic ? r.report.ic : [];
-              // Revenue is concept 'us-gaap_Revenues' or 'us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax'
-              const revItem = ic.find(item =>
-                item.concept && (
-                  item.concept.toLowerCase().includes('revenue') ||
-                  item.concept.toLowerCase().includes('sales')
-                )
-              );
-              if (revItem && typeof revItem.value === 'number' && r.quarter && r.year) {
-                const key = `${r.year}-Q${r.quarter}`;
-                // Keep first found (usually the most authoritative revenue line)
-                if (!revenueByPeriod[key]) {
-                  revenueByPeriod[key] = {
-                    revenue: revItem.value,
-                    period: r.endDate || null,
-                    filed: r.filedDate || null
-                  };
-                }
-              }
-            });
-          }
-        }
-      } catch (e) { revenueByPeriod = {}; }
+      // ── REVENUE: trimestre real, nunca el acumulado fiscal ──
+      const finJson = await leeJson(finRes);
+      const revenues = revenueTrimestral((finJson && finJson.data) || []);
+      const calPast = await leeJson(calPastRes);
+      const calendario = ((calPast && calPast.earningsCalendar) || []).filter((e) => e && e.symbol === sym);
 
-      // ── BUILD HISTORY ARRAY with revenue + YoY ──
-      const history = quarters.map(q => {
-        const epsEst = (q && typeof q.estimate === 'number') ? q.estimate : null;
-        const epsAct = (q && typeof q.actual === 'number') ? q.actual : null;
-        const surprisePct = (epsEst != null && epsEst !== 0 && epsAct != null)
-          ? ((epsAct - epsEst) / Math.abs(epsEst)) * 100
-          : null;
+      const payload = tienePead
+        ? historiaDesdePead({ simbolo: sym, filas: pead.filas, horas, precios: priceLookup, calendario, revenues })
+        : historiaDesdeFinnhub({ simbolo: sym, quarters: epsData.slice(0, 8), precios: priceLookup, calendario, revenues });
 
-        let stockReaction = null;
-        try {
-          if (priceLookup && q.period) {
-            const reportDate = q.period;
-            const reportIdx = priceLookup.findIndex(p => p.date >= reportDate);
-            if (reportIdx >= 0 && reportIdx + 1 < priceLookup.length) {
-              const before = priceLookup[reportIdx].close;
-              const after = priceLookup[reportIdx + 1].close;
-              if (before > 0) {
-                stockReaction = ((after - before) / before) * 100;
-              }
-            }
-          }
-        } catch (e) { stockReaction = null; }
+      // Por qué se usó el respaldo, cuando se usó.
+      if (!tienePead) payload.fallback_reason = pead.error ? 'pead_earnings no disponible: ' + pead.error : 'el símbolo no está en pead_earnings';
 
-        // Revenue lookup (actual reported)
-        let revenue = null;
-        let revenueYoyPct = null;
-        if (q.year && q.quarter) {
-          const key = `${q.year}-Q${q.quarter}`;
-          if (revenueByPeriod[key] && typeof revenueByPeriod[key].revenue === 'number') {
-            revenue = revenueByPeriod[key].revenue;
-          }
-          // YoY: same quarter one year earlier
-          const yoyKey = `${q.year - 1}-Q${q.quarter}`;
-          if (revenue != null && revenueByPeriod[yoyKey] && revenueByPeriod[yoyKey].revenue > 0) {
-            const prevRev = revenueByPeriod[yoyKey].revenue;
-            revenueYoyPct = ((revenue - prevRev) / prevRev) * 100;
-          }
-        }
-
-        return {
-          period: q.period || null,
-          quarter: q.quarter || null,
-          year: q.year || null,
-          eps_estimate: epsEst,
-          eps_actual: epsAct,
-          surprise_pct: surprisePct != null ? +surprisePct.toFixed(2) : null,
-          beat: surprisePct != null ? (surprisePct > 0) : null,
-          stock_reaction_pct: stockReaction != null ? +stockReaction.toFixed(2) : null,
-          revenue_actual: revenue,
-          revenue_yoy_pct: revenueYoyPct != null ? +revenueYoyPct.toFixed(1) : null
+      // CONTRASTE con Finnhub, a la vista: con dos proveedores de estimados los
+      // beats PUEDEN diferir (NFLX: AV 0.79 vs Finnhub ~0.80 sobre un 0.80
+      // reportado). No bloquea nada; impide que la diferencia vuelva a ser
+      // invisible.
+      if (tienePead && epsData && epsData.length) {
+        const fq = epsData.slice(0, 4).filter((q) => q && typeof q.actual === 'number' && typeof q.estimate === 'number');
+        payload.contraste_finnhub = {
+          trimestres: fq.length,
+          beats: fq.filter((q) => q.actual > q.estimate).length,
+          nota: 'Finnhub usa otro estimado de consenso: no es la fuente del panel',
         };
-      });
+      }
 
-      // ── AGGREGATES ──
-      const validQuarters = history.filter(h => h.surprise_pct != null);
-      const beats = validQuarters.filter(h => h.beat).length;
-      const total = validQuarters.length;
-      const beatRate = total > 0 ? (beats / total) * 100 : 0;
-      const avgSurprise = total > 0
-        ? validQuarters.reduce((sum, h) => sum + h.surprise_pct, 0) / total
-        : 0;
-      const validReactions = history.filter(h => h.stock_reaction_pct != null);
-      const avgReaction = validReactions.length > 0
-        ? validReactions.reduce((sum, h) => sum + h.stock_reaction_pct, 0) / validReactions.length
-        : null;
-
-      // ── UPCOMING EARNINGS (Finnhub calendar) ──
-      const nextEarnings = await nextEarningsFromCalendar(calRes, sym);
-
-      return res.status(200).json({
-        ticker: sym,
-        history,
-        beat_rate_pct: +beatRate.toFixed(1),
-        beats,
-        total,
-        avg_surprise_pct: +avgSurprise.toFixed(2),
-        avg_stock_reaction_pct: avgReaction != null ? +avgReaction.toFixed(2) : null,
-        next_earnings: nextEarnings
-      });
-
+      return res.status(200).json({ ...payload, next_earnings: nextEarnings });
     } catch (err) {
       // Final safety net — always return JSON, never let Vercel return HTML 500
       return res.status(200).json({
@@ -395,33 +368,69 @@ export default async function handler(req, res) {
 
   // ═══════════════════════════════════════════════════════════════
   // MODE 1: CALENDAR — /api/earnings?from=...&to=... (existing behavior)
+  //         /api/earnings?symbol=NFLX → solo ese ticker: próximo + últimos 4
   // ═══════════════════════════════════════════════════════════════
   if (!finnhubKey) return res.status(200).json({ earnings: [] });
 
+  // `?symbol=` antes no se leía: el handler sólo desestructuraba `ticker`, así
+  // que ?symbol=NFLX caía aquí sin filtro y devolvía el calendario entero.
+  const symbol = req.query && req.query.symbol ? String(req.query.symbol).toUpperCase().trim() : '';
+
   const nowDate = new Date();
-  const fromDate = from || nowDate.toISOString().split('T')[0];
-  const toDate = to || new Date(nowDate.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const todayStr = nowDate.toISOString().split('T')[0];
+  const dayOffset = (d) => new Date(nowDate.getTime() + d * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // Con symbol la ventana mira hacia atrás (últimos 4 trimestres ≈ 400 días)
+  // y 120 días adelante, igual que el próximo earnings de la rama ?ticker=.
+  const fromDate = from || (symbol ? dayOffset(-400) : todayStr);
+  const toDate = to || (symbol ? dayOffset(120) : dayOffset(30));
+
+  const toRow = (symMap) => (e) => ({
+    ticker: e.symbol,
+    // Nombre del symbol map (title-cased); null si el símbolo no está
+    // (no-US raro) — el frontend omite, nunca inventa.
+    company: (symMap && symMap[e.symbol]) || null,
+    date: e.date,
+    time: e.hour === 'bmo' ? 'BMO' : e.hour === 'amc' ? 'AMC' : 'TBD',
+    eps_est: e.epsEstimate,
+    eps_actual: e.epsActual,
+    revenue_est: e.revenueEstimate,
+    revenue_actual: e.revenueActual,
+    quarter: e.quarter,
+    year: e.year
+  });
 
   try {
     // El symbol map corre en paralelo al calendario: con cache caliente son
     // 0 requests extra; frío, 1 request que no suma latencia secuencial.
-    const [r, symMap] = await Promise.all([
-      fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${fromDate}&to=${toDate}&token=${finnhubKey}`),
+    const [calendar, symMap] = await Promise.all([
+      fetchCalendarCompleto(fromDate, toDate, finnhubKey, symbol),
       getSymbolMap(finnhubKey)
     ]);
-    const contentType = r.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      return res.status(200).json({ earnings: [] });
-    }
-    const data = await r.json();
-    if (!data.earningsCalendar) {
-      return res.status(200).json({ earnings: [] });
+    if (!calendar) {
+      return res.status(200).json(symbol ? { symbol, earnings: [], count: 0, next: null } : { earnings: [] });
     }
     // No se filtra por epsEstimate: en el free tier muchos earnings
     // CONFIRMADOS de corto plazo vienen sin estimate y el filtro los
     // borraba — el panel "this week" quedaba mostrando solo fechas
     // lejanas que sí traían estimate (Aug 7/10 bajo "this week" en jul).
-    const conFecha = data.earningsCalendar.filter(e => e.symbol && e.date);
+    const conFecha = calendar.filter(e => e.symbol && e.date);
+
+    if (symbol) {
+      // Filtro estricto aunque Finnhub ya reciba &symbol=: nunca devolver
+      // filas de otro ticker. Próximo = primera fecha >= hoy; pasados = los 4
+      // más recientes con fecha < hoy (si la fuente los trae).
+      const propias = conFecha.filter(e => String(e.symbol).toUpperCase() === symbol);
+      const asc = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+      const proximo = propias.filter(e => e.date >= todayStr).sort(asc)[0] || null;
+      const pasados = propias.filter(e => e.date < todayStr).sort(asc).slice(-4);
+      const earnings = [...pasados, ...(proximo ? [proximo] : [])].map(toRow(symMap));
+      return res.status(200).json({
+        symbol,
+        earnings,
+        count: earnings.length,
+        next: proximo ? toRow(symMap)(proximo) : null,
+      });
+    }
     // LO QUE EL FILTRO DESCARTA, CONTADO Y CON NOMBRE.
     //
     // `?mega=1` se queda con ~55 nombres curados, y en plena temporada de
@@ -437,20 +446,7 @@ export default async function handler(req, res) {
     const earnings = conFecha
       // ?mega=1: intersecta con el set curado de mega-caps (calendario /hoy).
       .filter(e => !megaOnly || MEGA_CAPS.has(e.symbol))
-      .map(e => ({
-        ticker: e.symbol,
-        // Nombre del symbol map (title-cased); null si el símbolo no está
-        // (no-US raro) — el frontend omite, nunca inventa.
-        company: (symMap && symMap[e.symbol]) || null,
-        date: e.date,
-        time: e.hour === 'bmo' ? 'BMO' : e.hour === 'amc' ? 'AMC' : 'TBD',
-        eps_est: e.epsEstimate,
-        eps_actual: e.epsActual,
-        revenue_est: e.revenueEstimate,
-        revenue_actual: e.revenueActual,
-        quarter: e.quarter,
-        year: e.year
-      }))
+      .map(toRow(symMap))
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     return res.status(200).json({
       earnings, count: earnings.length,

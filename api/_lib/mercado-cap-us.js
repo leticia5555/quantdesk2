@@ -325,7 +325,13 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
         // Vencer es una TAREA y no apaga el cuadro: los conteos derivan ~1%
         // por trimestre de recompra, muy dentro de la tolerancia.
         referencia_vigente_hasta: referencia.vigente_hasta || null,
-        referencia_a_recapturar: vig && vig.vencida === true,
+        // `a_recapturar`, NO `vencida`: ese campo no existe en lo que devuelve
+        // `referenciaVigente`, así que `vig.vencida === true` era SIEMPRE
+        // false y una captura de clases vencida no se marcaba nunca. Entró
+        // con BRK.B y lo encontró la prueba de vigencia de SPCX. Los ADR
+        // usaban el nombre correcto, así que el defecto era sólo de esta
+        // rama — una copia a ojo del campo de al lado (2026-10-23).
+        referencia_a_recapturar: !!(vig && vig.a_recapturar),
         motivo: null,
       };
     }

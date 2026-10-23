@@ -32,6 +32,9 @@ process.env.DATABASE_URL = 'postgres://u:p@ep-x-1.us-east-2.aws.neon.tech/db';
 process.env.ADMIN_SECRET = 'admin-s3cret';
 process.env.ALPACA_LIVE_KEY = 'LIVEKEY';
 process.env.ALPACA_LIVE_SECRET = 'LIVESECRET';
+process.env.ALPACA_LIBRO_PAPER_KEY = 'LIBROPAPERKEY';
+process.env.ALPACA_LIBRO_PAPER_SECRET = 'LIBROPAPERSECRET';
+delete process.env.LIBRO_MODO; // default = paper
 process.env.ALPACA_PAPER_KEY = 'PAPERKEY';
 process.env.ALPACA_PAPER_SECRET = 'PAPERSECRET';
 delete process.env.LIBRO_LIVE_ENABLED;
@@ -63,7 +66,7 @@ globalThis.fetch = async (url, opts = {}) => {
     }
     return reply(body.queries ? { results: out } : out[0]);
   }
-  if (u.includes('api.alpaca.markets')) {
+  if (u.includes('api.alpaca.markets') || u.includes('paper-api.alpaca.markets')) {
     if (u.endsWith('/v2/account')) return reply({ status: 'ACTIVE', currency: 'USD', equity: '5000', cash: '5000', account_number: 'LIVE123', trading_blocked: false });
     if (u.endsWith('/v2/clock')) return reply({ is_open: false, next_open: '2026-10-19T13:30:00Z', next_close: '2026-10-19T20:00:00Z' });
     if (u.includes('/v2/calendar')) return reply([{ date: '2026-10-19' }, { date: '2026-10-20' }]);
@@ -79,6 +82,18 @@ globalThis.fetch = async (url, opts = {}) => {
 const A = await import('../api/_lib/libro-alpaca.js');
 const L = await import('../api/_lib/libro.js');
 const { default: handler, runSmoke } = await import('../api/libro.js');
+
+// ═══ 0. Modo paper | live ═══
+console.log('\n0. LIBRO_MODO');
+ok(A.libroModo() === 'paper' && A.libroBase() === 'https://paper-api.alpaca.markets', 'sin LIBRO_MODO → PAPER (default seguro), host paper-api');
+process.env.LIBRO_MODO = 'LIVE '; ok(A.libroModo() === 'live' && A.libroBase() === 'https://api.alpaca.markets', "'LIVE ' → live, host api.alpaca.markets");
+ok(A.libroCreds().key === 'LIVEKEY', 'en live lee ALPACA_LIVE_KEY');
+process.env.LIBRO_MODO = 'paper';
+ok(A.libroCreds().key === 'LIBROPAPERKEY', 'en paper lee ALPACA_LIBRO_PAPER_KEY (cuenta propia, no la del Arena)');
+delete process.env.ALPACA_LIVE_KEY; ok(A.libroCreds() !== null, 'en paper NO necesita las keys live'); process.env.ALPACA_LIVE_KEY = 'LIVEKEY';
+process.env.LIBRO_MODO = 'live'; delete process.env.ALPACA_LIBRO_PAPER_KEY;
+ok(A.libroCreds() !== null && /ALPACA_LIVE/.test(A.libroCredsFaltantes()), 'en live NO necesita las keys paper');
+process.env.ALPACA_LIBRO_PAPER_KEY = 'LIBROPAPERKEY'; delete process.env.LIBRO_MODO;
 
 // ═══ 1. Interruptor ═══
 console.log('\n1. Interruptor LIBRO_LIVE_ENABLED');
@@ -99,8 +114,13 @@ const o = await A.createLimitOrder({ symbol: 'aapl', qty: 2, side: 'buy', limit_
 const post = calls.find((c) => c.url.endsWith('/v2/orders') && c.method === 'POST');
 ok(post && post.body.type === 'limit' && post.body.time_in_force === 'day', 'POST es limit + day');
 ok(post.body.symbol === 'AAPL' && post.body.qty === '2', 'símbolo en mayúsculas, qty como string');
-ok(post.headers['APCA-API-KEY-ID'] === 'LIVEKEY', 'usa ALPACA_LIVE_KEY, no la del Arena');
-ok(post.url.startsWith('https://api.alpaca.markets'), 'host LIVE (api.alpaca.markets), no paper');
+ok(post.headers['APCA-API-KEY-ID'] === 'LIBROPAPERKEY', 'en paper usa ALPACA_LIBRO_PAPER_KEY, no la del Arena');
+ok(post.url.startsWith('https://paper-api.alpaca.markets'), 'host PAPER por default');
+process.env.LIBRO_MODO = 'live';
+await A.createLimitOrder({ symbol: 'aapl', qty: 1, side: 'buy', limit_price: 1, client_order_id: 'libro:x:2026-10-17:AAPL:buy2' });
+const postLive0 = calls[calls.length - 1];
+ok(postLive0.headers['APCA-API-KEY-ID'] === 'LIVEKEY' && postLive0.url.startsWith('https://api.alpaca.markets'), 'en live usa ALPACA_LIVE_KEY y host live');
+delete process.env.LIBRO_MODO;
 ok(!('closeAllPositions' in A), 'el cliente live NO expone liquidación a mercado');
 let err = null; try { await A.createLimitOrder({ symbol: 'AAPL', qty: 1.5, side: 'buy', limit_price: 1 }); } catch (e) { err = e; }
 ok(err && /entero/.test(err.message), 'qty fraccional rechazada');
@@ -200,7 +220,7 @@ console.log('\n8. Reporte');
 let md = L.renderReporteMarkdown({ m: L.metricas({ equityDiario: eq.slice(0, 2), spyUnidades: 10000 / 600, equityInicial: 10000 }), suerte: { aplica: false, motivo: '0 operaciones cerradas' }, estrategias: L.SEMILLA.map((s) => ({ ...s })), ordenes: [] });
 ok(/0 operaciones · libro = cash/.test(md), 'dice "0 operaciones · libro = cash"');
 ok(/¿Le gané al piso\?/.test(md) && /¿Cuánto me asusté\?/.test(md) && /¿Fue suerte\?/.test(md), 'los tres números, con esas preguntas');
-ok(/SOMBRA/.test(md) && /dividendos de SPY no contados/.test(md), 'declara modo sombra y dividendos no contados');
+ok(/Cuenta: \*\*PAPER\*\*/.test(md) && /SOMBRA/.test(md) && /dividendos de SPY no contados/.test(md), 'declara cuenta PAPER, envío sombra y dividendos no contados');
 ok(/\| tsla_bollinger \| validada \| 0 \|/.test(md), 'tabla por estrategia');
 md = L.renderReporteMarkdown({ m: L.metricas({ equityDiario: [] }), suerte: null, estrategias: [], ordenes: [] });
 ok(/Sin días registrados/.test(md), 'sin filas → lo dice, no inventa');
@@ -210,14 +230,14 @@ ok(/indistinguible de suerte/.test(sMed), 'percentil 50 → "indistinguible de s
 // ═══ 9. Endpoint ═══
 console.log('\n9. /api/libro');
 let res = mockRes(); await handler({ method: 'GET', query: {}, headers: {} }, res);
-ok(res.code === 200 && res.body.modo === 'SOMBRA' && res.body.keys === true, 'salud pública: sombra, keys presentes', JSON.stringify(res.body));
-ok(JSON.stringify(res.body).indexOf('LIVEKEY') === -1 && JSON.stringify(res.body).indexOf('LIVESECRET') === -1, 'la salud no filtra credenciales');
+ok(res.code === 200 && res.body.cuenta === 'paper' && res.body.envio === 'SOMBRA' && res.body.keys === true, 'salud pública: cuenta paper, envío sombra, keys presentes', JSON.stringify(res.body));
+ok(!/LIVEKEY|LIVESECRET|LIBROPAPERKEY|LIBROPAPERSECRET/.test(JSON.stringify(res.body)), 'la salud no filtra credenciales');
 res = mockRes(); await handler({ method: 'GET', query: { smoke: '1' }, headers: {} }, res);
 ok(res.code === 401, 'smoke sin secret → 401');
 res = mockRes(); await handler({ method: 'GET', query: { kill: '1' }, headers: {} }, res);
 ok(res.code === 401, 'kill sin secret → 401');
 res = mockRes(); await handler({ method: 'GET', query: { smoke: '1' }, headers: { authorization: 'Bearer admin-s3cret' } }, res);
-ok(res.code === 200 && res.body.smoke === true && res.body.live === false, 'smoke con secret responde');
+ok(res.code === 200 && res.body.smoke === true && res.body.live === false && res.body.modo === 'paper', 'smoke con secret responde, modo paper');
 const pasos = res.body.results.map((r) => r.name).join(',');
 ok(pasos === 'account,clock,calendar,limit_order,order_lookup,cancel', 'secuencia del smoke = la del Arena', pasos);
 ok(res.body.results.find((r) => r.name === 'limit_order').sombra === true && res.body.ok === true, 'en sombra la escritura reporta sombra:true, no error');
@@ -225,7 +245,7 @@ const postsSmoke = calls.filter((c) => c.url.endsWith('/v2/orders') && c.method 
 ok(postsSmoke.length === 0, 'el smoke en sombra NO mandó la orden');
 process.env.LIBRO_LIVE_ENABLED = 'true';
 const sm = await runSmoke(new Date('2026-10-17T20:00:00Z'));
-ok(sm.ok === true && sm.live === true && sm.results.every((r) => r.ok && !r.sombra), 'smoke LIVE 6/6 (orden imposible + cancel)');
+ok(sm.ok === true && sm.live === true && sm.results.every((r) => r.ok && !r.sombra), 'smoke con envío encendido 6/6 (orden imposible + cancel)');
 const postLive = calls.filter((c) => c.url.endsWith('/v2/orders') && c.method === 'POST' && String(c.body.client_order_id || '').startsWith('libro-smoke'));
 ok(postLive.length === 1 && postLive[0].body.limit_price === '1' && postLive[0].body.type === 'limit', 'orden imposible: AAPL límite $1, limit');
 delete process.env.LIBRO_LIVE_ENABLED;

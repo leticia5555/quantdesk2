@@ -277,6 +277,71 @@ console.log('calendario: ?mega=1 conserva SPCX (primer earnings post-IPO)');
     'SPCX está en MEGA_CAPS: ?mega=1 lo conserva y descarta el small-cap', JSON.stringify(syms));
 }
 
+// ─────────────────── ?symbol=NFLX: sólo filas de ese ticker ───────────────────
+console.log('calendario: ?symbol=NFLX devuelve SOLO NFLX (próximo + últimos 4)');
+{
+  _resetSymbolMapCache();
+  let calUrl = null;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/stock/symbol')) return jsonResponse([{ symbol: 'NFLX', description: 'NETFLIX INC' }]);
+    if (u.includes('/calendar/earnings')) {
+      calUrl = u;
+      // Aunque la fuente ignore &symbol= y mande el calendario entero, la
+      // respuesta no puede traer otro ticker.
+      return jsonResponse({ earningsCalendar: [
+        { symbol: 'ZZOTHER', date: iso(21), hour: 'bmo' },                     // date-lint-ok: iso() runtime
+        { symbol: 'NFLX', date: iso(91), hour: 'amc' },                        // date-lint-ok: iso() runtime
+        { symbol: 'NFLX', date: iso(0), hour: 'amc', epsEstimate: 5.1 },       // date-lint-ok: iso() runtime
+        { symbol: 'AAPL', date: iso(0), hour: 'amc' },                         // date-lint-ok: iso() runtime
+        { symbol: 'NFLX', date: iso(-91), epsActual: 7.19 },                   // date-lint-ok: iso() runtime
+        { symbol: 'NFLX', date: iso(-182), epsActual: 6.61 },                  // date-lint-ok: iso() runtime
+        { symbol: 'NFLX', date: iso(-273), epsActual: 4.27 },                  // date-lint-ok: iso() runtime
+        { symbol: 'NFLX', date: iso(-364), epsActual: 5.40 },                  // date-lint-ok: iso() runtime
+        { symbol: 'NFLX', date: iso(-395), epsActual: 1.00 },                  // date-lint-ok: iso() runtime
+      ] });
+    }
+    throw new Error('fetch inesperado: ' + u);
+  };
+  const r = mockRes();
+  await handler({ method: 'GET', query: { symbol: 'nflx' } }, r);
+  const rows = r.body.earnings || [];
+  ok(r.code === 200 && rows.length > 0 && rows.every((e) => e.ticker === 'NFLX'),
+    '?symbol=NFLX no devuelve ningún otro ticker', JSON.stringify(rows.map((e) => e.ticker)));
+  ok(calUrl && calUrl.includes('symbol=NFLX'), 'el símbolo se pasa a Finnhub', calUrl);
+  ok(r.body.symbol === 'NFLX' && r.body.next && r.body.next.date === iso(0) && r.body.next.time === 'AMC',
+    'próximo = el reporte de hoy (AMC)', JSON.stringify(r.body.next));
+  ok(rows.length === 5 && rows.filter((e) => e.date < iso(0)).length === 4 && rows[0].date === iso(-364),
+    'últimos 4 trimestres + próximo, en orden ascendente', JSON.stringify(rows.map((e) => e.date)));
+}
+
+// ─────────────────── truncado de Finnhub: la ventana empieza HOY ───────────────────
+console.log('calendario: si Finnhub trunca (quedan las fechas tardías), se recupera el tramo temprano');
+{
+  _resetSymbolMapCache();
+  // Simula el tope de Finnhub: orden descendente y como mucho 3 filas.
+  const universo = [0, 0, 5, 9, 12, 21, 21, 25].map((d, i) => ({ symbol: i === 0 ? 'NFLX' : 'ZZ' + i, date: iso(d) })); // date-lint-ok: iso() runtime
+  let calls = 0;
+  global.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/stock/symbol')) return jsonResponse([]);
+    if (u.includes('/calendar/earnings')) {
+      calls++;
+      const q = new URL(u).searchParams;
+      const rows = universo.filter((e) => e.date >= q.get('from') && e.date <= q.get('to'))
+        .sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 3);
+      return jsonResponse({ earningsCalendar: rows });
+    }
+    throw new Error('fetch inesperado: ' + u);
+  };
+  const r = mockRes();
+  await handler({ method: 'GET', query: {} }, r);
+  const rows = r.body.earnings || [];
+  ok(rows.length === universo.length, 'no se pierde ninguna fila por el truncado', `${rows.length} vs ${universo.length} (${calls} calls)`);
+  ok(rows[0] && rows[0].date === iso(0) && rows.some((e) => e.ticker === 'NFLX'),
+    'la ventana arranca hoy e incluye el reporte de hoy', JSON.stringify(rows.slice(0, 2)));
+}
+
 global.fetch = realFetch;
 if (realKey === undefined) delete process.env.FINNHUB_API_KEY; else process.env.FINNHUB_API_KEY = realKey;
 console.log(failures === 0 ? '\nTODOS LOS TESTS PASAN' : '\n' + failures + ' TEST(S) FALLARON');

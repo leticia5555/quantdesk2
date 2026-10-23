@@ -16,8 +16,8 @@ El Libro hace tres cosas y nada más:
 
 | Puerta | Cómo está hecha | Dónde |
 |---|---|---|
-| **Interruptor** | `LIBRO_LIVE_ENABLED` — solo el string `'true'` enciende el envío. Ausente o cualquier otra cosa = **sombra**: calcula y journalea, `createLimitOrder` se niega a mandar (lanza `LibroSombraError`). No existe `force`. | `_lib/libro-alpaca.js` |
-| **Credenciales aparte** | `ALPACA_LIVE_KEY / SECRET`. El cliente live no lee `ALPACA_PAPER_*`; el test verifica que ninguna llamada de la suite use las keys del Arena. | `_lib/libro-alpaca.js` |
+| **Dos cuentas, un modo** | `LIBRO_MODO` = `paper` (default) o `live`. Paper → host `paper-api`, keys `ALPACA_LIBRO_PAPER_KEY / SECRET` (una cuenta paper **propia** del Libro: ni la del Arena ni la del smoke de venta). Live → `api.alpaca.markets`, keys `ALPACA_LIVE_KEY / SECRET`. En paper el cliente ni siquiera lee las keys live, y al revés. El test verifica que ninguna llamada de la suite use las keys del Arena. | `_lib/libro-alpaca.js` |
+| **Interruptor de envío** | `LIBRO_LIVE_ENABLED` — solo el string `'true'` permite que `createLimitOrder` mande. Ausente o cualquier otra cosa = **sombra**: calcula y journalea, el cliente se niega (lanza `LibroSombraError`). Aplica en los dos modos: en paper también se arranca en sombra. No existe `force`. | `_lib/libro-alpaca.js` |
 | **Limit-only, day** | El cliente no expone `type`. Tampoco expone liquidación a mercado (`closeAllPositions` no existe aquí). | `_lib/libro-alpaca.js` |
 | **Rieles** | 8 posiciones · 15 % del equity por posición · 10 % mínimo en cash · banda ±2 % sobre el último cierre · precio ≥ $5 · long-only · enteros · solo estrategia **activa** · tope propio de cada estrategia (`tamano_max_pct`). Violación = orden **descartada y journaleada**. Nunca ajustada. | `LIBRO_RULES`, `validarOrdenes` |
 | **Salidas de riesgo** | Stop catastrófico 22 % por posición, breaker −15 % (delever pro-rata) / −20 % (liquida todo + halt). **Importadas** de `_lib/arena-exits.js` (reglas T2): mismo código, no una copia. | `salidasDeRiesgo` |
@@ -56,8 +56,8 @@ Juzgar a **6 meses mínimo**. La inconsistencia a medio camino es el dato, no un
 
 | Llamada | Quién | Qué hace |
 |---|---|---|
-| `GET /api/libro` | público | salud: hay keys, modo LIVE/SOMBRA, halt, rieles. No filtra secretos. |
-| `GET /api/libro?smoke=1` | ADMIN | auth live · clock · calendar · orden límite **imposible** (AAPL @ $1) · lookup · cancel. En sombra la pata de escritura reporta `sombra:true`, no error. Verde = 6/6. |
+| `GET /api/libro` | público | salud: cuenta (paper/live), hay keys, envío (SOMBRA/ENCENDIDO), halt, rieles. No filtra secretos. |
+| `GET /api/libro?smoke=1` | ADMIN | auth (cuenta del modo) · clock · calendar · orden límite **imposible** (AAPL @ $1) · lookup · cancel. En sombra la pata de escritura reporta `sombra:true`, no error. Verde = 6/6. |
 | `GET /api/libro?sembrar=1` | ADMIN | crea tablas + siembra `spy_piso` y `tsla_bollinger`. Idempotente. |
 | `GET /api/libro?abrir=1` | ADMIN | abre el benchmark **una sola vez** (`spy_unidades`, `equity_inicial`). Si ya estaba, lo dice y no lo pisa. |
 | `GET /api/libro?kill=1&motivo=...` | ADMIN | cancela todo + halt. |
@@ -88,25 +88,51 @@ decidir({ estrategia, closes, positions, equity, cash, today })
 - Se enciende solo cuando Lety ponga `estado='activa'` + `fecha_inicio` en la fila **y** `LIBRO_LIVE_ENABLED=true`. Hasta entonces, todo lo anterior corre en sombra y se journalea.
 - Tamaño: `tamano_max_pct = 10`. Etiqueta honesta: "VENTAJA REAL a 2 años, FRÁGIL a 5". Criterio de salida: dos meses seguidos por debajo de SPY, o drawdown propio > 15 %.
 
-## Lo que Lety corre (el sandbox no llega a Alpaca ni a Neon)
+## Secuencia: primero PAPER, después LIVE
+
+El Libro arranca en **paper** (es el default: sin `LIBRO_MODO` es paper). Live se prende cuando el paper lleve 4 semanas limpias con la primera estrategia. Las tablas de Neon son las mismas en los dos modos; cada orden guarda `sombra` y el reporte dice en qué cuenta corrió.
+
+### Paso A — cuenta paper propia del Libro (hoy)
 
 ```
-# 1) Vercel → Settings → Environment Variables (Production):
-#    ALPACA_LIVE_KEY, ALPACA_LIVE_SECRET          ← las de la cuenta LIVE
-#    (NO poner LIBRO_LIVE_ENABLED todavía)
-# 2) Redeploy. Luego, desde una terminal (S = tu ADMIN_SECRET):
+# 1) Alpaca → el login que tenga espacio (son 3 paper por login) → crear una
+#    cuenta PAPER nueva y nombrarla "LIBRO". No reutilizar la del Arena ni la
+#    del smoke de venta: un libro que comparte cuenta con la liga no mide nada.
+#    Generar keys de ESA cuenta → guardarlas en tus notas.
+# 2) Vercel → Settings → Environment Variables (Production):
+#    ALPACA_LIBRO_PAPER_KEY, ALPACA_LIBRO_PAPER_SECRET
+#    (NO poner LIBRO_MODO ni LIBRO_LIVE_ENABLED todavía)
+# 3) Redeploy. Luego, desde una terminal (S = tu ADMIN_SECRET):
+curl -s -H "Authorization: Bearer $S" "https://quantdesk2.vercel.app/api/libro"
+#    esperado: cuenta:"paper", keys:true, envio:"SOMBRA"
 curl -s -H "Authorization: Bearer $S" "https://quantdesk2.vercel.app/api/libro?sembrar=1"
 curl -s -H "Authorization: Bearer $S" "https://quantdesk2.vercel.app/api/libro?smoke=1"
-#    esperado: ok:true, live:false, limit_order.sombra:true (sombra = correcto hoy)
+#    esperado: ok:true, modo:"paper", live:false, limit_order.sombra:true
 curl -s -H "Authorization: Bearer $S" "https://quantdesk2.vercel.app/api/libro?abrir=1"
-#    esperado: ya_estaba:false, spy_unidades = equity / SPY
+#    esperado: ya_estaba:false, spy_unidades = equity_paper / SPY
 curl -s -H "Authorization: Bearer $S" "https://quantdesk2.vercel.app/api/libro?equity=1"
 curl -s -H "Authorization: Bearer $S" "https://quantdesk2.vercel.app/api/libro-report?format=md"
-#    esperado: "0 operaciones · libro = cash · SPY +X%"
-# 3) Solo cuando quieras que el smoke mande la orden imposible de verdad:
-#    LIBRO_LIVE_ENABLED=true → redeploy → ?smoke=1 → debe dar 6/6 sin sombra
-#    → y VOLVER a quitar la variable hasta Fase 1.
+#    esperado: "Cuenta: PAPER · envío: SOMBRA" y "0 operaciones · libro = cash"
+# 4) Encender el envío EN PAPER (aquí sí, es paper):
+#    LIBRO_LIVE_ENABLED=true → redeploy → ?smoke=1 → 6/6 sin sombra
+#    (la orden imposible AAPL @ $1 se manda y se cancela en la cuenta paper).
 ```
+
+### Paso B — live (cuando el paper lleve 4 semanas limpias)
+
+```
+# 1) KYC de Alpaca live terminado, cuenta fondeada, keys live en tus notas.
+# 2) Vercel: ALPACA_LIVE_KEY, ALPACA_LIVE_SECRET; QUITAR LIBRO_LIVE_ENABLED.
+# 3) LIBRO_MODO=live → redeploy → /api/libro (cuenta:"live", envio:"SOMBRA")
+#    → ?smoke=1 (sombra) → ?abrir=1 → ?equity=1 → report.
+#    El benchmark se reabre: `spy_unidades` ya existe de paper. Antes de abrir
+#    en live, borrar las filas de libro_estado (spy_unidades, equity_inicial,
+#    spy_entry, abierto_at) y libro_equity_diario — el paper fue ensayo, el
+#    reloj de los 6 meses arranca con dinero real.
+# 4) Solo entonces LIBRO_LIVE_ENABLED=true.
+```
+
+Nota de Vercel: `api/libro.js` y `api/libro-report.js` **no** llevan entrada propia en `functions` de `vercel.json` — el glob `api/*.js` ya les da 60 s, y una entrada específica después del glob rompe el build (`unused_function`, visto en el deploy de #280).
 
 ## Tests
 

@@ -48,6 +48,7 @@
 import { sql } from './_lib/db.js';
 import { FLAGSHIP_AGENT_ID, estadoDeCompuertas, ARENA_SEASON, ARENA_MAX_TOKENS, temporadaEfectiva } from './_lib/arena-registry.js';
 import { leerInicioTemporada } from './_lib/arena-baseline.js';
+import { CLAVE_META as CLAVE_SALDO } from './_lib/openrouter-saldo.js';
 import { RESERVA_CIERRE_MS } from './_lib/arena-tool-loop.js';
 import { buildInfo } from './_lib/build-info.js';
 import { checkLecturaAuth } from './_lib/arena-admin.js';
@@ -123,6 +124,10 @@ export default async function handler(req, res) {
       ahora: new Date().toISOString(),
       compuertas: estadoDeCompuertas(),
       temporada,
+      // El saldo de OpenRouter que leyó el vigilante en su último ciclo, con
+      // su hora. null = todavía no lo leyó nunca.
+      saldo_openrouter: await sql(`select value from arena_watch_meta where key = $1`, [CLAVE_SALDO])
+        .then((r) => (r[0] && r[0].value) || null).catch(() => null),
     });
   }
 
