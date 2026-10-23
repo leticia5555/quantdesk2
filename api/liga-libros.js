@@ -256,17 +256,22 @@ export const PUERTA_LECTURA_MS = 90000;
 export function cortesDelCierre(ctx) {
   const le = ctx && ctx.llm_error;
   if (!le) return { cortado: false, intentos_cortados: 0 };
+  const murioEnLoop = !!(ctx.murio_en || le.murio_en);
+  // Un corte NUESTRO ANTES DE LAS CABECERAS (2026-10-23) no deja cuerpo vacío
+  // —no hubo respuesta— así que no está en `cuerpos_vacios`: se ve en
+  // `timed_out` + `timeout_nuestro`. Si el loop no murió antes, fue el cierre.
+  const antesDeCabeceras = !!(le.timed_out && le.timeout_nuestro && !murioEnLoop) ? 1 : 0;
   // Con `cuerpos_vacios` journaleado, manda la lista: cada vacío del cierre
   // queda ahí con su intento (arena-tool-loop los empuja todos; un intento
   // OMITIDO —sin reloj, sin proveedor— no trae `timeout_nuestro` y no cuenta).
   if (Array.isArray(le.cuerpos_vacios)) {
-    const n = le.cuerpos_vacios.filter((x) => x && x.vuelta === 'cierre' && x.timeout_nuestro).length;
+    const n = le.cuerpos_vacios.filter((x) => x && x.vuelta === 'cierre' && x.timeout_nuestro).length + antesDeCabeceras;
     return { cortado: n > 0, intentos_cortados: n };
   }
+  if (antesDeCabeceras) return { cortado: true, intentos_cortados: 1 };
   // Filas sin `cuerpos_vacios`: si el error final fue nuestro reloj y el loop
   // NO murió antes (si murió, esa vuelta ya está en `vueltas_medidas`), el
   // corte fue el cierre.
-  const murioEnLoop = !!(ctx.murio_en || le.murio_en);
   const cortado = !!(le.timeout_nuestro && le.motivo === 'cuerpo_vacio_reloj_nuestro' && !murioEnLoop);
   return { cortado, intentos_cortados: cortado ? 1 : 0 };
 }
