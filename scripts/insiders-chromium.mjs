@@ -301,7 +301,12 @@ try {
     id: b.dataset.chip, off: b.disabled, txt: b.textContent.trim(), titulo: b.getAttribute('title') || '',
     alto: Math.round(b.getBoundingClientRect().height),
   })));
-  chequeo('los cinco chips del artboard están', chips.length === 5, chips.map((c) => c.id).join(','));
+  // Siete: los cinco del artboard más "Entregó en fusión" y "Retención
+  // fiscal", que salieron de Ventas cuando `D` y `F` dejaron de contar como
+  // venta de mercado. Se agregan en vez de esconderse.
+  chequeo('los siete chips están, y los dos que no son ventas tienen el suyo',
+    chips.length === 7 && ['entrega_emisora', 'impuesto'].every((id) => chips.some((c) => c.id === id)),
+    chips.map((c) => c.id).join(','));
   const vp = chips.find((c) => c.id === 'venta_propuesta');
   chequeo('"Venta propuesta" va deshabilitada y dice que es un Form 144',
     vp.off && /pronto/.test(vp.txt) && /Form 144/.test(vp.titulo), vp.titulo);

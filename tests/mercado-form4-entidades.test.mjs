@@ -67,3 +67,47 @@ test('sin `officerTitle` sigue saliendo el rol, con su motivo (regla 2)', () => 
   assert.equal(d.cargo, 'Director');
   assert.match(d.cargo_motivo, /no declaró el puesto/);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// SÓLO LA `S` ES UNA VENTA EN EL MERCADO
+//
+// ATKR salía con 15 personas que "vendieron todo", 38 ventas y −$60.81 M en
+// la semana. Era el cierre de una fusión: código `D` —disposición A LA
+// EMISORA— que esta casa estaba contando como `venta` (Lety, 2026-10-23).
+// `F` (acciones retenidas para impuestos de un vesting) es el otro caso de
+// insider que entrega papel sin haber decidido vender nada.
+// ═══════════════════════════════════════════════════════════════════════
+import { readFileSync } from 'node:fs';
+import { CODIGOS as COD4, tipoDeCodigo as tipo4, CHIPS as CHIPS4 } from '../api/_lib/form4.js';
+
+test('D y F dejan de ser ventas de mercado; S sigue siéndolo', () => {
+  assert.equal(tipo4('S').tipo, 'venta');
+  assert.equal(tipo4('D').tipo, 'entrega_emisora');
+  assert.equal(tipo4('F').tipo, 'impuesto');
+  // La mutación que importa: si alguien vuelve a mapear D a 'venta', ATKR
+  // vuelve a encabezar el Top de la semana con una fusión.
+  const comoVenta = Object.entries(COD4).filter(([, v]) => v.tipo === 'venta').map(([k]) => k);
+  assert.deepEqual(comoVenta, ['S'], `sólo S puede ser 'venta'; hoy son: ${comoVenta.join(', ')}`);
+});
+
+test('y no desaparecen: cada una tiene su chip', () => {
+  // La regla uno del encargo vale también acá: se mueven, no se borran.
+  for (const t of ['entrega_emisora', 'impuesto']) {
+    assert.ok(CHIPS4.some((c) => Array.isArray(c.tipos) && c.tipos.includes(t)),
+      `${t} se quedó sin forma de verse en la pantalla`);
+  }
+});
+
+test('la pantalla y el lib declaran LOS MISMOS chips', () => {
+  // `insiders.html` tiene una copia a mano rotulada «espejo de
+  // api/_lib/form4.js». Este repo ya pagó dos días por tener dos `xval`
+  // idénticos y arreglar uno solo: mientras la copia exista, que al menos no
+  // pueda separarse en silencio.
+  const html = readFileSync(new URL('../insiders.html', import.meta.url), 'utf8');
+  const bloque = html.slice(html.indexOf('var CHIPS = ['), html.indexOf('var VISTAS'));
+  for (const c of CHIPS4) {
+    assert.ok(bloque.includes(`id:'${c.id}'`), `la pantalla no tiene el chip "${c.id}" que declara el lib`);
+  }
+  const enHtml = [...bloque.matchAll(/id:'([a-z_0-9]+)'/g)].map((m) => m[1]);
+  assert.deepEqual(enHtml, CHIPS4.map((c) => c.id), 'los chips tienen que ser los mismos y en el mismo orden');
+});
