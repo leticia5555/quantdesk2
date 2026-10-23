@@ -633,7 +633,7 @@ export function estadoEdgar({ acciones = null, consultada_en = null, motivo = nu
  */
 export function candidatosParaEdgar({
   entradas = [], veredictos = [], universoPorSymbol = new Map(), hoy = new Date(),
-  traza = null,
+  traza = null, forzar = null,
 } = {}) {
   const hoyIso = (hoy instanceof Date ? hoy : new Date(hoy || Date.now())).toISOString().slice(0, 10);
   const porSymbol = new Map(entradas.map((e) => [e.symbol, e]));
@@ -659,6 +659,19 @@ export function candidatosParaEdgar({
   // cuál se cayó. Es la misma lección del comentario de arriba —los contadores
   // dicen cuántos, no cuáles— aplicada hasta el final (Lety, 2026-10-22).
   const trazaSym = traza ? String(traza).toUpperCase() : null;
+  // ── LA LLAVE PARA UN SÍMBOLO, Y POR QUÉ HIZO FALTA ────────────────────
+  // El sello que arregló el atoro ("se preguntó con la regla vigente y no dio
+  // conteo" es una respuesta cerrada) crea un encierro para un caso concreto:
+  // una emisora cuyo 10-Q se presentó HOY. Si se le pregunta a EDGAR antes de
+  // que su XBRL esté indexado, contesta "no hay", la fila queda sellada, y la
+  // única forma de reabrirla es subir `REGLA_EDGAR_VERSION` — que reabre las
+  // 500, no la una.
+  //
+  // Es exactamente el caso de SPCX el 2026-10-22: 10-Q presentado ese mismo
+  // día. `forzar` salta SÓLO las compuertas de "ya se contestó": las
+  // estructurales —sin precio, sin conteo de Finnhub, cap en otra moneda—
+  // siguen frenando, porque ahí el problema no es que falte preguntar.
+  const forzado = forzar ? String(forzar).toUpperCase() : null;
   const pasos = [];
   const anota = (sym, paso, pasa, detalle) => {
     if (trazaSym && sym === trazaSym) pasos.push({ paso, pasa, ...(detalle ? { detalle } : {}) });
@@ -703,7 +716,7 @@ export function candidatosParaEdgar({
     // cruzaron de verdad y repreguntarlas gastaría la cuota de la SEC para
     // confirmar lo que ya sabemos.
     const yaCruzada = n(u.acciones_edgar_millones) > 0 || n(u.acciones_edgar_suma_millones) > 0;
-    if (v.estado === 'verificada' && yaCruzada) {
+    if (v.estado === 'verificada' && yaCruzada && v.symbol !== forzado) {
       anota(v.symbol, 'no es una verificada que YA se cruzó con EDGAR', false,
         `acciones_edgar=${u.acciones_edgar_millones ?? 'null'} suma_clases=${u.acciones_edgar_suma_millones ?? 'null'}`);
       diagnostico.verificadas++;
@@ -738,7 +751,7 @@ export function candidatosParaEdgar({
       && String(u.acciones_edgar_portada).slice(0, 10) > hoyIso;
     const repreguntar = (reglaVieja && !tieneDato && !!u.edgar_consultada_en)
       || (reglaVieja && portadaFutura);
-    if (tieneDato && !repreguntar) {
+    if (tieneDato && !repreguntar && v.symbol !== forzado) {
       anota(v.symbol, 'no tiene ya un conteo de EDGAR vigente', false,
         `acciones_edgar=${u.acciones_edgar_millones}`);
       diagnostico.ya_con_edgar++;
@@ -765,7 +778,7 @@ export function candidatosParaEdgar({
     // `registroConsulta`, así que `edgar_consultada_en` sigue vacío y la fila
     // vuelve a la cola — que es lo correcto: no hubo respuesta, hubo un error.
     const consultadaConEstaRegla = !!u.edgar_consultada_en && !reglaVieja;
-    if (!tieneDato && consultadaConEstaRegla && !portadaFutura) {
+    if (!tieneDato && consultadaConEstaRegla && !portadaFutura && v.symbol !== forzado) {
       anota(v.symbol, 'no se le preguntó ya con la regla vigente', false,
         `consultada_en=${u.edgar_consultada_en} regla=${u.edgar_regla} motivo=${u.edgar_consulta_motivo || '—'}`);
       diagnostico.ya_preguntada_sin_dato = (diagnostico.ya_preguntada_sin_dato || 0) + 1;
@@ -779,10 +792,14 @@ export function candidatosParaEdgar({
     if (repreguntar) {
       diagnostico.repregunta_por_regla = (diagnostico.repregunta_por_regla || 0) + 1;
     }
+    const esForzada = v.symbol === forzado;
+    if (esForzada) diagnostico.forzada = v.symbol;
     anota(v.symbol, 'ES CANDIDATA', true,
-      u.edgar_consultada_en ? 'repregunta' : 'nunca preguntada');
+      esForzada ? 'forzada a mano' : (u.edgar_consultada_en ? 'repregunta' : 'nunca preguntada'));
     diagnostico.candidatos++;
-    candidatos.push({ symbol: v.symbol, consultada_en: u.edgar_consultada_en || null });
+    // Una forzada va PRIMERA: se pidió por su nombre, y con `limite` chico no
+    // tiene sentido que quede detrás de 300 que nadie nombró.
+    candidatos.push({ symbol: v.symbol, consultada_en: u.edgar_consultada_en || null, forzada: esForzada });
   }
 
   // ── PRIMERO LAS QUE NUNCA SE PREGUNTARON ──────────────────────────────
@@ -790,6 +807,7 @@ export function candidatosParaEdgar({
   // siempre. Las nunca preguntadas van primero; entre las repreguntas, la más
   // vieja primero, para que ninguna se quede al fondo para siempre.
   candidatos.sort((a, b) => {
+    if (a.forzada !== b.forzada) return a.forzada ? -1 : 1;
     const an = a.consultada_en ? 1 : 0;
     const bn = b.consultada_en ? 1 : 0;
     if (an !== bn) return an - bn;
@@ -811,6 +829,7 @@ export function candidatosParaEdgar({
       // preguntar.
       se_cayo_en: (pasos.find((p) => !p.pasa) || {}).paso || null,
       es_candidata: candidatos.some((c) => c.symbol === trazaSym),
+      forzada: trazaSym === forzado,
     };
     if (!salida.traza.en_entradas) {
       salida.traza.explica = 'no está en las entradas del mapa: o no tiene `market_cap`, '

@@ -732,3 +732,83 @@ test('el MISMO conteo repetido no es varias clases', () => {
   }, { hoy: HOY });
   assert.equal(a.acciones, 500_000_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LA LLAVE PARA UN SÍMBOLO
+//
+// El sello que arregló el atoro crea un encierro para un caso concreto: una
+// emisora cuyo 10-Q se presentó HOY. Si se le pregunta a EDGAR antes de que
+// su XBRL esté indexado, contesta "no hay", la fila queda sellada, y la única
+// forma de reabrirla era subir `REGLA_EDGAR_VERSION` — que reabre las 500, no
+// la una. Es el caso de SPCX el 2026-10-22 (Lety).
+// ═══════════════════════════════════════════════════════════════════════
+
+test('`forzar` reabre una fila sellada, y sólo esa', () => {
+  const sellada = {
+    edgar_regla: REGLA_EDGAR_VERSION, edgar_consultada_en: '2026-10-22',
+    edgar_consulta_motivo: 'EDGAR no reporta el concepto',
+  };
+  const args = {
+    entradas: [entrada('SPCX'), entrada('OTRA')],
+    veredictos: [gris('SPCX'), gris('OTRA')],
+    universoPorSymbol: new Map([['SPCX', sellada], ['OTRA', { ...sellada }]]),
+  };
+  // Sin llave: las dos quedan selladas.
+  assert.deepEqual(candidatosParaEdgar(args).candidatos, []);
+  // Con llave: sólo SPCX vuelve. "Reabrí una" no puede querer decir "reabrí
+  // todas las que se parecen".
+  const r = candidatosParaEdgar({ ...args, forzar: 'spcx' });
+  assert.deepEqual(r.candidatos, ['SPCX']);
+  assert.equal(r.diagnostico.forzada, 'SPCX');
+  assert.equal(r.diagnostico.ya_preguntada_sin_dato, 1, 'OTRA sigue sellada y contada');
+});
+
+test('la forzada va PRIMERA, aunque haya nunca preguntadas', () => {
+  // Con `limite` chico, quedar detrás de 300 que nadie nombró es lo mismo que
+  // no haberla pedido.
+  const r = candidatosParaEdgar({
+    entradas: ['AAA', 'SPCX', 'ZZZ'].map((x) => entrada(x)),
+    veredictos: ['AAA', 'SPCX', 'ZZZ'].map((x) => gris(x)),
+    universoPorSymbol: new Map([['SPCX', {
+      edgar_regla: REGLA_EDGAR_VERSION, edgar_consultada_en: '2026-10-22',
+    }]]),
+    forzar: 'SPCX',
+  });
+  assert.deepEqual(r.candidatos, ['SPCX', 'AAA', 'ZZZ']);
+});
+
+test('`forzar` NO salta las compuertas estructurales', () => {
+  // Sin precio o sin conteo de Finnhub, preguntarle a EDGAR no arregla nada:
+  // ahí el problema no es que falte preguntar. La traza lo dice en vez de
+  // dejar al que forzó esperando un resultado que no va a llegar.
+  const r = candidatosParaEdgar({
+    entradas: [entrada('SPCX', { precio_usd: null })],
+    veredictos: [gris('SPCX')],
+    universoPorSymbol: new Map(),
+    forzar: 'SPCX', traza: 'SPCX',
+  });
+  assert.deepEqual(r.candidatos, []);
+  assert.equal(r.traza.se_cayo_en, 'tiene precio en USD');
+  assert.equal(r.traza.forzada, true);
+});
+
+test('y una verificada ya cruzada también se puede reabrir a mano', () => {
+  // Para recapturar un conteo viejo sin tocar la versión de la regla.
+  const r = candidatosParaEdgar({
+    entradas: [entrada('AAPL')],
+    veredictos: [{ symbol: 'AAPL', moneda: 'USD', estado: 'verificada', auditable: true }],
+    universoPorSymbol: new Map([['AAPL', { acciones_edgar_millones: 15200, edgar_regla: REGLA_EDGAR_VERSION }]]),
+    forzar: 'AAPL',
+  });
+  assert.deepEqual(r.candidatos, ['AAPL']);
+});
+
+test('sin `forzar`, nada cambia: es una llave, no un interruptor', () => {
+  const r = candidatosParaEdgar({
+    entradas: [entrada('AAPL')],
+    veredictos: [{ symbol: 'AAPL', moneda: 'USD', estado: 'verificada', auditable: true }],
+    universoPorSymbol: new Map([['AAPL', { acciones_edgar_millones: 15200, edgar_regla: REGLA_EDGAR_VERSION }]]),
+  });
+  assert.deepEqual(r.candidatos, []);
+  assert.equal(r.diagnostico.forzada, undefined);
+});
