@@ -481,6 +481,30 @@ export function withDeadline(promesa, ms, alTimeout) {
   return Promise.race([promesa, reloj]).finally(() => clearTimeout(t));
 }
 
+// ── UN CORTE ANTES DE LAS CABECERAS TAMBIÉN ES NUESTRO (2026-10-23) ──
+// claude (16:46, 19:16) y control (19:31) abortaron el 22-oct con "HTTP 502".
+// Ese 502 no lo mandó Anthropic: lo ponía `status || 502` sobre el status 0 de
+// un AbortSignal NUESTRO que venció antes de que llegaran las cabeceras. Y como
+// solo el corte LEYENDO el cuerpo se marcaba `timeout_nuestro`, /liga se lo
+// cargaba al modelo y la puerta no lo contaba.
+//
+// El rótulo dice lo que pasó: quién cortó, a los cuántos ms, con qué techo y
+// dónde. El origen del techo va detrás, igual que antes.
+export function dondeDelTecho(origenTecho) {
+  const o = String(origenTecho || '');
+  const m = o.match(/vuelta (\d+)/);
+  if (m) return `vuelta ${m[1]}`;
+  if (/CIERRE/.test(o)) return 'cierre';
+  if (/reintento solo-JSON/.test(o)) return 'reintento solo-JSON';
+  return null;
+}
+
+export function rotuloCorteNuestro({ ms, techoMs, origenTecho }) {
+  const donde = dondeDelTecho(origenTecho);
+  const techoS = Math.round(techoMs / 100) / 10;
+  return `corte de NUESTRO reloj a los ${ms} ms (techo ${techoS} s${donde ? ', ' + donde : ''}). Origen del techo: ${origenTecho}`;
+}
+
 // Envoltorio que convierte un abort (o una caída de red) en un RESULTADO, no en
 // una excepción: un agente que se pasa del reloj tiene que aparecer como una
 // fila `timeout` en el reporte, no tumbar a los otros seis.
@@ -493,14 +517,18 @@ async function timedFetch(fn, timeoutMs, trace = null, fase = null, origenTecho 
     const timedOut = name === 'TimeoutError' || name === 'AbortError';
     // El STACK EXACTO del throw. Sin esto, un error de red y un TypeError
     // nuestro se ven igual en el journal: "se pasó de 90s" o un mensaje suelto.
-    if (trace) trace.push({ fase, status: 0, ms: Date.now() - t0, threw: String((e && e.message) || e), stack: e && e.stack });
+    const ms = Date.now() - t0;
+    if (trace) trace.push({ fase, status: 0, ms, threw: String((e && e.message) || e), stack: e && e.stack });
     return {
       status: 0, raw: null, timedOut,
+      // CUÁNTO SE ESPERÓ antes de cortar. Sin esto, el corte antes de las
+      // cabeceras era la única llamada del loop sin duración medida.
+      ms,
       // EL TECHO Y SU ORIGEN, en el mismo renglón. "Se pasó de 15s" no dice
       // cuál reloj puso ese 15, y las respuestas son opuestas: una env var se
       // arregla en Vercel, un reparto del loop se arregla en el presupuesto.
       netError: timedOut
-        ? `se pasó de ${Math.round(timeoutMs / 1000)}s (abortado a los ${Date.now() - t0}ms; techo: ${origenTecho || ARENA_LLM_TIMEOUT_ORIGEN})`
+        ? rotuloCorteNuestro({ ms, techoMs: timeoutMs, origenTecho: origenTecho || ARENA_LLM_TIMEOUT_ORIGEN })
         : String((e && e.message) || e),
       techo_ms: timeoutMs,
       techo_origen: origenTecho || ARENA_LLM_TIMEOUT_ORIGEN,
@@ -588,7 +616,10 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
     return {
-      status: first.status || 502, data: null, timedOut: !!first.timedOut,
+      // Status 0 en nuestro corte: nadie respondió. El 502 era un rótulo
+      // nuestro que se leía como del proveedor.
+      status: first.timedOut ? 0 : (first.status || 502), data: null, timedOut: !!first.timedOut,
+      ...(first.timedOut ? { ms: first.ms ?? null } : {}),
       error_detail: first.netError || (cuerpo ? `cuerpo no-JSON: ${cuerpo.slice(0, 200)}` : null),
       raw_body: first.bodySample || null,
       threw_stack: first.threw_stack || null,
@@ -833,7 +864,8 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
     }
     const detail = (first.raw && first.raw.error ? first.raw.error.message : null) || first.netError || null;
     return {
-      status: first.status || 502, data: null, timedOut: !!first.timedOut, error_detail: detail,
+      status: first.timedOut ? 0 : (first.status || 502), data: null, timedOut: !!first.timedOut, error_detail: detail,
+      ...(first.timedOut ? { ms: first.ms ?? null } : {}),
       threw_stack: first.threw_stack || null,
       ...(first.timedOut ? { techo_ms: first.techo_ms ?? timeoutMs, techo_origen: first.techo_origen || origenTecho || ARENA_LLM_TIMEOUT_ORIGEN } : {}),
     };
@@ -844,14 +876,17 @@ async function guardedAnthropicCall({ apiKey, agent, model, system, messages, ma
   // propia condición para que el journal diga "se negó", no "no supo formatear".
   if (data.stop_reason === 'refusal') {
     await recordAiCall({ model: payload.model, usage: data.usage, now });
-    return { status: 200, data, refusal: true, refusal_details: data.stop_details || null };
+    return { status: 200, data, refusal: true, refusal_details: data.stop_details || null, ms: first.ms ?? null };
   }
 
   const text = anthropicText(data);
   const hits = staleProspectiveDates(text, now);
   if (!hits.length || saltarGuardPorToolUse(data)) {
     await recordAiCall({ model: payload.model, usage: data.usage, now });
-    return { status: 200, data, ...(hits.length ? { date_guard_skipped: 'tool_use' } : {}) };
+    // La DURACIÓN, igual que OpenRouter. Sin ella, `vueltas_medidas[].ms` y
+    // `lectura_cierre.ms` salían null para claude y control, y el techo de la
+    // vuelta no se puede decidir sin saber cuánto tardan las que sí contestan.
+    return { status: 200, data, ms: first.ms ?? null, ...(hits.length ? { date_guard_skipped: 'tool_use' } : {}) };
   }
 
   // Retry único. El turno del asistente se ecoa con `data.content` VERBATIM

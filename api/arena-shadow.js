@@ -543,7 +543,11 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       ? (nuestroReloj
         ? `cuerpo_vacio por NUESTRO reloj: el proveedor devolvió HTTP ${llm.status} y seguía mandando keepalives cuando nuestro techo de lectura venció${llm.ms ? ` (${Math.round(llm.ms / 1000)}s)` : ''}. NO es el proveedor cerrando el stream: somos nosotros cortando.`
         : `cuerpo_vacio: el proveedor devolvió HTTP ${llm.status} y cerró el stream sin cuerpo, dos veces (con reintento). NO es un error de formato del payload.`)
-      : llm.stale ? 'fechas rotas tras retry' : `HTTP ${llm.status}${llm.error_detail ? ': ' + llm.error_detail : ''}`;
+      : llm.stale ? 'fechas rotas tras retry'
+        // Nuestro corte antes de las cabeceras: no hubo HTTP. El rótulo ya lo
+        // dice entero ("corte de NUESTRO reloj a los N ms …").
+        : llm.timedOut ? (llm.error_detail || 'corte de NUESTRO reloj')
+          : `HTTP ${llm.status}${llm.error_detail ? ': ' + llm.error_detail : ''}`;
     // EL CUERPO CRUDO AL JOURNAL. Tres agentes abortaron con "HTTP 200" y no
     // había forma de saber qué había contestado el proveedor: el error decía el
     // status y nada más. Sin el cuerpo, diagnosticar esto es adivinar.
@@ -575,7 +579,8 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       proveedores_colgados: (loop && loop.proveedores_colgados) || null,
       // El que se colgó, y si fue NUESTRO reloj o el suyo. Se arreglan al revés.
       proveedor: llm.proveedor || null,
-      timeout_nuestro: !!llm.timedOutLeyendo,
+      // Los dos cortes nuestros: leyendo el cuerpo y antes de las cabeceras.
+      timeout_nuestro: !!(llm.timedOutLeyendo || llm.timedOut),
       timed_out: !!llm.timedOut, stale: !!llm.stale, retry_failed: !!llm.retry_failed,
       // CUÁL reloj cortó. "Se pasó de 15s" no dice si ese 15 lo puso una env
       // var o el reparto del loop, y se arreglan en lugares opuestos.
