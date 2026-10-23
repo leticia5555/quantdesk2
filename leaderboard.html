@@ -157,6 +157,15 @@ section{padding:20px 0 4px;}
 .tecs th{color:var(--text3);font-weight:500;}
 .tecs th:first-child,.tecs td:first-child{text-align:left;}
 .tecs .nd{color:var(--text3);}
+/* Comportamiento con Control al lado: misma tabla compacta que los técnicos. */
+.comp{margin-top:10px;}
+.comp summary{cursor:pointer;font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:.04em;text-transform:uppercase;}
+.comp .tw{overflow-x:auto;margin-top:6px;}
+.comp table{border-collapse:collapse;font-family:var(--mono);font-size:10px;width:100%;min-width:360px;}
+.comp th,.comp td{padding:3px 6px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap;}
+.comp th{color:var(--text3);font-weight:500;}
+.comp th:first-child,.comp td:first-child{text-align:left;white-space:normal;}
+.comp .nd{color:var(--text3);}
 .ores{font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:.03em;
   margin-top:3px;padding-top:6px;border-top:1px solid var(--border);}
 .ores b{font-weight:700;}
@@ -451,6 +460,78 @@ function tecnicosHtml(a){
     '<div class="ofalta">al último cierre · n/d = sin historia suficiente, no es cero'+
     (a.tecnicos_error?' · <span style="color:var(--amber)">'+esc(a.tecnicos_error)+'</span>':'')+'</div></details>';
 }
+// ── COMPORTAMIENTO, CON CONTROL AL LADO (2026-10-23) ──
+// De /api/liga/comportamiento, que se pide DESPUÉS de pintar el ranking: es la
+// consulta más lenta (barras de Alpaca) y la tabla no la espera. La diferencia
+// agente − control se lee contra la de claude: ése es el ruido del sistema.
+const COMP_FILAS=[
+  ['rotacion_prom_pct','rotación diaria','%'],
+  ['acierto_5_pct_arriba','compras arriba a 5 sesiones','%'],
+  ['acierto_5_prom_pct','acierto promedio (5 ses.)','%'],
+  ['error_5_prom_pct','error promedio (5 ses.)','%'],
+  ['dias_cerradas_prom','días por posición (cerradas)',''],
+  ['dias_abiertas_prom','días por posición (abiertas)',''],
+  ['peso_max_prom_pct','peso máximo, promedio diario','%'],
+  ['posiciones_prom','posiciones, promedio diario',''],
+  ['caja_prom_pct','caja promedio','%'],
+  ['caida_maxima_pct','caída máxima desde el pico','%'],
+  ['sharpe_diario','Sharpe diario (sin anualizar)',''],
+  ['beta_spy','beta contra SPY',''],
+  ['persecucion_prom_pct','persecución (ejecución vs apertura)','%'],
+  ['enfoque_momentum_ret_1_pct','enfoque momentum · 1 ses.','%'],
+  ['enfoque_reversion_ret_1_pct','enfoque reversión · 1 ses.','%'],
+  ['enfoque_valor_ret_1_pct','enfoque valor · 1 ses.','%'],
+  ['enfoque_catalizador_ret_1_pct','enfoque catalizador · 1 ses.','%'],
+  ['enfoque_momentum_ret_5_pct','enfoque momentum · 5 ses.','%'],
+  ['enfoque_reversion_ret_5_pct','enfoque reversión · 5 ses.','%'],
+  ['enfoque_valor_ret_5_pct','enfoque valor · 5 ses.','%'],
+  ['enfoque_catalizador_ret_5_pct','enfoque catalizador · 5 ses.','%'],
+];
+function comportamientoHtml(id, comp){
+  const fila=(comp&&comp.agentes||[]).find(x=>x.agent===id);
+  if(!fila) return '';
+  const nd='<span class="nd">n/d</span>';
+  const v=(x,u)=>x==null?nd:(Math.abs(x)>=100?x.toFixed(0):x.toFixed(2))+u;
+  const dif=(x,u)=>x==null?nd:'<span class="'+pctClass(x)+'">'+(x>0?'+':'')+(Math.abs(x)>=100?x.toFixed(0):x.toFixed(2))+u+'</span>';
+  const esControl=!fila.con_control;
+  const filas=COMP_FILAS.map(([k,nombre,u])=>{
+    const c=fila.con_control&&fila.con_control[k];
+    if(esControl){
+      const m=fila.metricas; const val=(COMP_LEER[k]||(()=>null))(m);
+      return '<tr><td>'+esc(nombre)+'</td><td>'+v(val,u)+'</td></tr>';
+    }
+    return '<tr><td>'+esc(nombre)+'</td><td>'+v(c.agente,u)+'</td><td>'+v(c.control,u)+'</td><td>'+dif(c.diferencia,u)+'</td></tr>';
+  }).join('');
+  const cab=esControl?'<tr><th>métrica</th><th>control</th></tr>':'<tr><th>métrica</th><th>agente</th><th>control</th><th>dif.</th></tr>';
+  return '<details class="comp"><summary>comportamiento'+(esControl?'':' · con control al lado')+'</summary><div class="tw"><table><thead>'+cab+'</thead><tbody>'+filas+'</tbody></table></div>'+
+    '<div class="ofalta">temporada desde '+esc(comp.desde||'—')+' · n/d = no hay datos, no es cero · dif. = agente − control; la de claude es el ruido del sistema'+
+    (comp.barras_error?' · <span style="color:var(--amber)">'+esc(comp.barras_error)+'</span>':'')+'</div></details>';
+}
+// Para la tarjeta de control (sin columna de diferencia): la misma ruta que el servidor.
+const COMP_LEER={
+  rotacion_prom_pct:m=>m.rotacion.promedio_pct, acierto_5_pct_arriba:m=>m.acierto_5.pct_arriba,
+  acierto_5_prom_pct:m=>m.acierto_5.acierto_prom_pct, error_5_prom_pct:m=>m.acierto_5.error_prom_pct,
+  dias_cerradas_prom:m=>m.dias_por_posicion.cerradas.dias_prom, dias_abiertas_prom:m=>m.dias_por_posicion.abiertas.dias_prom,
+  peso_max_prom_pct:m=>m.concentracion.peso_max_prom_pct, posiciones_prom:m=>m.concentracion.posiciones_prom,
+  caja_prom_pct:m=>m.caja.promedio_pct, caida_maxima_pct:m=>m.caida_maxima.pct, sharpe_diario:m=>m.sharpe.valor,
+  beta_spy:m=>m.beta_spy.valor, persecucion_prom_pct:m=>m.persecucion.promedio_pct,
+  enfoque_momentum_ret_1_pct:m=>m.retorno_por_enfoque.momentum.ret_1_prom_pct, enfoque_reversion_ret_1_pct:m=>m.retorno_por_enfoque.reversion.ret_1_prom_pct,
+  enfoque_valor_ret_1_pct:m=>m.retorno_por_enfoque.valor.ret_1_prom_pct, enfoque_catalizador_ret_1_pct:m=>m.retorno_por_enfoque.catalizador.ret_1_prom_pct,
+  enfoque_momentum_ret_5_pct:m=>m.retorno_por_enfoque.momentum.ret_5_prom_pct, enfoque_reversion_ret_5_pct:m=>m.retorno_por_enfoque.reversion.ret_5_prom_pct,
+  enfoque_valor_ret_5_pct:m=>m.retorno_por_enfoque.valor.ret_5_prom_pct, enfoque_catalizador_ret_5_pct:m=>m.retorno_por_enfoque.catalizador.ret_5_prom_pct,
+};
+async function cargarComportamiento(){
+  // 25 s y no los 9 de getJSON: el endpoint espera hasta 9 s a Alpaca y además
+  // lee la temporada entera. La tabla ya está pintada; esto no la frena.
+  let comp=null;
+  try{
+    const c=new AbortController();const t=setTimeout(()=>c.abort(),25000);
+    const r=await fetch('/api/liga/comportamiento',{signal:c.signal});clearTimeout(t);
+    comp=r.ok?await r.json():null;
+  }catch(e){ comp=null; }
+  if(!comp||!Array.isArray(comp.agentes)) return;
+  document.querySelectorAll('[data-comp]').forEach(el=>{ el.innerHTML=comportamientoHtml(el.getAttribute('data-comp'),comp); });
+}
 // ── CÓMO DECIDIÓ: la cadena de herramientas y la tesis de cada posición ──
 // Sale de /api/liga/libros (la última corrida EN VIVO de cada agente). La
 // etiqueta y el resultado de cada paso los arma el servidor: /liga/libros
@@ -588,7 +669,7 @@ function rowHtml(a){
         '<div class="rmodel">'+esc(a.model_label||a.model||'')+'</div></div>'+
       '<div class="req"><div class="eq">'+money(a.equity_indexado!=null?a.equity_indexado:acct.equity)+'</div>'+retHtml+dayHtml+'</div>'+
     '</div>'+
-    plan+decideHtml(a)+tradesHtml(a)+tecnicosHtml(a)+
+    plan+decideHtml(a)+tradesHtml(a)+tecnicosHtml(a)+'<div data-comp="'+esc(a.id)+'"></div>'+
     '<div class="rfoot"><span>'+esc((a.journal&&a.journal.run_date)||'—')+'</span>'+
     // ── NO HAY TOPE DE POSICIONES, Y EL "/8" DECÍA QUE SÍ ─────────────
     // El 8 era del CONTRATO DE ACCIONES (el guard viejo), que el contrato de
@@ -659,6 +740,8 @@ async function load(){
       btn.textContent=open?'ver menos ↑':'ver plan completo ↓';
     });
   });
+  // Después del ranking, nunca antes: si no contesta, la tabla ya está.
+  cargarComportamiento();
 }
 load();
 $('refreshNote').textContent='Actualizado al abrir · '+new Date().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});

@@ -76,6 +76,23 @@ LEADERBOARD.agents[0].positions = [
     tecnicos: tecnicosDeCierres(Array.from({ length: 10 }, (_, i) => 20 + i)) },
 ];
 
+// Comportamiento (2026-10-23): sale de las MISMAS funciones que usa el
+// endpoint, con datos chicos. grok con persecución medida y acierto a 5
+// sesiones todavía null; deepseek sin nada.
+const C = await import('../api/_lib/liga-comportamiento.js');
+const datosComp = {
+  decisiones: [
+    { agent_id: 'grok', symbol: 'T', lado: 'buy', cantidad: 457, precio_ejecucion: 21.92, dia_fill: '2026-10-21', filled_at: '2026-10-21T16:02:22Z', resultado_1_pct: 3.74, resultado_5_pct: null },
+    { agent_id: 'control', symbol: 'VRT', lado: 'buy', cantidad: 22, precio_ejecucion: 215.49, dia_fill: '2026-10-21', filled_at: '2026-10-21T14:01:13Z', resultado_1_pct: -9.24, resultado_5_pct: null },
+  ],
+  equityDiario: [], libros: [], spy: {}, aperturas: { T: { '2026-10-21': 21.9 }, VRT: { '2026-10-21': 216.5 } },
+};
+const compControl = C.comportamientoDe('control', datosComp);
+const COMPORTAMIENTO = { desde: '2026-10-20', agentes: ['grok', 'deepseek'].map((id) => {
+  const m = C.comportamientoDe(id, datosComp);
+  return { agent: id, metricas: m, con_control: C.ladoALado(m, compControl) };
+}).concat([{ agent: 'qwen', metricas: compControl, con_control: null }]) };
+
 const nav = globalThis.process;
 const browser = await chromium.launch();
 async function abrir(ruta, { librosOk = true } = {}) {
@@ -83,6 +100,7 @@ async function abrir(ruta, { librosOk = true } = {}) {
   const errores = [];
   page.on('pageerror', (e) => errores.push(String(e)));
   await page.route('**/api/leaderboard**', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(LEADERBOARD) }));
+  await page.route('**/api/liga/comportamiento**', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(COMPORTAMIENTO) }));
   await page.route('**/api/liga/libros**', (r) => (librosOk
     ? r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(LIBROS) })
     : r.fulfill({ status: 500, body: 'x' })));
@@ -129,6 +147,20 @@ async function abrir(ruta, { librosOk = true } = {}) {
   report('SPCX con 60 sesiones: n/d en SMA200, 3m y 6m, nunca 0', (filaSp.match(/n\/d/g) || []).length === 3 && !/ 0\.0%/.test(filaSp), filaSp);
   const filaNx = (await tecs.locator('tr', { hasText: 'NEWX' }).innerText()).replace(/\s+/g, ' ');
   report('NEWX con 10 sesiones: las seis columnas en n/d, ni un 0', (filaNx.match(/n\/d/g) || []).length === 6 && !/\b0\.0/.test(filaNx), filaNx);
+  // ── comportamiento con control al lado ──
+  await page.waitForSelector('details.comp', { timeout: 8000 }).catch(() => {});
+  const comp = page.locator('.row', { hasText: 'Grok' }).locator('details.comp');
+  report('Grok trae su tarjeta de comportamiento, con control al lado', (await comp.count()) === 1 && /con control al lado/i.test(await comp.locator('summary').innerText()));
+  await comp.locator('summary').click();
+  const pers = (await comp.locator('tr', { hasText: 'persecución' }).innerText()).replace(/\s+/g, ' ');
+  const pc = COMPORTAMIENTO.agentes[0].con_control.persecucion_prom_pct;
+  report('persecución: agente, control y diferencia', pers.includes(pc.agente.toFixed(2)) && pers.includes(pc.control.toFixed(2)) && pers.includes(pc.diferencia.toFixed(2)), pers);
+  const acierto = (await comp.locator('tr', { hasText: 'compras arriba' }).innerText()).replace(/\s+/g, ' ');
+  report('acierto a 5 sesiones todavía sin medir: n/d en las tres columnas, ni un 0', (acierto.match(/n\/d/g) || []).length === 3 && !/\b0\.00/.test(acierto), acierto);
+  report('la nota dice que la diferencia de claude es el ruido', /la de claude es el ruido del sistema/.test(await comp.innerText()));
+  const ctrl = page.locator('.row', { hasText: 'Qwen' }).locator('details.comp');
+  await ctrl.locator('summary').click();
+  report('la tarjeta de control no se compara consigo misma (sin columna dif.)', (await ctrl.locator('th').count()) === 2);
   report('los agentes sin posiciones no traen tabla', (await page.locator('details.tecs').count()) === 1);
   const ancho = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
   report('la tabla no desborda la página en 390 px (se desplaza adentro)', ancho);
