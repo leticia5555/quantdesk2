@@ -616,16 +616,16 @@ async function guardedOpenRouterCall({ apiKey, agent, model, system, messages, m
   if (first.status < 200 || first.status >= 300 || !first.raw) {
     await recordAiCall({ model, now });
     return {
-      // Status 0 en nuestro corte: nadie respondió. El 502 era un rótulo
-      // nuestro que se leía como del proveedor.
-      status: first.timedOut ? 0 : (first.status || 502), data: null, timedOut: !!first.timedOut,
-      ...(first.timedOut ? { ms: first.ms ?? null } : {}),
+      status: first.status || 502, data: null, timedOut: !!first.timedOut,
       error_detail: first.netError || (cuerpo ? `cuerpo no-JSON: ${cuerpo.slice(0, 200)}` : null),
       raw_body: first.bodySample || null,
       threw_stack: first.threw_stack || null,
       // El techo y QUIÉN lo puso. Un aborto sin esto obliga a adivinar entre
       // una env var y el reparto del reloj, que se arreglan en lugares opuestos.
       ...(first.timedOut ? { techo_ms: first.techo_ms ?? timeoutMs, techo_origen: first.techo_origen || origenTecho || ARENA_LLM_TIMEOUT_ORIGEN } : {}),
+      // Status 0 en nuestro corte: nadie respondió. El 502 de arriba era un
+      // rótulo nuestro que se leía como del proveedor. Va al final para pisarlo.
+      ...(first.timedOut ? { status: 0, ms: first.ms ?? null } : {}),
     };
   }
 

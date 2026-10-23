@@ -20,10 +20,11 @@ import assert from 'node:assert/strict';
 
 process.env.DATABASE_URL = 'postgres://u:p@ep-x-1.us-east-2.aws.neon.tech/db';
 process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+process.env.OPENROUTER_API_KEY = 'or-test';
 process.env.ARENA_ALLOW_UNVERIFIED_SLUGS = '1';
 process.env.ARENA_LLM_TIMEOUT_MS = '5000';
 process.env.ARENA_VUELTA_PISO_MS = '5000';
-for (const a of ['PAPER', 'CONTROL']) { process.env['ALPACA_' + a + '_KEY'] = 'k'; process.env['ALPACA_' + a + '_SECRET'] = 's'; }
+for (const a of ['PAPER', 'CONTROL', 'GROK']) { process.env['ALPACA_' + a + '_KEY'] = 'k'; process.env['ALPACA_' + a + '_SECRET'] = 's'; }
 
 let anthropicLlamadas = 0;
 const json = (b, s = 200) => ({
@@ -33,7 +34,7 @@ const json = (b, s = 200) => ({
 });
 global.fetch = async (url, opts = {}) => {
   const u = String(url);
-  if (u.startsWith('https://api.anthropic.com/')) {
+  if (u.startsWith('https://api.anthropic.com/') || u.startsWith('https://openrouter.ai/api/v1/chat/completions')) {
     anthropicLlamadas++;
     // No contesta: la promesa solo se resuelve si NUESTRA señal la corta, como
     // un fetch real que espera cabeceras.
@@ -101,6 +102,21 @@ for (const id of ['claude', 'control']) {
     assert.equal(p.puertas.cortes_nuestros, false);
   });
 }
+
+// El rótulo y el status salen de `timedFetch`, que es el mismo para los dos
+// proveedores: OpenRouter tampoco inventa un 502 sobre nuestro corte.
+test('grok (OpenRouter): el mismo corte, el mismo rótulo, status 0', async () => {
+  const filas = [];
+  await runShadowAgent({ agent: agentById('grok'), buffet: {}, now: AHORA, journalInsert: async (row) => filas.push(row) });
+  const le = filas[0].context.llm_error;
+  assert.equal(le.status, 0);
+  assert.match(filas[0].error, /^corte de NUESTRO reloj a los \d+ ms \(techo 5 s, vuelta 1\)/);
+  assert.equal(le.timeout_nuestro, true);
+  const v = filas[0].context.tools.vueltas_medidas[0];
+  assert.equal(v.reloj_nuestro, true);
+  assert.ok(v.ms >= 4900, 'con su ms');
+  assert.equal(culpaDelAborto(filas[0]), 'nuestra');
+});
 
 test('puerta: un corte antes de las cabeceras EN EL CIERRE cuenta como cierre cortado (0 o 1)', () => {
   const tools = { turns: 3, vueltas_medidas: [{ vuelta: 1, ms: 20000 }, { vuelta: 2, ms: 30000 }] };
