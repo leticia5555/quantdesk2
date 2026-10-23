@@ -445,11 +445,11 @@ export function retornoMedioPorOperacion(ordenes = []) {
 // ─────────────────── RENDER ───────────────────
 const pct = (v, d = 2) => (v == null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(d)}%`);
 
-export function renderReporteMarkdown({ m, suerte, estrategias = [], ordenes = [], halt = false, live = false, sombra = true, now = new Date() }) {
+export function renderReporteMarkdown({ m, suerte, estrategias = [], ordenes = [], halt = false, live = false, cuenta = 'paper', sombra = true, now = new Date() }) {
   const L = [];
   L.push(`# El Libro — reporte ${now.toISOString().slice(0, 10)}`);
   L.push('');
-  L.push(`Modo: **${live ? 'LIVE' : 'SOMBRA'}**${halt ? ' · **HALT**' : ''} · dividendos de SPY no contados.`);
+  L.push(`Cuenta: **${String(cuenta).toUpperCase()}** · envío: **${live ? 'ENCENDIDO' : 'SOMBRA'}**${halt ? ' · **HALT**' : ''} · dividendos de SPY no contados.`);
   L.push('');
   if (!m.dias) {
     L.push('**Sin días registrados todavía.** El reporte se llena con la primera fila de `libro_equity_diario` (cron `libro:equity`).');

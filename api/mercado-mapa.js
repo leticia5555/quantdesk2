@@ -23,7 +23,7 @@ import {
 } from './_lib/mercado-r0.js';
 import { frescuraPrecios } from './_lib/bmv-frescura.js';
 import { armaMapaUs, armaMapaMx, resumenFaltantes, CIERRES_RECIENTES } from './_lib/mercado-mapa.js';
-import { MIN_PUNTOS_SERIE, cierreQueSePinta } from './_lib/mercado-precios.js';
+import { MIN_PUNTOS_SERIE, cierreQueSePinta, SQL_SIMBOLOS_MAPA } from './_lib/mercado-precios.js';
 
 export const maxDuration = 60;
 
@@ -123,9 +123,11 @@ export const SQL_MAPA_US = {
   // `conVolumen` NO es un detalle de estilo: ver el comentario de arriba. Con
   // la columna ausente, la consulta no la nombra y el mapa sigue cargando.
   precios: (conVolumen = true) =>
-      `with top as (
-         select symbol from mercado_universo_us
-          where sector_etf is not null and market_cap is not null
+      // `top` sale de `SQL_SIMBOLOS_MAPA`, la MISMA definición que usa la
+      // cosecha. Eran dos consultas con la misma intención y distinto
+      // resultado —la cosecha tenía `limit 300`—, y el mapa pintaba 611
+      // emisoras de las que 292 no tenían serie porque nunca se sembraron.
+      `with top as (${SQL_SIMBOLOS_MAPA}
        ), r as (
          select p.symbol, p.fecha, p.cierre, p.cierre_ajustado,
                 ${conVolumen ? 'p.volumen' : 'null::numeric as volumen'},
@@ -235,6 +237,40 @@ async function mapaUs(ahora) {
       cap_por_fuente: universo.reduce((a, u) => { const k = u.cap_fuente || 'sin fuente'; a[k] = (a[k] || 0) + 1; return a; }, {}),
     },
     faltantes: resumenFaltantes(faltantes),
+    // ── CUÁNTOS LLEGARON AL ÚLTIMO CIERRE ─────────────────────────────
+    // La cosecha diaria son 611 símbolos y una corrida alcanza ~416, así que
+    // SIEMPRE se reparte en varias. El pie decía la fecha del último cierre
+    // global, no cuántos símbolos la alcanzaron: si una corrida moría o Yahoo
+    // devolvía 429, unos quedaban con el cierre de ayer y nadie se enteraba
+    // (Lety, 2026-10-22). Es la misma forma del defecto de los insiders: el
+    // trabajo que falta se vuelve invisible.
+    al_dia: frescuraPorSimbolo(cuadros, cierre.fecha),
+  };
+}
+
+/**
+ * Cuántos cuadros tienen el cierre de la última sesión y cuántos se quedaron
+ * atrás, con los nombres de los atrasados (acotados) para poder ir a mirar.
+ *
+ * Se mide contra `ultimo_cierre` —la sesión más nueva que la tabla tiene— y no
+ * contra "hoy": un feriado no es un atraso, y comparar contra el calendario
+ * pondría 611 en rojo cada día que la bolsa no abre.
+ */
+export function frescuraPorSimbolo(cuadros = [], ultimoCierre = null) {
+  if (!ultimoCierre) return { con_ultimo_cierre: 0, atrasados: 0, ultimo_cierre: null, ejemplos: [] };
+  let alDia = 0;
+  const atras = [];
+  for (const c of cuadros) {
+    const f = c && (c.fecha_precio || c.fecha) ? String(c.fecha_precio || c.fecha).slice(0, 10) : null;
+    if (!f) continue;
+    if (f >= ultimoCierre) alDia++;
+    else atras.push({ symbol: c.symbol || c.key || null, hasta: f });
+  }
+  return {
+    con_ultimo_cierre: alDia,
+    atrasados: atras.length,
+    ultimo_cierre: ultimoCierre,
+    ejemplos: atras.slice(0, 10),
   };
 }
 

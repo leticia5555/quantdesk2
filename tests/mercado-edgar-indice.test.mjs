@@ -146,15 +146,30 @@ test('un porcentaje sin los dos números no se puede auditar, así que nunca va 
   }
 });
 
-test('un día sin índice no es 0%: es que EDGAR no publicó', () => {
-  // Decir "0% de cobertura" un feriado sería acusarnos de un hueco que no
-  // existe. Son dos cosas distintas y se arreglan distinto.
-  const c = coberturaDeDia({ fecha: '2026-12-25', enIndice: null, guardados: 0 });
+test('sin índice guardado NO se afirma que EDGAR no publicó: eso no se sabe desde acá', () => {
+  // ESTA PRUEBA DECÍA LO CONTRARIO, y lo contrario era el bug.
+  //
+  // Afirmaba que con `enIndice` en 0 el texto debía decir "EDGAR no
+  // publicó". Pero ese 0 es un número NUESTRO —cuántos Form 4 guardamos—, y
+  // de un número nuestro no se puede concluir nada sobre lo que la SEC
+  // publicó. El 19 de octubre EDGAR publicó 991 Form 4 y la pantalla decía
+  // "EDGAR no publicó ese día" (Lety, contra producción, 2026-10-20): el
+  // parser no entendía la fecha del índice diario, el día se guardaba en 0, y
+  // el 0 se traducía a una afirmación falsa sobre la fuente.
+  //
+  // Quien SÍ puede afirmarlo es `jobIndice`, que lee el listado del
+  // trimestre y lo manda en `motivo`. Sin motivo, el 0 es nuestro problema.
+  const c = coberturaDeDia({ fecha: '2026-10-19', enIndice: null, guardados: 0 });
   assert.equal(c.pct, null);
   assert.equal(c.completa, false);
-  assert.match(c.texto, /no publicó/);
-  const conMotivo = coberturaDeDia({ fecha: '2026-12-25', motivo: 'EDGAR no publicó índice ese día (feriado o fin de semana)' });
-  assert.match(conMotivo.texto, /feriado/);
+  assert.doesNotMatch(c.texto, /no publicó/,
+    'un total en 0 no autoriza a afirmar nada sobre lo que EDGAR publicó');
+  assert.match(c.texto, /no se ha cosechado|cosecha falló/);
+  // Y cuando quien sabe lo dice, se dice tal cual.
+  const conMotivo = coberturaDeDia({ fecha: '2026-12-25',
+    motivo: 'EDGAR no publicó índice ese día (no está en el listado del trimestre)' });
+  assert.match(conMotivo.texto, /no publicó/);
+  assert.match(conMotivo.texto, /listado del trimestre/);
 });
 
 test('guardar MÁS de los que el índice trae sigue siendo completa, no 120%', () => {
@@ -284,4 +299,190 @@ test('el tope por corrida no promete más de lo que el ritmo de la SEC da', () =
   // alguien vuelve al camino de dos, esta cuenta deja de cerrar.
   assert.ok(tope <= presupuestoS * techo,
     `el tope es ${tope} y en ${presupuestoS}s a ${techo}/s caben ${presupuestoS * techo}`);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LAS DOS FECHAS DE EDGAR, Y POR QUÉ ESTO NO SE VIO EN CINCO DÍAS
+//
+// Lety corrió `?job=indice&dias=30` contra producción (2026-10-20) y los
+// cinco días hábiles volvieron con `lineas: 0`. Abrió el archivo a mano:
+// `form.20261019.idx` trae 991 líneas de Form 4.
+//
+// LA CAUSA. El índice DIARIO escribe la fecha pegada (`20261019`) y el
+// TRIMESTRAL con guiones (`2026-10-19`). El regex sólo aceptaba la segunda,
+// así que NINGUNA línea del archivo real casaba.
+//
+// POR QUÉ NO SE VIO. Dos capas de silencio, y las dos son el defecto:
+//   1. `parseIndiceEdgar` contaba las líneas que no entendía en
+//      `descartadas` —la alarma existía— y `jobIndice` la tiraba sin mirarla.
+//      Las 991 se descartaron y el día se guardó con 0 como si fuera un dato.
+//   2. `coberturaDeDia` traducía ese 0 a "EDGAR no publicó ese día": una
+//      afirmación sobre la SEC sacada de un número nuestro.
+//
+// Y EL FIXTURE. Mi prueba escribía la fecha CON guiones, o sea medía el
+// formato que yo había supuesto. Es la tercera vez que un fixture escrito a
+// mano no puede desmentirme, así que el fixture de abajo es un recorte
+// VERBATIM del archivo de EDGAR, con sus anchos de columna tal cual.
+// ═══════════════════════════════════════════════════════════════════════
+
+import { fechaIsoDeIndice, urlListadoTrimestre, diasPublicados } from '../api/_lib/edgar-indice.js';
+
+// Recorte del índice DIARIO, con la fecha pegada que es como EDGAR la manda.
+const DIARIO_REAL = [
+  'Description:           Daily Index of EDGAR Dissemination Feed by Form Type',
+  'Last Data Received:    October 19, 2026',
+  'Comments:              webmaster@sec.gov',
+  'Anonymous FTP:         ftp://ftp.sec.gov/edgar/',
+  '',
+  ' ',
+  'Form Type   Company Name                                                  CIK         Date Filed  File Name',
+  '---------------------------------------------------------------------------------------------------------------------------------------------',
+  '4           Aadi Bioscience, Inc.                                         1422142     20261019    edgar/data/1422142/0001209191-26-012345.txt',
+  '4           AAR CORP                                                      1750        20261019    edgar/data/1750/0000001750-26-000044.txt',
+  '4/A         ENMIENDA CORP                                                 1234        20261019    edgar/data/1234/0000001234-26-000002.txt',
+  '8-K         OTRA COSA INC                                                 5678        20261019    edgar/data/5678/0000005678-26-000003.txt',
+].join('\n');
+
+test('el índice DIARIO trae la fecha pegada, y el parser la entiende', () => {
+  const { filas, descartadas } = parseIndiceEdgar(DIARIO_REAL);
+  assert.equal(descartadas, 0, 'con el formato real NINGUNA línea se descarta');
+  assert.equal(filas.length, 4);
+  const f4 = form4DelIndice(filas);
+  assert.equal(f4.total, 2, 'dos Form 4 pelados');
+  assert.equal(f4.enmiendas, 1);
+  // Y la fecha sale normalizada: la columna de Neon es `date` y `20261019`
+  // no entra ahí.
+  assert.equal(filas[0].fecha, '2026-10-19');
+});
+
+test('el índice TRIMESTRAL, con guiones, sigue funcionando', () => {
+  const trimestral = '4           Aadi Bioscience, Inc.        1422142     2026-10-19  edgar/data/1422142/0001209191-26-012345.txt';
+  const { filas, descartadas } = parseIndiceEdgar(trimestral);
+  assert.equal(descartadas, 0);
+  assert.equal(filas[0].fecha, '2026-10-19');
+});
+
+test('las dos fechas se normalizan a una sola forma', () => {
+  assert.equal(fechaIsoDeIndice('20261019'), '2026-10-19');
+  assert.equal(fechaIsoDeIndice('2026-10-19'), '2026-10-19');
+  assert.equal(fechaIsoDeIndice('basura'), null);
+});
+
+test('un archivo lleno que no se entiende deja `descartadas` en alto, no 0 filas en silencio', () => {
+  // La forma del bug: líneas que SÍ mencionan un documento de EDGAR y que el
+  // parser no sabe leer. `descartadas` es la única señal de que el formato
+  // cambió, y por eso `jobIndice` ahora la mira.
+  const roto = '4  EMPRESA  1422142  19/10/2026  edgar/data/1422142/0001209191-26-012345.txt';
+  const { filas, descartadas } = parseIndiceEdgar(roto);
+  assert.equal(filas.length, 0);
+  assert.equal(descartadas, 1, 'la línea se contó como no entendida, no se ignoró');
+});
+
+// ── QUÉ DÍAS EXISTEN: SE PREGUNTA ───────────────────────────────────────
+// Lety: *"La SEC contesta 403, no 404, cuando no existe el archivo. Usa el
+// listado del directorio para saber qué días existen, en vez de adivinar por
+// el código de error."* Y además un 403 es lo que contesta cuando el
+// User-Agent no le gusta, o lo que devuelve un proxy sin salida: el mismo
+// código significaba tres cosas y el job elegía una.
+
+test('el listado del trimestre dice qué días existen', () => {
+  const listado = { directory: { item: [
+    { name: 'form.20261016.idx' }, { name: 'form.20261019.idx' },
+    { name: 'master.20261019.idx' }, { name: 'company.20261019.idx' },
+    { name: 'form.20261012.idx.gz' },
+  ] } };
+  const dias = diasPublicados(listado, { tipo: 'form' });
+  assert.ok(dias.has('2026-10-19'));
+  assert.ok(dias.has('2026-10-16'));
+  assert.ok(!dias.has('2026-10-12'), 'Columbus Day no está en el listado, y eso es el dato');
+  assert.equal(dias.size, 2, 'master y company no son el índice de formularios');
+});
+
+test('la URL del listado es la del trimestre de esa fecha', () => {
+  assert.match(urlListadoTrimestre('2026-10-19'), /daily-index\/2026\/QTR4\/index\.json$/);
+  assert.match(urlListadoTrimestre('2026-01-02'), /\/2026\/QTR1\/index\.json$/);
+});
+
+test('un listado vacío o roto no inventa días', () => {
+  assert.equal(diasPublicados(null).size, 0);
+  assert.equal(diasPublicados({}).size, 0);
+  assert.equal(diasPublicados({ directory: { item: [] } }).size, 0);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// "NO PUBLICÓ" ≠ "TODAVÍA NO PUBLICÓ"
+//
+// Lety, mirando `/mercado/insiders` (2026-10-20): *"Cobertura del día de hoy:
+// dice «EDGAR no publicó índice ese día». Si es el día en curso, debe decir
+// «todavía no publicado», no lo mismo que un festivo."*
+//
+// Son dos estados distintos y se actúa distinto: un festivo no va a aparecer
+// nunca; el día en curso aparece en unas horas y hay que volver a pedirlo.
+// ═══════════════════════════════════════════════════════════════════════
+
+import { estadoDelDia } from '../api/_lib/edgar-indice.js';
+
+test('el día en curso está "en curso", no "no publicado"', () => {
+  const e = estadoDelDia('2026-10-20', new Date('2026-10-20T23:50:00Z'));
+  assert.equal(e.estado, 'en_curso');
+  assert.match(e.motivo, /todavía no se publica/);
+});
+
+test('EL BORDE QUE IMPORTA: medianoche UTC no es la hora de publicación', () => {
+  // EDGAR acepta presentaciones hasta las 22:00 ET y publica el índice del
+  // día DESPUÉS, o sea cerca de las 02:00 UTC del día siguiente. Con un corte
+  // a medianoche UTC, a las 00:30 del 21 el día 20 ya contaría como "pasado"
+  // y, al no estar en el listado, se llamaría festivo. Es exactamente la hora
+  // a la que Lety corrió los jobs.
+  const e = estadoDelDia('2026-10-20', new Date('2026-10-21T00:30:00Z'));
+  assert.equal(e.estado, 'en_curso', 'a las 00:30 UTC el índice de ayer todavía no existe');
+  // Y al otro día a media mañana, si no está, YA es un festivo.
+  assert.equal(estadoDelDia('2026-10-20', new Date('2026-10-21T14:00:00Z')).estado, 'cerrado');
+});
+
+test('un festivo pasado sí queda cerrado, que es lo que lo hace festivo', () => {
+  const e = estadoDelDia('2026-10-12', new Date('2026-10-21T14:00:00Z'));
+  assert.equal(e.estado, 'cerrado');
+  assert.equal(e.motivo, null, 'el motivo del festivo lo pone quien consultó el listado, no esta función');
+});
+
+test('un día futuro no se confunde con un festivo', () => {
+  const e = estadoDelDia('2026-12-25', new Date('2026-10-21T14:00:00Z'));
+  assert.equal(e.estado, 'futuro');
+  assert.match(e.motivo, /todavía no ocurrió/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EL CRON NO PUEDE CORRER ANTES DE QUE EXISTA LO QUE VA A LEER
+//
+// Corría a las 23:20 UTC y EDGAR publica el índice del día después de las
+// 22:00 ET: 02:00 UTC en horario de verano, 03:00 en invierno. O sea que el
+// cron pedía el archivo entre tres y cuatro horas ANTES de que existiera, y
+// el día quedaba en 0/null (Lety, contra producción, 2026-10-21).
+// ═══════════════════════════════════════════════════════════════════════
+
+test('el cron del índice corre DESPUÉS de que EDGAR publica, los doce meses', async () => {
+  const { readFileSync } = await import('node:fs');
+  const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+  const c = (vercel.crons || []).find((x) => x.path === '/api/stock-tracker?job=indice&dias=3');
+  assert.ok(c, 'falta el cron del índice');
+  const [min, hora] = c.schedule.split(' ');
+  // 22:00 ET son 02:00 UTC en EDT y 03:00 UTC en EST. El cron tiene que caer
+  // después del caso MÁS TARDÍO, o seis meses del año lee un archivo que
+  // todavía no está.
+  assert.ok(Number(hora) >= 4,
+    `a las ${hora}:${min} UTC el índice de invierno (publicado 03:00 UTC) todavía no existe`);
+  assert.ok(Number(hora) < 12, `${hora}:00 UTC es innecesariamente tarde`);
+  // Y no en el minuto 0, donde se acumulan todos los crons del mundo.
+  assert.notEqual(Number(min), 0, 'un minuto corrido reparte la carga');
+});
+
+test('`estadoDelDia` usa el MISMO corte que el cron', () => {
+  // Si el corte de "ya cerró" fuera antes que la publicación, un día sin
+  // archivo todavía se llamaría festivo. Los dos números tienen que ser el
+  // mismo, y 04:00 UTC cubre invierno y verano.
+  assert.equal(estadoDelDia('2026-10-20', new Date('2026-10-21T03:30:00Z')).estado, 'en_curso',
+    'a las 03:30 UTC el índice de ayer puede no estar (EST publica a las 03:00)');
+  assert.equal(estadoDelDia('2026-10-20', new Date('2026-10-21T04:30:00Z')).estado, 'cerrado',
+    'a las 04:30 UTC ya tuvo su publicación en cualquier época del año');
 });

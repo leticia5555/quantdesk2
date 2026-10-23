@@ -20,14 +20,66 @@
 // aparte y con su propio nombre: `le_quedan`.
 // ═══════════════════════════════════════════════════════════════════════
 
-function xtag(block, tag) {
+// ── UN SOLO PAR DE ACCESORES PARA TODO EL REPO ──────────────────────────
+// `xtag` saca un TROZO de XML y se queda CRUDO a propósito: si decodificara,
+// un `&lt;foo&gt;` del texto se volvería `<foo>` y el regex siguiente casaría
+// una etiqueta que el filing no tenía. El decodificado va en la HOJA, o sea
+// en `xval`, que es lo que devuelve texto para leer.
+//
+// Estaban duplicados en `api/stock-tracker.js`, idénticos. Por eso arreglar
+// el doble escape en uno dejó el otro intacto y la pantalla siguió mostrando
+// `&amp;` después de limpiar la base (Lety, 2026-10-21): el endpoint de la
+// pantalla mezcla lo de Neon con un acumulador en memoria que llena el
+// escaneo vivo, y el escaneo vivo usaba la copia sin arreglar.
+export function xtag(block, tag) {
   const m = new RegExp('<(?:\\w+:)?' + tag + '(?:\\s[^>]*)?>([\\s\\S]*?)</(?:\\w+:)?' + tag + '>', 'i').exec(block);
   return m ? m[1].trim() : '';
 }
-function xval(block, tag) {
+/**
+ * LAS ENTIDADES DEL XML SE DECODIFICAN ACÁ, UNA SOLA VEZ.
+ *
+ * Lety, mirando `/mercado/insiders` en producción (2026-10-20): el cargo
+ * salía *"EVP, CFO &amp;amp; COO"*. El Form 4 trae `&amp;amp;` —es XML, ahí un
+ * `&amp;` se escribe así—, `xval` lo devolvía tal cual, se guardaba tal cual, y
+ * la pantalla lo escapaba OTRA VEZ al pintarlo: `&amp;` → `&amp;amp;`. Doble
+ * escape, y el usuario leyendo la segunda capa.
+ *
+ * El arreglo va en `xval` y no en la pantalla a propósito: lo que se guarda
+ * tiene que ser el texto REAL ("EVP, CFO & COO"), y escapar al pintar es
+ * correcto —es lo que impide que un titular con `<script>` se ejecute—. Si se
+ * arreglara en la pantalla, la base quedaría con basura y cualquier otro
+ * consumidor —el PNG de compartir, un export— heredaría el problema.
+ *
+ * NO afecta sólo al cargo: los nombres de emisora con `&` son de lo más
+ * común (AT&T, Procter & Gamble), y salían igual de mal.
+ *
+ * `&amp;amp;` se decodifica AL FINAL. Si se hiciera primero, `&amp;amp;lt;`
+ * —que es la forma de escribir un `&lt;` literal— terminaría convertido en
+ * `<` y habríamos inventado una etiqueta que el filing no tenía.
+ */
+export function desentidad(s) {
+  return String(s)
+    .replace(/&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|lt|gt|quot|apos|nbsp);/g, (m, dec, hex) => {
+      // UNA NUMÉRICA QUE DA UN CARÁCTER DE CONTROL SE QUEDA COMO TEXTO.
+      // `&#0;` decodificado es un NUL, y un NUL no se puede guardar en un
+      // `jsonb` de Postgres —"unsupported Unicode escape sequence"—: la
+      // escritura entera falla. Dejarlo como el texto que vino es la opción
+      // que no pierde nada y no rompe nada.
+      const cp = dec ? Number(dec) : (hex ? parseInt(hex, 16) : NaN);
+      if (Number.isFinite(cp)) {
+        if (cp === 9 || cp === 10 || cp === 13) return String.fromCodePoint(cp);
+        if (cp < 32 || cp === 127 || cp > 0x10ffff) return m;
+        return String.fromCodePoint(cp);
+      }
+      return { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&nbsp;': ' ' }[m] || m;
+    })
+    .replace(/&amp;/g, '&');
+}
+
+export function xval(block, tag) {
   const inner = xtag(block, tag);
   const v = xtag(inner, 'value');
-  return (v || inner).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return desentidad((v || inner).replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 const num = (s) => { const n = parseFloat(s); return Number.isFinite(n) ? n : null; };
 

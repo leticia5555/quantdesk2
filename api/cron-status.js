@@ -70,6 +70,16 @@ export const EXPECTED = [
   // tomó", no "operó". Sin esta fila el reporte de 3 números no tiene datos.
   { job: 'libro:equity',    path: '/api/libro?equity=1',             schedule: '5 21 * * 1-5',          cadence: 'días hábiles ~21:05', stale_after_h: 80 },
   { job: 'earnings-beat:precios',  path: '/api/earnings-beat-harvest?job=precios',  schedule: '40 23 * * *', cadence: '1×/día (CLOB)',       stale_after_h: 30 },
+  // earnings-beat v2 (papel): recalcula pm_earnings_v2_features después de que
+  // `precios` dejó el T-24h, y —solo con EARNINGS_V2_VIGENTE_ENABLED=1— captura
+  // el consenso vigente de AV. Ver docs/earnings-beat-v2.md.
+  { job: 'earnings-beat:v2',       path: '/api/earnings-beat-v2?job=diario',         schedule: '55 23 * * *', cadence: '1×/día (Neon + AV opc.)', stale_after_h: 30 },
+  // v2.1: cosecha SIN filtro de universo (Gamma + CLOB) y el historial de AV
+  // para los símbolos que no están en pead_earnings. `hist` late 'disabled'
+  // mientras EARNINGS_V2_HIST_ENABLED no sea 1: el latido dice que el cron
+  // corre, no que gaste cupo de AV.
+  { job: 'earnings-beat:v2-mercados', path: '/api/earnings-beat-v2?job=mercados_v2', schedule: '20 22 * * *', cadence: '1×/día (Polymarket)', stale_after_h: 30 },
+  { job: 'earnings-beat:v2-hist',     path: '/api/earnings-beat-v2?job=hist',        schedule: '50 22 * * *', cadence: '1×/día (AV, opc.)',   stale_after_h: 30 },
   { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale
@@ -119,8 +129,18 @@ export const EXPECTED = [
   //
   // Una vez al día: el índice de un día cerrado ya no cambia. `dias=3` es el
   // de ayer más margen por si una corrida falló.
+  // ── A LAS 04:10 UTC, NO A LAS 23:20 ─────────────────────────────────
+  // A las 23:20 UTC el índice del día NO EXISTE todavía: EDGAR acepta
+  // presentaciones hasta las 22:00 ET y publica después, o sea a las 02:00
+  // UTC en horario de verano y a las 03:00 en invierno. El cron corría una
+  // hora ANTES de la publicación y el día salía en 0/null (Lety, 2026-10-21).
+  //
+  // 04:10 UTC le da una hora de margen al caso más tardío (EST), así que
+  // funciona todo el año sin tocar nada en noviembre. Y `dias=3` sigue
+  // releyendo tres días hábiles, así que una corrida perdida se recupera
+  // sola al día siguiente.
   { job: 'mercado:form4-indice', path: '/api/stock-tracker?job=indice&dias=3',
-    schedule: '20 23 * * *', cadence: 'diario ~23:20', stale_after_h: 30 },
+    schedule: '10 4 * * *', cadence: 'diario ~04:10 UTC', stale_after_h: 30 },
   // Cada diez minutos. Late SIEMPRE, incluso con cero pendientes —que es el
   // estado bueno—: un cron que sólo late cuando hay trabajo no se distingue
   // de un cron muerto.

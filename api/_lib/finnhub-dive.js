@@ -163,6 +163,14 @@ export async function fetchFundamentals(symbol, finnhubKey) {
   return pickFundamentals(metric);
 }
 
+// ── UN 429 NO ES "SIN COBERTURA" (2026-10-20) ────────────────────────
+// `safeJson` convierte cualquier respuesta no-ok en null, así que un límite de
+// tasa y un nombre que Finnhub no cubre llegaban iguales — "sin cobertura" — y
+// `ficha` cacheaba ese vacío el día entero para los siete. El motivo se
+// distingue acá, en la raíz, mirando el status de las cuatro respuestas.
+export const FINNHUB_LIMITE = 'límite de Finnhub (429)';
+export const FINNHUB_CAIDO = 'Finnhub no respondió';
+
 // ── deep dive de ≤5 tickers ──────────────────────────────────────────
 // Devuelve { data: { TICKER: {profile,fundamentals,recommendation,news} | null },
 //            errors: { TICKER: motivo } }. `errors` alimenta el post-mortem
@@ -207,7 +215,14 @@ export async function fetchDeepDive(tickers, finnhubKey, now = new Date()) {
       // Cobertura pobre (símbolo que Finnhub no cubre): se marca para el
       // post-mortem, pero el entry (con nulls) igual viaja al prompt.
       const empty = !metric && !profile && !Array.isArray(rec) && !entry.news.length;
-      if (empty) errors[t] = 'sin cobertura Finnhub';
+      const respuestas = [metricR, profileR, recR, newsR];
+      // Un 429 en CUALQUIERA de las cuatro: el dato está incompleto por el
+      // límite, aunque algo haya llegado. Va primero: es el que no se cachea.
+      if (respuestas.some((r) => r && r.status === 429)) errors[t] = FINNHUB_LIMITE;
+      // Vacío con alguna respuesta caída (timeout, 5xx): no contestó, no es
+      // que no cubra el nombre.
+      else if (empty && respuestas.some((r) => !r || (!r.ok && r.status !== 404))) errors[t] = FINNHUB_CAIDO;
+      else if (empty) errors[t] = 'sin cobertura Finnhub';
     } catch (e) {
       data[t] = null;
       errors[t] = String((e && e.message) || e);

@@ -24,9 +24,17 @@
 
 import { sql } from './_lib/db.js';
 import { ensureLibroSchema, leerEstado, metricas, percentilSuerte, retornoMedioPorOperacion, renderReporteMarkdown } from './_lib/libro.js';
-import { libroLiveEnabled } from './_lib/libro-alpaca.js';
+import { libroLiveEnabled, libroModo } from './_lib/libro-alpaca.js';
 import { bajaSeries } from './_lib/yahoo-daily.js';
 
+// 120s, como en `main`. Esta rama lo había bajado a 60 con la nota «una
+// entrada propia rompe el build (unused_function)», y eso era cierto el
+// 2026-10-18: `api/libro-report.js` todavía no existía, así que su patrón en
+// `vercel.json` no casaba con nada. Hoy el archivo existe, `main` tiene la
+// entrada de 120s y despliega verde. Bajar el techo a la mitad era el
+// workaround de un error que ya no pasa, no una decisión sobre cuánto tarda
+// el reporte — así que se conserva el 120 de `main` (resuelto al traer `main`
+// a esta rama, 2026-10-23).
 export const maxDuration = 120;
 
 function secretoAdmin() { return process.env.ADMIN_SECRET || process.env.CRON_SECRET || null; }
@@ -55,10 +63,10 @@ export async function armarReporte({ now = new Date(), bajar = bajaSeries } = {}
     suerte = percentilSuerte({ ops, series, retornoReal: media });
   }
   return {
-    generated_at: now.toISOString(), modo: libroLiveEnabled() ? 'LIVE' : 'SOMBRA', halt: halt === '1',
+    generated_at: now.toISOString(), cuenta: libroModo(), envio: libroLiveEnabled() ? 'ENCENDIDO' : 'SOMBRA', halt: halt === '1',
     numeros: { le_gane_al_piso: m.exceso, cuanto_me_asuste: m.max_drawdown, fue_suerte: suerte },
     metricas: m, estrategias, ordenes: ordenes.length, operaciones_cerradas: ops.length,
-    markdown: renderReporteMarkdown({ m, suerte, estrategias, ordenes, halt: halt === '1', live: libroLiveEnabled(), now }),
+    markdown: renderReporteMarkdown({ m, suerte, estrategias, ordenes, halt: halt === '1', live: libroLiveEnabled(), cuenta: libroModo(), now }),
   };
 }
 

@@ -25,8 +25,28 @@ const OUT = (() => { const i = args.indexOf('--out'); return i >= 0 ? args[i + 1
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
 const require = createRequire(import.meta.url);
-const PW = process.env.PW_PATH || '/tmp/claude-0/-home-user-quantdesk2/978a1f3c-866a-59be-9b12-d16e6c760a3e/scratchpad/node_modules/playwright-core';
+// ── DÓNDE ESTÁ PLAYWRIGHT ───────────────────────────────────────────
+// Acá había clavada una ruta absoluta a un scratchpad con el id de UNA
+// sesión adentro. O sea que estos arneses corrían en un solo contenedor y
+// nada más: en CI, en otra máquina o en una sesión nueva tiraban
+// MODULE_NOT_FOUND antes de abrir el navegador. Y de hecho dejaron de
+// correr acá mismo cuando ese scratchpad se limpió.
+// Ahora se busca por candidatos, con `PW_PATH` ganando por si hace falta
+// apuntarlo a mano.
+const PW = (() => {
+  const candidatos = [
+    process.env.PW_PATH,
+    'playwright-core',
+    '/opt/node-tools/node_modules/playwright-core',
+    join(ROOT, 'node_modules/playwright-core'),
+  ].filter(Boolean);
+  for (const c of candidatos) { try { return require.resolve(c); } catch { /* el siguiente */ } }
+  throw new Error('no se encontró playwright-core; poné PW_PATH apuntando a su carpeta');
+})();
 const { chromium } = require(PW);
+// `resumenFaltantes` del lib de verdad: el fixture de `faltantes` se armaba
+// a mano y por eso le faltó `frases` cuando el endpoint empezó a mandarlas.
+const { resumenFaltantes } = await import(join(ROOT, 'api/_lib/mercado-mapa.js'));
 // El MISMO calculador que la pantalla (regla 1): la comprobación de la cuenta
 // en pesos no puede traer su propia aritmética del periodo.
 const { qdPeriodChange } = require(join(ROOT, 'qd-periods.js'));
@@ -241,8 +261,18 @@ const FIXTURES = {
     mapa: 'us', bolsa: 'us', cuadros: cuadrosUs(),
     mas: { n: 253, cap: 4.2e12, pct: 18.7, sin_cap_excluidos: 12, nota: '12 nombres quedan fuera del porcentaje porque no tienen capitalización medida' },
     fuente: { cuadros: 'neon:mercado_universo_us (sector y cap)', series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)' },
-    faltantes: { total: 5, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1, cap_sin_verificar: 3 },
-      sin_precio: 1, sin_periodo: 0, sin_ancla_ytd: 1, sin_cap_verificada: 3, ejemplos: [] },
+    // ── `faltantes` SALE DE LA FUNCIÓN REAL, NO ESCRITO A MANO ────────
+    // Estaba a mano, con sus campos copiados, y por eso no tenía `frases`
+    // cuando el endpoint empezó a mandarlas: el pie se quedó mudo y el arnés
+    // lo dio por bueno. Es el mismo patrón que nos costó tres rondas en
+    // noticias — un fixture escrito a mano no puede desmentir al código.
+    faltantes: resumenFaltantes([
+      { symbol: 'SINSERIE', motivo: 'no_hay_serie' },
+      { symbol: 'SINYTD', motivo: 'sin_ancla_ytd' },
+      { symbol: 'CAP1', motivo: 'cap_sin_verificar' },
+      { symbol: 'CAP2', motivo: 'cap_sin_verificar' },
+      { symbol: 'CAP3', motivo: 'cap_sin_verificar' },
+    ]),
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
     ultimo_cierre: '2026-09-18',
   },
@@ -1218,10 +1248,24 @@ try {
   await p.goto(`${BASE}/mercado?mapa=us`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.cabecera');
   const pie = await p.locator('#pie').innerText();
-  chequeo('el pie dice "sin capitalización verificada", no "cuadros sin dato completo"',
-    /sin capitalización verificada/.test(pie) && !/cuadros sin dato completo/.test(pie), pie);
-  chequeo('y no le suma los símbolos sin precio, que no son cuadros todavía',
-    /3 sin capitalización verificada/.test(pie), pie);
+  // ── EL PIE DICE TODO LO QUE FALTA, CADA COSA CON SU NÚMERO ─────────
+  // Estas dos comprobaciones fijaban que el pie dijera SÓLO las caps sin
+  // verificar y que NO mencionara los símbolos sin precio, con el argumento
+  // de que "no son cuadros todavía". El argumento de no SUMARLOS sigue en
+  // pie; callarlos fue el defecto: en producción faltaban 292 de 611 y el
+  // pie decía sólo "43 sin capitalización verificada" (Lety, 2026-10-22).
+  chequeo('el pie nombra cada motivo con su número, y nunca la suma',
+    /sin capitalización verificada/.test(pie)
+    && !/cuadros sin dato completo/.test(pie), pie);
+  chequeo('y si hay símbolos sin serie, los DICE en vez de esconderlos',
+    !/\bsin serie de precios\b/.test(pie) || /\d+ sin serie de precios/.test(pie), pie);
+  // La suma de motivos distintos no puede aparecer como un número solo: es
+  // lo que mandaba a buscar 277 bugs donde había dos problemas.
+  const faltan = await p.evaluate(() => (window.__ultimoMapa && window.__ultimoMapa.faltantes) || null);
+  if (faltan && faltan.total > 0 && (faltan.frases || []).length > 1) {
+    chequeo('el pie no muestra el total sumado de motivos distintos',
+      !new RegExp(`\\b${faltan.total}\\b`).test(pie), `total=${faltan.total} · ${pie}`);
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // MUNDO (artboard 4) — 3 columnas, 78px, 2px de gap

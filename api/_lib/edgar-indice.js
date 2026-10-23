@@ -87,6 +87,104 @@ export function accessionDeArchivo(archivo) {
  * `\s{2,}` se rompe con una empresa cuyo nombre trae dos espacios, y eso
  * existe.
  */
+/**
+ * La fecha de una fila de índice, en ISO.
+ *
+ * EDGAR usa DOS formatos según el índice: `20261019` en el diario y
+ * `2026-10-19` en el trimestral. Las dos entran acá y sale una sola forma,
+ * que es la que la columna `date` de Neon acepta.
+ */
+// ═══════════════════════════════════════════════════════════════════════
+// QUÉ DÍAS EXISTEN SE PREGUNTA, NO SE ADIVINA POR EL CÓDIGO DE ERROR
+//
+// El código viejo leía la ausencia de un día en el código de respuesta: 404 =
+// "EDGAR no publicó, es feriado". Eso está mal por dos lados, y Lety los vio
+// los dos contra producción (2026-10-20):
+//
+//   · LA SEC CONTESTA 403, NO 404, cuando el archivo no existe. Así que el
+//     12 de octubre (Columbus Day) y el día de hoy —que todavía no se
+//     publica— salían como ERROR en vez de como "no hay archivo".
+//   · Y un 403 además es lo que contesta cuando el User-Agent no le gusta, o
+//     lo que devuelve un proxy sin salida a sec.gov. O sea que el mismo
+//     código significaba tres cosas distintas y el job elegía una.
+//
+// El directorio del trimestre dice exactamente qué archivos hay. Una
+// pregunta, y el feriado deja de ser una inferencia: es un dato.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * "NO PUBLICÓ" Y "TODAVÍA NO PUBLICÓ" NO SON LO MISMO.
+ *
+ * Lety, mirando `/mercado/insiders` (2026-10-20): *"Cobertura del día de hoy:
+ * dice «EDGAR no publicó índice ese día». Si es el día en curso, debe decir
+ * «todavía no publicado», no lo mismo que un festivo."*
+ *
+ * Y tiene razón en que son dos cosas: un festivo no va a aparecer nunca y no
+ * hay nada que hacer; el día en curso aparece en unas horas y hay que volver
+ * a pedirlo. Decirles igual hace que el cron de mañana parezca redundante.
+ *
+ * EL CORTE NO ES MEDIANOCHE. EDGAR acepta presentaciones hasta las 22:00 ET y
+ * publica el índice del día después, o sea alrededor de las 02:00 UTC del día
+ * siguiente. Así que a las 23:50 UTC del 20 —que es cuando Lety corrió el
+ * job— el índice del 20 todavía no existía, y con un corte a medianoche UTC
+ * el día 20 ya contaba como "pasado" y se habría llamado festivo.
+ *
+ * Por eso un día ausente del listado es festivo sólo si YA pasó su hora de
+ * publicación; si no, es "todavía no publicado".
+ */
+export function estadoDelDia(fechaIso, ahora = new Date()) {
+  const f = String(fechaIso).slice(0, 10);
+  const hoy = ahora.toISOString().slice(0, 10);
+  if (f > hoy) return { estado: 'futuro', motivo: `el ${f} todavía no ocurrió` };
+  if (f === hoy) return { estado: 'en_curso', motivo: `el índice del ${f} todavía no se publica: EDGAR lo cierra después de las 22:00 ET` };
+  // El día de ayer, antes de las 03:00 UTC, tampoco tuvo su publicación.
+  const ayer = new Date(Date.UTC(
+    Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1, Number(hoy.slice(8, 10)) - 1,
+  )).toISOString().slice(0, 10);
+  // El corte es 04:00 UTC y NO 03:00: EDGAR publica a las 02:00 UTC en
+  // horario de verano y a las 03:00 en invierno (22:00 ET en los dos casos).
+  // Con el corte en 3, en invierno el día de ayer pasaba a "cerrado" justo
+  // cuando su índice todavía no estaba, y al no encontrarlo en el listado se
+  // habría llamado festivo. Es el mismo horario al que corre el cron.
+  if (f === ayer && ahora.getUTCHours() < 4) {
+    return { estado: 'en_curso', motivo: `el índice del ${f} todavía no se publica: EDGAR lo cierra después de las 22:00 ET` };
+  }
+  return { estado: 'cerrado', motivo: null };
+}
+
+/** El listado del trimestre al que pertenece esta fecha, en JSON. */
+export function urlListadoTrimestre(fechaIso) {
+  const t = trimestreDe(fechaIso);
+  if (!t) return null;
+  const anio = String(fechaIso).slice(0, 4);
+  return `https://www.sec.gov/Archives/edgar/daily-index/${anio}/QTR${t}/index.json`;
+}
+
+/**
+ * Las fechas ISO que el trimestre REALMENTE publicó, de su listado.
+ *
+ * El listado trae `form.20261019.idx`, `master.20261019.idx`, `company.*` y
+ * carpetas. Nos quedamos con el tipo que se pide y se saca su fecha del
+ * nombre, que es la única parte del listado en la que vale confiar.
+ */
+export function diasPublicados(listado, { tipo = 'form' } = {}) {
+  const items = (listado && listado.directory && listado.directory.item) || [];
+  const re = new RegExp(`^${tipo}\\.(\\d{8})\\.idx$`, 'i');
+  const dias = new Set();
+  for (const it of items) {
+    const m = re.exec(String((it && it.name) || '').trim());
+    if (m) dias.add(fechaIsoDeIndice(m[1]));
+  }
+  return dias;
+}
+
+export function fechaIsoDeIndice(crudo) {
+  const s = String(crudo || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d{8}$/.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  return null;
+}
+
 export function parseIndiceEdgar(texto) {
   const lineas = String(texto || '').split(/\r?\n/);
   const filas = [];
@@ -107,9 +205,22 @@ export function parseIndiceEdgar(texto) {
         fila = { cik: p[0], empresa: p[1], form: p[2], fecha: p[3], archivo: p[4] };
       }
     } else {
-      // Desde la derecha: archivo, fecha, CIK; el resto es el nombre.
-      const m = l.match(/^(\S+)\s+(.*?)\s+(\d{1,10})\s+(\d{4}-\d{2}-\d{2})\s+(\S+)$/);
-      if (m) fila = { form: m[1], empresa: m[2].trim(), cik: m[3], fecha: m[4], archivo: m[5] };
+      // ── LAS DOS FECHAS DE EDGAR ─────────────────────────────────────
+      // El índice DIARIO escribe la fecha pegada (`20261019`) y el índice
+      // TRIMESTRAL la escribe con guiones (`2026-10-19`). Este regex sólo
+      // aceptaba la segunda, así que contra un `form.20261019.idx` de verdad
+      // NINGUNA línea casaba: las 991 se iban a `descartadas` y el día salía
+      // con 0 Form 4 (Lety, contra producción, 2026-10-20).
+      //
+      // Y el fixture de la prueba escribía la fecha CON guiones, o sea que
+      // medía el formato que yo había supuesto en vez del que EDGAR manda.
+      // Es la tercera vez que un fixture escrito a mano no puede
+      // desmentirme; por eso la prueba de esto va contra el archivo real.
+      //
+      // Se aceptan las dos y se normaliza a ISO, porque la columna de Neon es
+      // `date` y `20261019` no entra ahí.
+      const m = l.match(/^(\S+)\s+(.*?)\s+(\d{1,10})\s+(\d{4}-\d{2}-\d{2}|\d{8})\s+(\S+)$/);
+      if (m) fila = { form: m[1], empresa: m[2].trim(), cik: m[3], fecha: fechaIsoDeIndice(m[4]), archivo: m[5] };
     }
     // De acá para abajo, la línea SÍ menciona un documento: si no se
     // entiende, es un formato que cambió y hay que saberlo. `descartadas`
@@ -149,21 +260,37 @@ export function form4DelIndice(filas) {
  * números no se puede auditar: "100%" de un denominador equivocado también
  * dice 100%.
  */
-export function coberturaDeDia({ fecha, enIndice, guardados, motivo = null } = {}) {
+export function coberturaDeDia({ fecha, enIndice, guardados, agotados = 0, motivo = null } = {}) {
   if (motivo) return { fecha, pct: null, en_indice: enIndice ?? null, guardados: guardados ?? null, completa: false, texto: motivo };
   const total = Number(enIndice);
   const nuestros = Number(guardados);
   if (!Number.isFinite(total) || total <= 0) {
+    // ── NO SE AFIRMA LO QUE NO SE SABE ────────────────────────────────
+    // Acá decía "EDGAR no publicó ese día" con total 0, y eso es una
+    // AFIRMACIÓN sobre EDGAR sacada de un número nuestro. El 19 de octubre
+    // EDGAR había publicado 991 Form 4 y esta línea decía que no publicó
+    // (Lety, contra producción, 2026-10-20): el parser no entendía la fecha
+    // del índice diario, el día se guardaba en 0, y el 0 se traducía a una
+    // frase sobre la SEC.
+    //
+    // "No publicó" ahora sólo lo dice quien lo sabe: `jobIndice`, que lo leyó
+    // del listado del trimestre, y lo manda en `motivo`. Sin motivo, el total
+    // en 0 es un problema NUESTRO y se dice así — la regla 2 pide la causa
+    // real, y "no se cosechó" es la causa real.
     return { fecha, pct: null, en_indice: total || 0, guardados: nuestros || 0, completa: false,
-      texto: `no hay índice de Form 4 para el ${fecha}: EDGAR no publicó ese día` };
+      texto: `no hay índice de Form 4 guardado para el ${fecha}: el día no se ha cosechado o la cosecha falló` };
   }
   const pct = (nuestros / total) * 100;
   const completa = nuestros >= total;
   return {
     fecha, pct, en_indice: total, guardados: nuestros, completa,
+    agotados: Number(agotados) || 0,
     texto: completa
       ? `Cobertura: 100% de los Form 4 del día (${nuestros} de ${total})`
-      : `Cobertura: ${pct.toFixed(1)}% de los Form 4 del día (${nuestros} de ${total}) — faltan ${total - nuestros}`,
+      : `Cobertura: ${pct.toFixed(1)}% de los Form 4 del día (${nuestros} de ${total}) — faltan ${total - nuestros}`
+        // "Faltan N" no distingue "todavía no se leyeron" de "no se pudieron
+        // leer". Lo segundo no se arregla esperando, así que se dice aparte.
+        + (Number(agotados) > 0 ? `, de los cuales ${Number(agotados)} no se pudieron leer` : ''),
   };
 }
 

@@ -1248,13 +1248,31 @@
     partes.push('fuente: ' + (f.series || '—'));
     if(d.cosecha && d.cosecha.ultima_fecha) partes.push('último cierre: ' + d.cosecha.ultima_fecha);
     if(d.cosecha && d.cosecha.alerta) partes.push('⚠ cosecha atrasada ' + d.cosecha.sesiones_de_atraso + ' sesiones');
-    // LO QUE SE CUENTA ACÁ SON CUADROS, y un símbolo sin precio no es un
-    // cuadro todavía: no se dibuja, no tiene %, no hay nada que mirar. El
-    // conteo decía "277 cuadros sin dato completo" sumándole los 250 sin
-    // serie, y mandaba a buscar 277 problemas donde había 25.
+    // ── TODOS LOS MOTIVOS, CADA UNO CON SU NÚMERO ───────────────────
+    // Acá se mostraba SÓLO "N sin capitalización verificada", con el
+    // argumento de que un símbolo sin precio "no es un cuadro todavía". El
+    // argumento de no sumarlos en un total sigue en pie —"277 sin dato
+    // completo" manda a buscar 277 bugs donde hay dos problemas—, pero
+    // callarlos fue peor: faltaban 292 de 611 y el pie no lo mencionaba
+    // (Lety, 2026-10-22).
+    //
+    // Las frases las arma el endpoint (`resumenFaltantes`), no esta pantalla:
+    // así `/mercado` y cualquier otra que lo muestre dicen lo mismo.
     var f2 = d.faltantes || {};
-    if(f2.sin_cap_verificada) partes.push(f2.sin_cap_verificada + ' sin capitalización verificada');
-    if(f2.sin_periodo) partes.push(f2.sin_periodo + ' sin periodo');
+    var cuantas = (f2.frases || []).length;
+    if(cuantas){
+      partes.push('de ' + (d.cuadros || []).length + ' emisoras: ' + f2.frases.join(' · '));
+    }
+    // ── CUÁNTOS LLEGARON AL ÚLTIMO CIERRE ───────────────────────────
+    // La cosecha de 611 símbolos no cabe en una corrida (~416), así que se
+    // reparte en varias. Sin esta línea, un símbolo que se quedó con el
+    // cierre de ayer se ve idéntico a uno al día.
+    if(d.al_dia && d.al_dia.ultimo_cierre){
+      partes.push(d.al_dia.atrasados
+        ? d.al_dia.con_ultimo_cierre + ' con el cierre del ' + d.al_dia.ultimo_cierre
+          + ' · ' + d.al_dia.atrasados + ' con uno anterior'
+        : 'las ' + d.al_dia.con_ultimo_cierre + ' con el cierre del ' + d.al_dia.ultimo_cierre);
+    }
     // Regla 5 + regla 3: si la pantalla está en pesos, el pie declara con qué
     // se convirtió. El FIX es diario, así que la fecha es parte del dato: "el
     // FIX de Banxico" sin fecha no dice qué número se usó.

@@ -184,6 +184,12 @@ export function armaMapaUs({ universo = [], precios = [], recorte, ahora = new D
       symbol: sym,
       nombre: u.nombre || sym,
       sector: u.sector_etf || null,
+      // La fecha del cierre que este cuadro está pintando. Viaja para que el
+      // pie pueda decir cuántos llegaron al último cierre y cuántos se
+      // quedaron con el de antes: la cosecha son 611 símbolos y una corrida
+      // alcanza ~416, así que el reparto en varias corridas es la norma y
+      // hace falta poder verlo (Lety, 2026-10-22).
+      fecha_precio: paq.fecha_precio || null,
       cap: cap.estado === 'verificada' ? cap.cap_usd : null,
       // La fuente la declara el VEREDICTO cuando la cap no salió de Finnhub:
       // `calc: edgar×neon` o `calc: acciones÷5:1×neon` dicen de dónde viene el
@@ -279,6 +285,23 @@ export function resumenFaltantes(faltantes = []) {
     sin_periodo: n(MOTIVOS.SERIE_CORTA),
     sin_ancla_ytd: n(MOTIVOS.SIN_ANCLA_YTD),
     sin_cap_verificada: n(MOTIVOS.CAP_SIN_VERIFICAR),
+    // ── LO QUE EL PIE TIENE QUE DECIR, YA ARMADO ──────────────────────
+    // Lety, contra producción (2026-10-22): el pie decía sólo "43 sin
+    // capitalización verificada" y escondía 292 sin serie de precios. O sea
+    // que la mitad del mapa faltaba y el pie no lo mencionaba.
+    //
+    // El comentario de más arriba sigue valiendo —no se suman motivos
+    // distintos en un total, porque "277 sin dato completo" manda a buscar
+    // 277 bugs donde hay dos problemas—, y la respuesta no era CALLAR los
+    // otros: es decirlos TODOS, cada uno con su número y su causa. Eso lo
+    // armamos acá y no en la pantalla, para que las dos pantallas que lo
+    // muestran no inventen cada una su frase.
+    frases: [
+      [n(MOTIVOS.SIN_SERIE), 'sin serie de precios todavía'],
+      [n(MOTIVOS.SERIE_CORTA), 'con la serie demasiado corta para un periodo'],
+      [n(MOTIVOS.SIN_ANCLA_YTD), 'sin cierre de referencia de enero'],
+      [n(MOTIVOS.CAP_SIN_VERIFICAR), 'sin capitalización verificada'],
+    ].filter(([c]) => c > 0).map(([c, texto]) => `${c} ${texto}`),
     ejemplos: faltantes.slice(0, 10),
   };
 }

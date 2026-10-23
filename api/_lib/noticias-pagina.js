@@ -77,6 +77,97 @@ export function filtra(notas, { seccion = 'todo', idioma = 'todo', q = '', fuent
   });
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// UNA FOTO QUE SE REPITE NO ES UNA FOTO: ES EL LOGO DE LA FUENTE
+//
+// Lety, 2026-10-20, mirando producción a 1440: *"Valor (BR) sale como bloque
+// verde con el nombre. Se supone que ya no había relleno."*
+//
+// Y el relleno SÍ estaba borrado. El bloque verde no lo pintaba esta página:
+// era una foto de verdad, un `<img>` con su `og:image`, y ESA imagen es el
+// logo verde de Valor con su nombre encima. Valor publica el mismo `og:image`
+// en todas sus notas, así que la cosecha la guardaba como foto —técnicamente
+// lo es— y la nota entraba a destacadas con un cartel de marca en lugar de
+// una foto de la noticia. Seeking Alpha hace lo mismo con el suyo.
+//
+// O sea que quitar el relleno de color no alcanzó: la fuente nos lo manda
+// como contenido y nosotros lo pintábamos igual de grande.
+//
+// CÓMO SE DISTINGUE, sin bajar la imagen ni mirarla: una foto de una noticia
+// es de ESA noticia y no se repite; un logo es el mismo en todas. Entonces
+// una URL de imagen que aparece en DOS o más notas de la MISMA fuente es un
+// logo, y deja de contar como foto (Lety fijó el umbral en dos).
+//
+// La comparación tira la query: los logos suelen venir con `?v=3` o un sello
+// de caché que cambia sin que cambie la imagen, y con la query adentro dos
+// copias del mismo logo se verían distintas.
+//
+// LO QUE ESTO NO HACE: no se descarta la nota. La nota sigue en la lista con
+// su titular, su fuente y su hora; lo único que pierde es el derecho a la
+// franja de arriba, que es la que promete foto.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** La clave con la que se comparan dos imágenes: sin query y sin fragmento. */
+export function claveDeImagen(url) {
+  const s = String(url || '').trim();
+  if (!s) return '';
+  const corte = s.search(/[?#]/);
+  return (corte < 0 ? s : s.slice(0, corte)).toLowerCase();
+}
+
+/**
+ * Las URLs de imagen que son el logo de su fuente, con cuántas veces salen.
+ *
+ * `umbral` es 2 porque lo fijó Lety: dos notas de la misma fuente con la
+ * misma imagen ya es un logo. No hace falta esperar a la tercera.
+ */
+export function logosDeFuente(notas, { umbral = 2 } = {}) {
+  const cuenta = new Map();
+  for (const n of notas || []) {
+    if (!n || !n.imagen) continue;
+    const k = (n.fuente_id || n.fuente_nombre || 'sin_fuente') + '\u0000' + claveDeImagen(n.imagen);
+    cuenta.set(k, (cuenta.get(k) || 0) + 1);
+  }
+  const logos = new Map();
+  for (const [k, c] of cuenta) if (c >= umbral) logos.set(k, c);
+  return logos;
+}
+
+/** ¿Esta nota trae una foto de la noticia, o el logo del medio? */
+export function esLogoDeFuente(n, logos) {
+  if (!n || !n.imagen || !logos || !logos.size) return false;
+  const k = (n.fuente_id || n.fuente_nombre || 'sin_fuente') + '\u0000' + claveDeImagen(n.imagen);
+  return logos.has(k);
+}
+
+/**
+ * Las notas que tienen foto DE VERDAD, y el porqué de las que no.
+ *
+ * Devolver el motivo no es adorno: la regla 2 del encargo pide que lo que
+ * falta diga su causa real. "esta fuente publica su logo como imagen" y "esta
+ * nota no trae imagen" se arreglan distinto —el segundo se arregla
+ * cosechando, el primero no se arregla nunca— y la pantalla tiene que poder
+ * decir cuál de los dos es.
+ */
+export function conFotoReal(notas) {
+  const logos = logosDeFuente(notas);
+  const conFoto = [];
+  const descartadas = [];
+  for (const n of notas || []) {
+    if (!n) continue;
+    if (!n.imagen) continue;
+    if (esLogoDeFuente(n, logos)) {
+      const k = (n.fuente_id || n.fuente_nombre || 'sin_fuente') + '\u0000' + claveDeImagen(n.imagen);
+      descartadas.push({ url: n.url, fuente_id: n.fuente_id || null,
+        motivo: `la imagen que publica ${n.fuente_nombre || n.fuente_id || 'la fuente'} es su logo, la misma en ${logos.get(k)} notas` });
+      continue;
+    }
+    conFoto.push(n);
+  }
+  return { conFoto, logos, descartadas };
+}
+
 /**
  * LAS DESTACADAS: HASTA CUATRO, TODAS CON FOTO.
  *
@@ -106,7 +197,12 @@ export function destacadasDe(notas, { cuantas = 4 } = {}) {
   // producción eso dio las cuatro del MISMO medio (Valor BR publica todo con
   // imagen). El que más publica no es "lo destacado".
   const porRecencia = (a, b) => String(b.publicado_en || '').localeCompare(String(a.publicado_en || ''));
-  const conFoto = (notas || []).filter((n) => n && n.imagen).sort(porRecencia);
+  // `conFotoReal` y no `n.imagen`: una imagen que la fuente repite en todas
+  // sus notas es su logo, no la foto de la noticia (ver arriba). Valor BR y
+  // Seeking Alpha publican el suyo como `og:image`, y la franja de arriba los
+  // pintaba del tamaño de una foto.
+  const { conFoto: reales, descartadas: logos } = conFotoReal(notas || []);
+  const conFoto = reales.sort(porRecencia);
 
   const mejorPorFuente = new Map();
   for (const n of conFoto) {
@@ -124,8 +220,14 @@ export function destacadasDe(notas, { cuantas = 4 } = {}) {
     con_foto_total: conFoto.length,
     con_foto: destacadas.length,
     sin_foto: 0,
+    // Las que quedaron fuera por traer el logo del medio, con su causa. No es
+    // telemetría: es lo que la pantalla necesita para decir por qué hay tres
+    // destacadas y no cuatro (regla 2).
+    logos_descartados: logos,
     motivo_vacio: destacadas.length ? null
-      : 'ninguna de las notas de la ventana trae foto propia todavía',
+      : (logos.length
+        ? `las únicas notas con imagen traen el logo de su medio, no una foto (${logos.length})`
+        : 'ninguna de las notas de la ventana trae foto propia todavía'),
   };
 }
 
@@ -180,13 +282,28 @@ export function chipsDeFuente(fuentesGo, corridas) {
  * Separado del handler para que se pruebe sin Postgres: entra la lista, salen
  * las tres columnas. La prueba de este archivo es la que fija el contrato.
  */
-export function armaPagina(notas, { seccion = 'todo', idioma = 'todo', q = '', fuente = null, orden = 'hora', porColumna = 30 } = {}) {
+export function armaPagina(notas, { seccion = 'todo', idioma = 'todo', q = '', fuente = null, orden = 'hora', porColumna = 10 } = {}) {
   const vistas = filtra(notas, { seccion, idioma, q, fuente });
   const dest = destacadasDe(vistas);
-  // Las destacadas NO se quitan de las columnas: en el artboard la nota
-  // destacada sigue apareciendo en su lista, y sacarla haría que "cargar más"
-  // devolviera huecos. Son la misma nota mostrada dos veces, a propósito.
-  const medios = vistas.filter((n) => n.tipo === 'medio');
+  const rev = revistaDe(vistas, { medianas: 5 });
+
+  // ── LO QUE YA ESTÁ ARRIBA NO SE REPITE ABAJO ────────────────────────
+  // Acá decía lo contrario, y con un argumento: "en el artboard la destacada
+  // sigue en su lista, y sacarla haría que «cargar más» devolviera huecos".
+  // Lety, mirando producción (2026-10-20): *"No repitas en Medios las notas
+  // que ya están en destacadas."* Manda eso.
+  //
+  // El argumento de los huecos sí era real, y se resuelve donde tenía que
+  // resolverse: la lista se arma DESPUÉS de restar, así que `porColumna`
+  // cuenta notas que se van a ver. Antes se cortaba a 30 y después la
+  // pantalla escondía algunas, que es de donde salían los huecos.
+  const arriba = new Set();
+  if (rev.portada) arriba.add(rev.portada.url);
+  for (const n of rev.medianas) arriba.add(n.url);
+  for (const n of dest.destacadas) arriba.add(n.url);
+  const noEstaArriba = (n) => !arriba.has(n.url);
+
+  const medios = vistas.filter((n) => n.tipo === 'medio').filter(noEstaArriba);
   const newsletters = vistas.filter((n) => n.tipo === 'newsletter');
   // `oficial_derivado` es lo que arma `cambiosDeTasa` desde la serie del SIE:
   // es oficial, y si no entrara acá se perdería de la columna que le toca.
@@ -202,11 +319,9 @@ export function armaPagina(notas, { seccion = 'todo', idioma = 'todo', q = '', f
     // La revista de la página: una portada y hasta cinco en rejilla. Sale de
     // la MISMA función que usa `/mercado`, para que las dos pantallas
     // destaquen lo mismo en el mismo momento.
-    revista: (() => {
-      const r = revistaDe(vistas, { medianas: 5 });
-      return { portada: r.portada, medianas: r.medianas, cuantas: r.cuantas,
-        con_foto_total: r.con_foto_total, motivo_vacio: r.motivo_vacio };
-    })(),
+    revista: { portada: rev.portada, medianas: rev.medianas, cuantas: rev.cuantas,
+      con_foto_total: rev.con_foto_total, motivo_vacio: rev.motivo_vacio,
+      logos_descartados: rev.logos_descartados },
     medios: orden === 'fuente' ? [] : medios.slice(0, porColumna),
     medios_total: medios.length,
     medios_por_fuente: orden === 'fuente' ? porFuente(medios) : [],
@@ -368,7 +483,11 @@ export function candidatasDeFoto(filas, { cuantas = 20 } = {}) {
 export function revistaDe(notas, { medianas = 4 } = {}) {
   const porRecencia = (a, b) => String(b.publicado_en || '').localeCompare(String(a.publicado_en || ''));
   const todas = [...(notas || [])].sort(porRecencia);
-  const conFoto = todas.filter((n) => n && n.imagen);
+  // Misma regla que las destacadas, y por fuerza la misma función: si la
+  // revista y la franja decidieran distinto qué es una foto, `/mercado` y
+  // `/mercado/noticias` destacarían cosas distintas en el mismo momento.
+  const { conFoto: reales, descartadas: logos } = conFotoReal(todas);
+  const conFoto = reales;
 
   const mejorPorFuente = new Map();
   for (const n of conFoto) {
@@ -385,7 +504,10 @@ export function revistaDe(notas, { medianas = 4 } = {}) {
     // repiten de fuente. Ninguna nota se pierde por no tener imagen.
     resto: todas.filter((n) => !usadas.has(n.url)),
     con_foto_total: conFoto.length,
+    logos_descartados: logos,
     motivo_vacio: elegidas.length ? null
-      : 'ninguna de las notas de la ventana trae foto propia todavía',
+      : (logos.length
+        ? `las únicas notas con imagen traen el logo de su medio, no una foto (${logos.length})`
+        : 'ninguna de las notas de la ventana trae foto propia todavía'),
   };
 }

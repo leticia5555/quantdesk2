@@ -223,7 +223,11 @@ console.log('\n── un timeout dice de dónde salió su techo ──');
     'el techo de una llamada declara su derivación, o la env var que la pisó', ARENA_LLM_TIMEOUT_ORIGEN);
 
   const modelo = readFileSync(new URL('../api/_lib/arena-model.js', import.meta.url), 'utf8');
-  ok(/techo: \$\{origenTecho \|\| ARENA_LLM_TIMEOUT_ORIGEN\}/.test(modelo),
+  // Desde el 2026-10-23 el rótulo es "corte de NUESTRO reloj a los N ms
+  // (techo X s, vuelta N)", y el origen sigue detrás.
+  const { rotuloCorteNuestro } = await import('../api/_lib/arena-model.js');
+  ok(rotuloCorteNuestro({ ms: 14967, techoMs: 15000, origenTecho: ARENA_LLM_TIMEOUT_ORIGEN }).endsWith('Origen del techo: ' + ARENA_LLM_TIMEOUT_ORIGEN)
+    && /rotuloCorteNuestro\(\{ ms, techoMs: timeoutMs, origenTecho: origenTecho \|\| ARENA_LLM_TIMEOUT_ORIGEN \}\)/.test(modelo),
     'y el mensaje del aborto lo incluye: "se pasó de 15s" solo no distingue una env var de un loop sin reloj');
   ok(/techo_ms: first\.techo_ms/.test(modelo),
     'el techo y su origen viajan en el resultado, no solo en el texto — el journal los guarda como campos');

@@ -462,7 +462,12 @@ export default async function handler(req, res) {
       // cosechó el cron no existe, y pedir 30 días sólo haría que la pantalla
       // dijera "no hay nada" sobre un hueco de recolección.
       const horas = Math.min(Math.max(Number(q.horas) || VENTANA_HORAS, 1), 168);
-      const porColumna = Math.min(Math.max(Number(q.por_columna) || 30, 5), 100);
+      // DIEZ, no treinta. Lety: *"mostrar unas 10 notas y luego «cargar
+      // más»"*. Treinta eran media pantalla de lista antes de que apareciera
+      // el botón, y con el scroll interno de antes ni se veía que hubiera
+      // más. El paginado por `antes_de` ya existía; lo que faltaba era que
+      // la primera página fuera corta.
+      const porColumna = Math.min(Math.max(Number(q.por_columna) || 10, 5), 100);
       // `antes_de` es el cursor de "cargar más": la hora de la última nota que
       // el lector ya tiene. Con ISO inválido se ignora en vez de romper.
       const antesDe = (() => {
