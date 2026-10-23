@@ -413,10 +413,11 @@ test('búsqueda por símbolo: pedidos primero, sin universo cerrado, rotando por
 // ── migración y semillas contra un Postgres real ───────────────
 const SQL_V2 = readFileSync('docs/sql/earnings-beat-v2.sql', 'utf8');
 const SQL_V21 = readFileSync('docs/sql/earnings-beat-v2-1.sql', 'utf8');
+const SQL_V22 = readFileSync('docs/sql/earnings-beat-v2-2.sql', 'utf8');
 const norm = (s) => s.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
 
 test('la DDL de los .sql es la misma que SCHEMA_V2', () => {
-  const ambos = norm(SQL_V2 + '\n' + SQL_V21);
+  const ambos = norm(SQL_V2 + '\n' + SQL_V21 + '\n' + SQL_V22);
   for (const q of SCHEMA_V2) assert.ok(ambos.includes(norm(q)), q.slice(0, 60));
 });
 
@@ -434,7 +435,7 @@ test('migración + semillas + consultas + upserts v2.1, contra Postgres', { skip
   psql(`create table if not exists pead_earnings (symbol text not null, fiscal_date_ending date not null,
           reported_date date not null, reported_eps numeric, estimated_eps numeric, surprise numeric,
           surprise_pct numeric, source text, ingested_at timestamptz default now(), primary key (symbol, reported_date));`);
-  for (let i = 0; i < 2; i++) { psql(SQL_V2); psql(SQL_V21); }   // idempotentes
+  for (let i = 0; i < 2; i++) { psql(SQL_V2); psql(SQL_V21); psql(SQL_V22); }   // idempotentes
   assert.equal(psql('select count(*) from pm_v2_validation').trim(), '22');
   assert.equal(psql("select count(*) from pm_v2_validation where set = 'piloto-oct26'").trim(), '22');
   assert.equal(psql("select count(*) from pm_v2_validation where outcome is not null").trim(), '7');
@@ -445,6 +446,8 @@ test('migración + semillas + consultas + upserts v2.1, contra Postgres', { skip
   assert.equal(psql("select string_agg(symbol || ':' || concepto, ',' order by symbol, concepto) from pm_known_gaps where not verificada").trim(), 'GOOGL:multa_dma_ce_jul_2026');
   assert.equal(psql("select string_agg(symbol, ',' order by symbol) from pm_company_guidance where not verificada").trim(), 'SSNC');
   assert.equal(psql("select brecha_por_accion from pm_known_gaps where symbol = 'UNP'").trim(), '0.05');
+  assert.equal(psql("select string_agg(symbol || ':' || anunciado_en, ',' order by symbol, concepto) from pm_known_gaps where anunciado_en is not null").trim(),
+    'GOOGL:2026-07-23,LLY:2026-10-07,META:2026-08-26,UNP:2026-07-23');
 
   for (const [nombre, f] of Object.entries(CONSULTAS)) {
     const q = f(2);
@@ -550,4 +553,34 @@ test('migración + semillas + consultas + upserts v2.1, contra Postgres', { skip
     globalThis.fetch = fetchOriginal;
     if (dbOriginal === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = dbOriginal;
   }
+});
+
+// ── anunciado_en (24-oct): dato, no regla ──
+test('anunciado_en: la fila marca que el mercado nació después del anuncio, pero la brecha se aplica igual (META)', () => {
+  const meta = [{ brecha_por_accion: 3.30, afecta: 'GAAP', fuente_url: 'u', anunciado_en: '2026-08-26' }];
+  const despues = brechaConocida(meta, 'GAAP', '2026-10-16');
+  assert.equal(despues.brecha_aplicada, 3.3);                      // NO pasa a 0
+  assert.equal(despues.brechas_anunciadas_antes_de_creacion, 1);
+  assert.equal(despues.brecha_anunciada_en, '2026-08-26');
+  const antes = brechaConocida(meta, 'GAAP', '2026-08-01');
+  assert.equal(antes.brechas_anunciadas_antes_de_creacion, 0);
+  assert.equal(brechaConocida(meta, 'GAAP', null).brechas_anunciadas_antes_de_creacion, null);
+  // un cargo solo-GAAP no cuenta contra una barra NONGAAP: no se aplica
+  assert.equal(brechaConocida(meta, 'NONGAAP', '2026-10-16').brechas_anunciadas_antes_de_creacion, 0);
+  // LLY: AMBAS cuenta en NONGAAP
+  const lly = [{ brecha_por_accion: 4.57, afecta: 'AMBAS', fuente_url: 'u', anunciado_en: '2026-10-07' }];
+  const f = brechaConocida(lly, 'NONGAAP', '2026-10-16');
+  assert.deepEqual([f.brecha_aplicada, f.brechas_anunciadas_antes_de_creacion], [4.57, 1]);
+});
+
+test('anunciado_en no mueve prob A ni prob B (META sigue en 3%)', () => {
+  const r = RESUELTOS.find((x) => x.mercado.symbol === 'META');
+  const sin = filaV21({ mercado: { ...r.mercado, creado: '2026-10-16' }, historial: historia(r.sorpresas, r.base), fuenteHist: 'pead', gaps: GAPS.META });
+  const con = filaV21({ mercado: { ...r.mercado, creado: '2026-10-16' }, historial: historia(r.sorpresas, r.base), fuenteHist: 'pead',
+    gaps: GAPS.META.map((g) => ({ ...g, anunciado_en: '2026-08-26' })) });
+  assert.equal(con.prob_A, sin.prob_A);
+  assert.equal(con.prob_B, sin.prob_B);
+  assert.equal(con.prob_A, 0.03);
+  assert.equal(con.brechas_anunciadas_antes_de_creacion, 1);
+  assert.match(renderMdV21({ titulo: 'x', filas: [con] }), /\| 3\.30§ \|/);
 });

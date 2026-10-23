@@ -122,6 +122,10 @@ const SCHEMA_V2 = [
   // prob_v2 de la tabla de features ES prob_A; prob_B va al lado.
   `alter table pm_earnings_v2_features add column if not exists estimado_b numeric`,
   `alter table pm_earnings_v2_features add column if not exists prob_b numeric`,
+  // Cuándo se anunció el cargo por primera vez. Dato, no regla: la fila marca
+  // si el mercado nació después, pero la brecha se aplica igual (ver
+  // brechaConocida en earnings-beat-v2.js: el caso META).
+  `alter table pm_known_gaps add column if not exists anunciado_en date`,
 ];
 
 let listo = false;

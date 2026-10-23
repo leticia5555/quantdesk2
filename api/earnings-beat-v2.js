@@ -91,7 +91,7 @@ const CONSULTAS = {
   historialV2: (n) => `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date, reported_eps, estimated_eps
       from pm_v2_hist where symbol in (${ph(n)}) and reported_date is not null order by reported_date desc`,
   gaps: (n) => `select symbol, to_char(quarter_end, 'YYYY-MM-DD') as quarter_end, concepto, brecha_por_accion,
-             afecta, tipo, fuente_url, verificada
+             afecta, tipo, fuente_url, verificada, to_char(anunciado_en, 'YYYY-MM-DD') as anunciado_en
       from pm_known_gaps where symbol in (${ph(n)})`,
   guias: (n) => `select symbol, to_char(quarter_end, 'YYYY-MM-DD') as quarter_end, metrica, alcance, guia_min, guia_max,
              ytd_reportado, trimestres_restantes, fuente_url, verificada
