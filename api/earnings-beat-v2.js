@@ -54,7 +54,7 @@ import {
 } from './_lib/earnings-beat-v2-db.js';
 
 export const maxDuration = 300;
-export { CONSULTAS, simbolosParaBuscar };
+export { CONSULTAS, simbolosParaBuscar, ordenaColaHist };
 
 const AV_TOPE_DIARIO = 25;
 const AV_POR_CORRIDA = 5;       // consenso vigente
@@ -115,6 +115,15 @@ const CONSULTAS = {
   histFresco: (n) => `select symbol from pm_v2_hist where symbol in (${ph(n)})
       group by symbol having max(capturado_en) > now() - ($${n + 1})::int * interval '1 day'`,
   simbolosCosechados: () => `select distinct symbol from pm_earnings_markets_v2 where symbol is not null`,
+  // job hist: la fecha más cercana por símbolo, para ordenar la cola.
+  // proxima: el mercado ABIERTO que resuelve antes (desde ayer, para no
+  // perder los que reportan hoy); ultima: el más reciente que ya pasó.
+  fechasPorSimbolo: () => `select symbol,
+            to_char(min(fecha) filter (where outcome is null and fecha >= current_date - 1), 'YYYY-MM-DD') as proxima,
+            to_char(max(fecha) filter (where fecha < current_date), 'YYYY-MM-DD') as ultima
+       from (select symbol, outcome, coalesce(report_date, resolved_date) as fecha
+               from pm_earnings_markets_v2 where symbol is not null) x
+      group by symbol`,
   pendientesPrecioV2: () => `select market_id, slug, question, symbol, yes_token_id, creado, universo_pead,
             to_char(resolved_date, 'YYYY-MM-DD') as resolved_date, abierto
        from pm_earnings_markets_v2
@@ -376,6 +385,25 @@ async function jobMercadosV2(q) {
 
 // ─────────────────── job: hist (Alpha Vantage, fuera de PEAD) ───────────────────
 
+// Cola del historial: el cupo de AV es de 10 por corrida y la cola llegó a 46,
+// así que el orden decide quién tiene número a tiempo. Antes iba por orden de
+// aparición y HLT (reporta el lunes 27) se quedaba atrás.
+//   1. los que tienen un mercado ABIERTO por resolver, por fecha ascendente;
+//   2. los que solo tienen mercados ya pasados, del más reciente al más viejo;
+//   3. los que no tienen mercado en la cosecha v2.1 (p. ej. solo el piloto).
+// Empates: alfabético, para que el orden sea reproducible.
+function ordenaColaHist(simbolos, fechas) {
+  const porSimbolo = new Map((fechas || []).map((f) => [f.symbol, f]));
+  const grupo = (s) => { const f = porSimbolo.get(s) || {}; return f.proxima ? 0 : f.ultima ? 1 : 2; };
+  return [...simbolos].sort((a, b) => {
+    const ga = grupo(a), gb = grupo(b);
+    if (ga !== gb) return ga - gb;
+    if (ga === 0) return porSimbolo.get(a).proxima.localeCompare(porSimbolo.get(b).proxima) || a.localeCompare(b);
+    if (ga === 1) return porSimbolo.get(b).ultima.localeCompare(porSimbolo.get(a).ultima) || a.localeCompare(b);
+    return a.localeCompare(b);
+  });
+}
+
 async function jobHist(q) {
   if (process.env.EARNINGS_V2_HIST_ENABLED !== '1') return { job: 'hist', apagado: true, nota: 'EARNINGS_V2_HIST_ENABLED != 1' };
   const apiKey = process.env.ALPHAVANTAGE_API_KEY;
@@ -393,7 +421,11 @@ async function jobHist(q) {
   const enPead = new Set((await sql(CONSULTAS.conPead(candidatos.length), candidatos)).map((r) => r.symbol));
   const frescos = String(q.forzar || '') === '1' ? new Set()
     : new Set((await sql(CONSULTAS.histFresco(candidatos.length), [...candidatos, HIST_FRESCO_DIAS])).map((r) => r.symbol));
-  const cola = candidatos.filter((s) => !enPead.has(s) && !frescos.has(s));
+  const pendientes = candidatos.filter((s) => !enPead.has(s) && !frescos.has(s));
+  // Orden: primero los que reportan antes (el historial sirve ANTES del
+  // mercado, no después). Los &symbols= pedidos a mano conservan su orden.
+  const fechas = pedidos.length ? [] : await sql(CONSULTAS.fechasPorSimbolo()).catch(() => []);
+  const cola = pedidos.length ? pendientes : ordenaColaHist(pendientes, fechas);
 
   const dia = new Date().toISOString().slice(0, 10);
   const libres = AV_TOPE_DIARIO - (await budgetUsed(dia));
@@ -413,7 +445,7 @@ async function jobHist(q) {
     }
   }
   return {
-    job: 'hist', llamadas: resultado.length, cupo_libre_antes: libres,
+    job: 'hist', llamadas: resultado.length, orden: pedidos.length ? 'pedido' : 'fecha_mas_cercana', cupo_libre_antes: libres,
     en_pead_sin_llamar: [...enPead], frescos_sin_llamar: [...frescos],
     quedan_en_cola: cola.length - resultado.length, resultado,
   };
