@@ -47,6 +47,7 @@ import { fetchEarnings } from './_lib/av-earnings.js';
 import { budgetUsed, budgetAdd, ensurePeadSchema } from './_lib/pead-db.js';
 import {
   VALIDACION_V2, CORTE_VALIDACION, CRITERIOS_V2, CRITERIOS_V21, SET_PILOTO, UNIVERSO,
+  resumenCaptura, parseCalendarioCsv,
   leeMercado, eligeMercadoPiloto, filaV21, trimestreDelReporte, veredictoV21, enSetV21, acierto, renderMdV21, estimadoVigenteDeAv,
 } from './_lib/earnings-beat-v2.js';
 import {
@@ -466,6 +467,75 @@ async function jobDiario() {
   return { job: 'diario', features_escritas: escritas, abiertos: abiertos.length, piloto_con_market_id: piloto.length, set_v21: setV21.length, captura };
 }
 
+// ─────────────────── job: vigente_diag (solo lectura) ───────────────────
+// ?job=vigente_diag&symbols=CL,VZ[&calendario=1]
+//
+// Para VER qué contesta Alpha Vantage, sin escribir nada en las tablas de v2.
+// Por símbolo (máx. 5, una llamada a EARNINGS cada uno): los 3 trimestres más
+// nuevos tal como los parsea av-earnings.js, cuáles vienen SIN reportar (que
+// es lo único de donde la captura saca un consenso vigente) y lo que eligió
+// estimadoVigenteDeAv para el trimestre de su mercado abierto.
+// Con &calendario=1, UNA llamada más a EARNINGS_CALENDAR (horizon=3month,
+// todos los símbolos en un CSV) y las filas de los pedidos: para ver si esa
+// fuente trae el estimado que EARNINGS no trae.
+// Gasta cupo de AV (pead_api_budget) y se niega si no alcanza.
+const DIAG_MAX_SIMBOLOS = 5;
+
+async function jobVigenteDiag(q) {
+  const apiKey = process.env.ALPHAVANTAGE_API_KEY;
+  if (!apiKey) return { job: 'vigente_diag', error: 'ALPHAVANTAGE_API_KEY no está' };
+  const simbolos = [...new Set(String(q.symbols || '').toUpperCase().split(',').map((x) => x.trim()).filter(Boolean))].slice(0, DIAG_MAX_SIMBOLOS);
+  const conCalendario = String(q.calendario || '') === '1';
+  if (!simbolos.length) return { job: 'vigente_diag', error: 'falta &symbols=CL,VZ' };
+  await ensureSchemaV2();
+  await ensurePeadSchema();
+  const dia = new Date().toISOString().slice(0, 10);
+  const libres = AV_TOPE_DIARIO - (await budgetUsed(dia));
+  const necesarias = simbolos.length + (conCalendario ? 1 : 0);
+  if (libres < necesarias) return { job: 'vigente_diag', error: 'sin cupo de AV hoy', cupo_libre: libres, necesarias };
+
+  const abiertos = (await mercadosAbiertos(new Map())).filter((m) => simbolos.includes(m.symbol));
+  const porSimbolo = [];
+  for (let i = 0; i < simbolos.length; i++) {
+    if (i) await sleep(AV_ESPACIO_MS);
+    const sym = simbolos[i];
+    const r = await fetchEarnings(sym, apiKey);
+    await budgetAdd(dia, 1);
+    const mercados = abiertos.filter((m) => m.symbol === sym)
+      .map((m) => ({ market_id: m.market_id, fecha: m.fecha, quarter_end: trimestreDelReporte(m.fecha), barra: m.barra }));
+    const eventos = r.status === 'ok' ? [...r.events].sort((a, b) => (a.fiscal_date_ending < b.fiscal_date_ending ? 1 : -1)) : [];
+    porSimbolo.push({
+      symbol: sym, status: r.status, mensaje: r.message || null,
+      ultimos_3: eventos.slice(0, 3),
+      sin_reportar: eventos.filter((e) => e.reported_eps === null),
+      mercados,
+      elegido: mercados.map((m) => ({ market_id: m.market_id, ...estimadoVigenteDeAv(eventos, m.quarter_end) })),
+    });
+  }
+
+  let calendario = null;
+  if (conCalendario) {
+    await sleep(AV_ESPACIO_MS);
+    const url = `https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey=${apiKey}`;
+    let texto = null;
+    let http = null;
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(20000) });
+      http = resp.status;
+      texto = await resp.text();
+    } catch (e) {
+      calendario = { status: 'neterror', mensaje: String((e && e.message) || e) };
+    }
+    await budgetAdd(dia, 1);
+    if (texto !== null) {
+      const c = parseCalendarioCsv(texto);
+      calendario = { status: c.status, http, cabecera: c.cabecera || null, filas_totales: c.filas.length,
+        mensaje: c.mensaje || null, pedidos: c.filas.filter((f) => simbolos.includes(f.symbol)) };
+    }
+  }
+  return { job: 'vigente_diag', escribe: false, llamadas: necesarias, cupo_libre_antes: libres, por_simbolo: porSimbolo, calendario };
+}
+
 // ─────────────────── handler ───────────────────
 
 const LATIDO = { diario: 'earnings-beat:v2', mercados_v2: 'earnings-beat:v2-mercados', hist: 'earnings-beat:v2-hist' };
@@ -492,9 +562,15 @@ export default async function handler(req, res) {
   try {
     if (LATIDO[job]) {
       const out = job === 'diario' ? await jobDiario() : job === 'mercados_v2' ? await jobMercadosV2(q) : await jobHist(q);
-      await beat(LATIDO[job], out.apagado ? 'disabled' : 'ok', job === 'hist' ? { llamadas: out.llamadas ?? 0 } : null);
+      // El latido de `diario` guarda QUÉ contestó AV (por estado + muestras):
+      // sin esto, "consenso_vigente null en las 68" no se podía diagnosticar.
+      const detalle = job === 'hist' ? { llamadas: out.llamadas ?? 0 }
+        : job === 'diario' ? { features: out.features_escritas, captura: resumenCaptura(out.captura) } : null;
+      await beat(LATIDO[job], out.apagado ? 'disabled' : 'ok', detalle);
       return res.status(200).json(out);
     }
+
+    if (job === 'vigente_diag') return res.status(200).json(await jobVigenteDiag(q));
 
     // Las vistas solo LEEN datos, pero aseguran que las tablas existan: antes
     // de la primera cosecha v2.1, pm_earnings_markets_v2 no existe y la unión

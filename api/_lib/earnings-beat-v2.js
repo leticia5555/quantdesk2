@@ -579,6 +579,58 @@ function estimadoVigenteDeAv(events, quarter_end) {
   return { valor: num(candidatos[0].e.estimated_eps), motivo: null, fiscal_date_ending: candidatos[0].e.fiscal_date_ending };
 }
 
+// ── Diagnóstico del consenso vigente (25-oct) ──
+// Con EARNINGS_V2_VIGENTE_ENABLED=1, las 68 filas abiertas seguían con
+// consenso_vigente null, y el latido no guardaba qué había contestado AV.
+// Estas dos funciones son para VER eso, no cambian ninguna fórmula.
+
+// Resumen chico de una captura, para el latido (cron_heartbeat.detail).
+function resumenCaptura(captura) {
+  const c = captura || {};
+  const por_estado = {};
+  for (const i of c.intentos || []) por_estado[i.estado] = (por_estado[i.estado] || 0) + 1;
+  return {
+    activa: !!c.activa, error: c.error || null,
+    llamadas: c.llamadas ?? 0, cupo_libre_antes: c.cupo_libre_antes ?? null,
+    por_estado,
+    muestras: (c.intentos || []).slice(0, 8).map((i) => `${i.symbol}:${i.estado}${i.valor !== undefined ? '=' + i.valor : ''}`),
+  };
+}
+
+// EARNINGS_CALENDAR de Alpha Vantage viene en CSV:
+//   symbol,name,reportDate,fiscalDateEnding,estimate,currency
+// UNA llamada trae todos los reportes de los próximos 3 meses. Se parsea por
+// nombre de columna, no por posición: si AV cambia el orden, no se mezclan.
+// Un cuerpo que no es CSV (el JSON de "Note"/"Information" del rate limit)
+// devuelve status y ninguna fila.
+function parseCalendarioCsv(texto) {
+  const t = String(texto || '').trim();
+  if (!t) return { status: 'vacio', filas: [] };
+  if (t.startsWith('{')) {
+    let body = null;
+    try { body = JSON.parse(t); } catch (e) { /* no era JSON */ }
+    if (body && (body.Note || body.Information)) return { status: 'rate_limited', filas: [], mensaje: String(body.Note || body.Information) };
+    return { status: 'no_csv', filas: [] };
+  }
+  const lineas = t.split(/\r?\n/).filter(Boolean);
+  const cab = lineas[0].split(',').map((x) => x.trim());
+  const idx = (n) => cab.indexOf(n);
+  if (idx('symbol') < 0 || idx('estimate') < 0) return { status: 'cabecera_inesperada', filas: [], cabecera: cab };
+  // El nombre de la empresa puede traer comas entre comillas.
+  const celdas = (l) => (l.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || []).map((c) => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"'));
+  const filas = lineas.slice(1).map((l) => {
+    const c = celdas(l);
+    return {
+      symbol: c[idx('symbol')] || null,
+      report_date: isoDia(c[idx('reportDate')]),
+      fiscal_date_ending: isoDia(c[idx('fiscalDateEnding')]),
+      estimate: num(c[idx('estimate')]),
+      currency: idx('currency') >= 0 ? c[idx('currency')] || null : null,
+    };
+  }).filter((f) => f.symbol);
+  return { status: 'ok', filas, cabecera: cab };
+}
+
 // ─────────────────── validación: Brier y veredicto ───────────────────
 
 // acierto = el lado > 50% coincide con la resolución. 50% exacto no acierta.
@@ -738,6 +790,6 @@ export {
   metricaBarra, leeMetrica, oracionPrincipal, fechaDelSlug, eligeMercadoPiloto, leeMercado, sorpresaHistorica, trimestreDelReporte,
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
-  estimadoVigenteDeAv,
+  estimadoVigenteDeAv, resumenCaptura, parseCalendarioCsv,
   SET_PILOTO, CRITERIOS_V21, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
 };
