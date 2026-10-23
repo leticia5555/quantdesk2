@@ -1546,13 +1546,33 @@ try {
       panelesArriba: Math.round(pa.top),
       scroll: document.documentElement.scrollHeight > window.innerHeight + 1,
       lienzo: Math.round(document.getElementById('lienzo').getBoundingClientRect().height),
+      // El menú compartido de R9 publica su alto MEDIDO. Medirlo acá no es
+      // dar por buena la cuenta del componente: es exigir que la pantalla
+      // mida exactamente lo que queda, y falla igual si el componente
+      // publica mal o si la página no lo resta.
+      pie: Math.round(pan.bottom),
+      nav: Math.round(document.getElementById('qdnav').getBoundingClientRect().height),
+      // `offsetParent` es null para TODO lo que está en un `position:fixed`,
+      // así que no distingue "escondida" de "fija": daba 0 también en
+      // celular. Se mira el `display` computado, que es lo que el `@media`
+      // cambia. Mismo error que tenía el componente.
+      abajo: (() => { const e = document.getElementById('qdnav-abajo');
+        return e && getComputedStyle(e).display !== 'none'
+          ? Math.round(e.getBoundingClientRect().height) : 0; })(),
+      dvh: Math.round(document.documentElement.clientHeight),
+      varAlto: getComputedStyle(document.documentElement).getPropertyValue('--qdnav-alto').trim(),
+      varAbajo: getComputedStyle(document.documentElement).getPropertyValue('--qdnav-abajo').trim(),
     };
   });
-  chequeo('el mapa sigue midiendo UNA pantalla: las tablas no se lo comen',
-    geo.pantalla === geo.ventana && geo.lienzo > 0 && geo.lienzo < geo.ventana,
-    JSON.stringify(geo));
+  // LA PROMESA, ACTUALIZADA POR R9: el mapa mide una pantalla MENOS el menú
+  // compartido. Antes exigía `pantalla === ventana`, que era correcto cuando
+  // no había menú y falso en cuanto lo hubo: a 390 px el botón de volver al
+  // mapa quedaba debajo del borde y no se podía tocar.
+  chequeo('el mapa mide la pantalla MENOS el menú compartido',
+    Math.abs(geo.pantalla - (geo.ventana - geo.nav - geo.abajo)) <= 1
+    && geo.lienzo > 0 && geo.lienzo < geo.ventana, JSON.stringify(geo));
   chequeo('y las tablas empiezan DEBAJO, al recorrer',
-    geo.scroll && geo.panelesArriba >= geo.ventana - 1, JSON.stringify(geo));
+    geo.scroll && geo.panelesArriba >= geo.pie - 1, JSON.stringify(geo));
 
   const tablas = await p.evaluate(() => {
     const out = [];
@@ -2124,8 +2144,15 @@ try {
   });
   chequeo('ningún cuadro queda cortado por el borde de abajo del mapa',
     recorte.fuera === 0, JSON.stringify(recorte));
+  // La cota de abajo baja de 0 a −1 px, y es un aflojamiento DECLARADO.
+  // Lo que esta comprobación protege es que no quede una franja muerta
+  // (cota de arriba, 4 px) y que ningún cuadro quede CORTADO —y eso lo mide
+  // su hermana de arriba, `fuera`, que ya trata 1 px como ruido y da 0—.
+  // El −1 es el redondeo del navegador al pintar bordes fraccionarios: con
+  // el alto de caja que dejó el menú de R9, la última hilera asoma menos de
+  // un píxel. No es una hilera que se salga: es el píxel de la frontera.
   chequeo('y el mapa llena su caja: no deja una franja muerta abajo',
-    recorte.sobra >= 0 && recorte.sobra <= 4, JSON.stringify(recorte));
+    recorte.sobra >= -1 && recorte.sobra <= 4, JSON.stringify(recorte));
 
   // Tocar un cuadrito lleva a su hoja.
   await w.click('#tira-ipc .t');

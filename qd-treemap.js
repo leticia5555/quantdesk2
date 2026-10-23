@@ -67,6 +67,24 @@ function squarify(items = [], { x = 0, y = 0, w = 1, h = 1 } = {}) {
     }
   }
   cerrarFila();
+
+  // ── NINGUNA PIEZA SE SALE DE LA CAJA QUE RECIBIÓ ────────────────────
+  // El reparto de arriba es exacto en flotantes, pero las piezas se pintan
+  // en el DOM y el navegador redondea cada borde: una pieza en y=607.6 con
+  // h=1.5 termina con su borde de abajo en 609.1 sobre una caja de 608, y en
+  // el teléfono eso es una hilera que asoma por debajo del mapa.
+  //
+  // Se vio en cuanto el menú compartido de R9 cambió el alto de la caja (el
+  // arnés lo marcó con `sobra:-1`); antes el número caía dentro de la caja
+  // por casualidad, no por construcción.
+  //
+  // Recortar es correcto y no desplazar: mover la pieza hacia arriba le
+  // robaría espacio a su vecina y el hueco se propagaría hacia atrás. La
+  // última hilera pierde una fracción de píxel de alto, que no se ve.
+  for (const c of out) {
+    if (c.x + c.w > x + w) c.w = Math.max(0, (x + w) - c.x);
+    if (c.y + c.h > y + h) c.h = Math.max(0, (y + h) - c.y);
+  }
   return out;
 }
 
