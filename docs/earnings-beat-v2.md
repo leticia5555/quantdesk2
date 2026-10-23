@@ -103,6 +103,35 @@ Es el `estimatedEPS` de Alpha Vantage `EARNINGS` del trimestre sin reportar. Lo 
   - Prendida, gasta como mucho 5 llamadas por corrida y respeta `pead_api_budget`.
 - AV no publica el estimado del trimestre siguiente para todos los símbolos ni con la misma anticipación. Cuando falta, el job lo dice (`av_sin_estimado_del_trimestre`) y sigue.
 
+### Frontera (25-oct): las 68 abiertas con `consenso_vigente` null
+
+Con la captura prendida desde el 24-oct, las 68 filas abiertas seguían sin consenso vigente. Sin esa columna, A queda en "barra + sorpresa", porque la barra es el consenso de creación. En nombres estables da ~97%. Es lo pre-registrado, no un error de fórmula, y no se toca.
+
+**Qué se sabe desde el código:**
+
+- **Job:** `?job=diario`, cron `55 23 * * *`.
+- **Endpoint:** Alpha Vantage `function=EARNINGS`. Toma el trimestre que viene con `reportedEPS` vacío y `estimatedEPS` lleno, con `fiscalDateEnding` a ± 45 días del fin de trimestre del mercado.
+- **Tope:** 5 llamadas por corrida, de la fecha más cercana a la más lejana. Con 68 abiertos, muchos símbolos no se piden ningún día.
+- **Rastro:** el latido no guardaba qué contestó AV. Ahora `cron_heartbeat.detail` de `earnings-beat:v2` trae `captura.por_estado` y muestras por símbolo.
+
+**Hipótesis, NO verificada desde la sesión** (no hay acceso a AV): `EARNINGS` solo lista trimestres ya reportados. Si es así, todas las capturas terminan en `av_sin_estimado_del_trimestre` y la columna nunca se llena.
+
+Para verificarlo hay `?job=vigente_diag&symbols=CL,VZ&calendario=1`. Gasta 3 llamadas de AV y no escribe nada. Devuelve:
+
+- los 3 trimestres más nuevos que trae `EARNINGS`;
+- cuáles vienen sin reportar;
+- qué eligió la captura;
+- con `&calendario=1`, lo que trae `EARNINGS_CALENDAR` para esos símbolos.
+
+**Fuente alternativa más barata, si se confirma:** Alpha Vantage `function=EARNINGS_CALENDAR&horizon=3month`. Es **una llamada al día para todos los símbolos** que reportan en los próximos 3 meses: un CSV `symbol,name,reportDate,fiscalDateEnding,estimate,currency`. El parser ya está (`parseCalendarioCsv`) y lo usa el diagnóstico. Lo que hay que ver con el diagnóstico antes de cambiar la captura:
+
+1. Si `estimate` viene lleno para los símbolos del set.
+2. Si es el mismo consenso que el `estimatedEPS` de `EARNINGS` (EPS ajustado).
+3. Si se mueve de un día a otro, o es una foto vieja.
+
+Cambiar la captura a esa fuente es otro PR: cambia de dónde sale el dato, no la fórmula.
+
+
 ## Endpoint
 
 | Ruta | Qué devuelve |
@@ -113,6 +142,7 @@ Es el `estimatedEPS` de Alpha Vantage `EARNINGS` del trimestre sin reportar. Lo 
 | `GET /api/earnings-beat-v2?validacion=v21&format=md` | El set v2.1 y su veredicto (provisional hasta el 31-dic). |
 | `GET /api/earnings-beat-v2?job=mercados_v2` | Cron `20 22 * * *`, latido `earnings-beat:v2-mercados`. Cosecha sin universo. |
 | `GET /api/earnings-beat-v2?job=hist[&symbols=AAL,PCG]` | Cron `50 22 * * *`, latido `earnings-beat:v2-hist`. Historial de AV; apagado sin `EARNINGS_V2_HIST_ENABLED=1`. |
+| `GET /api/earnings-beat-v2?job=vigente_diag&symbols=CL,VZ[&calendario=1]` | Diagnóstico del consenso vigente: qué trae AV `EARNINGS` (y `EARNINGS_CALENDAR`) para esos símbolos. Gasta una llamada por símbolo, más una por el calendario; no escribe nada. |
 | `GET /api/earnings-beat-v2?job=diario` | Cron `55 23 * * *`, latido `earnings-beat:v2`. Features + consenso vigente. |
 
 Los mercados se leen de `pm_earnings_markets_v2` y, para lo que esa cosecha todavía no vio, de `pm_earnings_markets` (v1). En la vista de abiertos, `prob_pm` es el precio válido a T-24h si ya existe. Si no existe, es el último precio de Gamma, marcado `prob_pm_fuente = gamma_ahora`. Las vistas no escriben datos, pero sí crean las tablas si faltan (antes de la primera cosecha v2.1, la unión con v1 fallaría).
