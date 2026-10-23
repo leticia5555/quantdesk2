@@ -55,6 +55,9 @@ const SCHEMA = [
      on arena_equity_intraday (session_date, agent_id, minuto)`,
 ];
 
+// Exportada para que las pruebas de SQL creen la tabla con la DDL real.
+export { SCHEMA as SCHEMA_EQUITY };
+
 let ready = false;
 export async function ensureEquitySchema() {
   if (ready) return;

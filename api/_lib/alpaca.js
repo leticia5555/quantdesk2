@@ -520,11 +520,14 @@ export async function getPriceAndDollarVolume(symbols = [], { creds, now = new D
 // módulo. Lanza si Alpaca no contesta: el que llama decide (los técnicos lo
 // convierten en null con su motivo).
 const BARS_POR_PAGINA = 10000;
-export async function getCierresDiarios(symbols = [], { creds = null, now = new Date(), sesiones = 215, feed: feedPedido = null } = {}) {
+
+// Barras diarias CON FECHA, paginadas, de `start` a `end` (YYYY-MM-DD, ambos
+// incluidos según Alpaca). `{ data: { SYM: [{ fecha, o, c }] }, feed }`, en
+// orden cronológico. Las usan los técnicos (cierres) y /liga/comportamiento
+// (la apertura del día de cada compra y los cierres de SPY).
+export async function getBarrasDiarias(symbols = [], { creds = null, start, end = null, feed: feedPedido = null } = {}) {
   const wanted = [...new Set(symbols.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean))];
   if (!wanted.length) return { data: {}, feed: null };
-  const hoy = now.toISOString().slice(0, 10);
-  const start = new Date(now.getTime() - diasDeCalendario(sesiones) * 86400000).toISOString().slice(0, 10);
   const pedir = async (feed) => {
     const out = {};
     for (const batch of chunk(wanted, DATA_CHUNK)) {
@@ -532,29 +535,37 @@ export async function getCierresDiarios(symbols = [], { creds = null, now = new 
       // Tope de páginas: 100 símbolos × ~315 días de calendario caben en 4
       // páginas de 10.000; 20 es holgura, no un número esperado.
       for (let pagina = 0; pagina < 20; pagina++) {
-        const q = `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Day&start=${start}&limit=${BARS_POR_PAGINA}&adjustment=split&feed=${feed}${token ? '&page_token=' + encodeURIComponent(token) : ''}`;
+        const q = `/v2/stocks/bars?symbols=${encodeURIComponent(batch.join(','))}&timeframe=1Day&start=${start}${end ? '&end=' + end : ''}&limit=${BARS_POR_PAGINA}&adjustment=split&feed=${feed}${token ? '&page_token=' + encodeURIComponent(token) : ''}`;
         const data = await alpacaDataFetch(q, creds);
         for (const [sym, list] of Object.entries((data && data.bars) || {})) {
           const k = String(sym).toUpperCase();
-          (out[k] = out[k] || []).push(...(Array.isArray(list) ? list : []));
+          for (const b of Array.isArray(list) ? list : []) {
+            const c = Number(b && b.c);
+            if (!b || !Number.isFinite(c) || c <= 0) continue;
+            (out[k] = out[k] || []).push({ fecha: String(b.t || '').slice(0, 10), o: Number.isFinite(Number(b.o)) && Number(b.o) > 0 ? Number(b.o) : null, c });
+          }
         }
         token = (data && data.next_page_token) || null;
         if (!token) break;
       }
     }
-    const cierres = {};
-    for (const [sym, list] of Object.entries(out)) {
-      cierres[sym] = list
-        .filter((b) => b && String(b.t || '').slice(0, 10) !== hoy)
-        .sort((a, b) => String(a.t).localeCompare(String(b.t)))
-        .map((b) => Number(b.c)).filter((x) => Number.isFinite(x) && x > 0)
-        .slice(-sesiones);
-    }
-    return cierres;
+    for (const k of Object.keys(out)) out[k].sort((a, b) => a.fecha.localeCompare(b.fecha));
+    return out;
   };
   if (feedPedido) return { data: await pedir(feedPedido), feed: feedPedido };
   const { data, feed } = await conFeedDeDatos(pedir, creds);
   return { data, feed };
+}
+
+export async function getCierresDiarios(symbols = [], { creds = null, now = new Date(), sesiones = 215, feed = null } = {}) {
+  const hoy = now.toISOString().slice(0, 10);
+  const start = new Date(now.getTime() - diasDeCalendario(sesiones) * 86400000).toISOString().slice(0, 10);
+  const r = await getBarrasDiarias(symbols, { creds, start, feed });
+  const cierres = {};
+  for (const [sym, list] of Object.entries(r.data)) {
+    cierres[sym] = list.filter((b) => b.fecha !== hoy).map((b) => b.c).slice(-sesiones);
+  }
+  return { data: cierres, feed: r.feed };
 }
 
 // ── CUÁNTAS VELAS HACEN FALTA, Y POR QUÉ ESTABA MAL ──────────────────
