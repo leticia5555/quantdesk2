@@ -50,6 +50,11 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql, ensureSchema } from './_lib/db.js';
+import { checkLecturaAuth } from './_lib/arena-admin.js';
+import {
+  CONSULTAS as DIAG_CONSULTAS, diaValido, horaValida, resumenPorAgente, soloLectura, HIPOTESIS,
+  BLOQUES_DEL_VEREDICTO, parametrosQueUsa,
+} from './_lib/arena-watch-diagnostico.js';
 import { getCalendar, getAccount, getPositions, getSnapshots, getAvgDailyVolume } from './_lib/alpaca.js';
 import { registrarEquity } from './_lib/arena-equity.js';
 import { usaObjetivo } from './_lib/arena-objetivo-vivo.js';
@@ -640,12 +645,127 @@ export async function runArenaWatch({ baseUrl, now = new Date(), dry = false } =
 }
 
 // ── handler ──────────────────────────────────────────────────────────
+// ── EL DIAGNÓSTICO (SOLO LECTURA) ────────────────────────────────────
+// `?job=diagnostico&dia=2026-10-21&desde=18:00&hasta=19:30`
+//
+// Seis `select` y nada más: ni `ensureSchema` (que es DDL), ni Alpaca, ni un
+// modelo, ni una fila escrita. Contesta por qué el vigilante no despachó, con
+// un bloque por hipótesis — ver el encabezado de `_lib/arena-watch-diagnostico.js`.
+//
+// VA ANTES DE LOS TRES FRENOS, a propósito. El momento en que más falta hace
+// mirar la libreta del vigilante es justo cuando está apagado o pausado, y un
+// diagnóstico que se apaga con lo que viene a diagnosticar no sirve de nada.
+async function diagnosticoDelHueco(req, auth) {
+  const q = (req && req.query) || {};
+  // UN PARÁMETRO INVÁLIDO NO PUEDE CAER AL DEFAULT EN SILENCIO. `dia` vacío es
+  // "hoy"; `dia=ayer` es un error de quien pregunta, y responder con los datos
+  // de hoy le daría una respuesta cierta a una pregunta que no hizo. Lo
+  // encontró la prueba: con `dia || hoy`, un `dia` con una inyección adentro
+  // devolvía 200 y las filas de otro día.
+  const diaCrudo = firstQuery(q.dia).trim();
+  const dia = diaCrudo ? diaValido(diaCrudo) : easternDate(new Date());
+  const desde = horaValida(firstQuery(q.desde), '00:00:00');
+  const hasta = horaValida(firstQuery(q.hasta), '23:59:59');
+  if (!dia || !diaValido(dia) || !desde || !hasta) {
+    return { status: 400, body: {
+      error: 'Parámetros inválidos.',
+      espera: { dia: 'YYYY-MM-DD', desde: 'HH:MM (UTC)', hasta: 'HH:MM (UTC)' },
+      recibido: { dia: firstQuery(q.dia) || null, desde: firstQuery(q.desde) || null, hasta: firstQuery(q.hasta) || null },
+    } };
+  }
+  const desdeTs = `${dia}T${desde}Z`;
+  const hastaTs = `${dia}T${hasta}Z`;
+  if (Date.parse(hastaTs) <= Date.parse(desdeTs)) {
+    return { status: 400, body: { error: '`hasta` tiene que ser posterior a `desde`.', desde: desdeTs, hasta: hastaTs } };
+  }
+
+  // El guardia de solo-lectura corre EN LA PETICIÓN, no sólo en la prueba: si
+  // alguien agrega una consulta que escribe, este endpoint se niega a correrla
+  // en vez de hacerlo y contarlo después.
+  const escriben = Object.entries(DIAG_CONSULTAS).filter(([, c]) => !soloLectura(c.sql)).map(([k]) => k);
+  if (escriben.length) {
+    return { status: 500, body: { error: 'El diagnóstico es de SOLO LECTURA y una de sus consultas no lo es.', consultas: escriben } };
+  }
+
+  const bloques = {};
+  const errores = {};
+  for (const [nombre, c] of Object.entries(DIAG_CONSULTAS)) {
+    // CADA CONSULTA LLEVA SUS PROPIOS PARÁMETROS. Pasarle los mismos tres a
+    // las seis fue lo que las reventó a todas en producción: las que no
+    // mencionan `$1` no tienen de dónde sacarle el tipo, y las que usan uno
+    // solo reciben tres. Ver el encabezado de `_lib/arena-watch-diagnostico.js`.
+    try { bloques[nombre] = await sql(c.sql, c.params({ dia, desde: desdeTs, hasta: hastaTs })); }
+    catch (err) { bloques[nombre] = []; errores[nombre] = String((err && err.message) || err); }
+  }
+
+  const fallidos = Object.keys(errores);
+  const rotosDelVeredicto = fallidos.filter((b) => BLOQUES_DEL_VEREDICTO.includes(b));
+  // `hubo_tick` es null, NO false, cuando `marcas` no se pudo leer: false
+  // quiere decir "miré y no había", y eso sería mentir sobre lo que se miró.
+  const huboTick = errores.marcas ? null : (bloques.marcas || []).length > 0;
+
+  const resumen = resumenPorAgente({
+    agentes: activeAgents().map((a) => a.id),
+    disparadores: bloques.disparadores || [],
+    journal: bloques.journal || [],
+    estado: bloques.estado || [],
+    huboTick: huboTick === true,
+    bloquesFallidos: fallidos,
+  });
+
+  // Si NINGÚN bloque se pudo leer, esto no es una lectura con huecos: es una
+  // lectura que no ocurrió, y un 200 la haría pasar por buena.
+  const status = fallidos.length === Object.keys(DIAG_CONSULTAS).length ? 502 : 200;
+
+  return { status, body: {
+    ventana: { dia, desde: desdeTs, hasta: hastaTs },
+    solo_lectura: true,
+    auth: { via: auth.via || null, abierto: !!auth.abierto, aviso: auth.aviso || null },
+    // ARRIBA DE TODO, antes que cualquier veredicto: si esto es false, lo que
+    // sigue es lo que se pudo leer, no lo que pasó.
+    medicion_completa: fallidos.length === 0,
+    ...(fallidos.length ? { bloques_fallidos: fallidos } : {}),
+    ...(rotosDelVeredicto.length
+      ? { aviso: `No se pudo medir: falló ${rotosDelVeredicto.join(', ')}. `
+          + 'El resumen dice `no_medido` a propósito — un bloque que reventó viene '
+          + 'vacío igual que uno sin filas, y confundirlos convierte un error en un hallazgo.' }
+      : {}),
+    // Lo PRIMERO que hay que mirar cuando la medición SÍ está completa: si el
+    // vigilante no dejó marcas en la ventana, el hueco no es de ningún agente
+    // (H5/H6) y lo demás sobra. `null` = no se pudo leer.
+    hubo_tick: huboTick,
+    resumen,
+    bloques,
+    ...(fallidos.length ? { errores } : {}),
+    hipotesis: HIPOTESIS,
+  } };
+}
+
+/** El primer valor de un parámetro, que Vercel puede entregar como arreglo. */
+function firstQuery(v) {
+  if (Array.isArray(v)) return v.length ? String(v[0]) : '';
+  return v == null ? '' : String(v);
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Método no soportado.' });
+
+  // ── DIAGNÓSTICO, antes de todo lo demás ──────────────────────────
+  // Su propia compuerta (`checkLecturaAuth`) y no la de abajo: la de abajo
+  // sólo acepta `Authorization: Bearer <CRON_SECRET>`, que no se puede poner
+  // desde la barra del navegador. Ésta acepta además `?key=<ARENA_ADMIN_KEY>`,
+  // `x-admin-key` y `?secret=`, y DICE cuando ninguna llave está configurada
+  // en vez de quedar abierta en silencio.
+  if (String(firstQuery((req.query || {}).job)) === 'diagnostico') {
+    const auth = checkLecturaAuth(req);
+    if (!auth.ok) return res.status(auth.status).json(auth.body);
+    const out = await diagnosticoDelHueco(req, auth);
+    return res.status(out.status).json(out.body);
+  }
 
   const secret = process.env.CRON_SECRET;
   if (secret && (req.headers.authorization || '') !== `Bearer ${secret}`) {

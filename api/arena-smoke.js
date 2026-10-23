@@ -81,12 +81,12 @@ import { parseScanResponse, parsePlanResponse } from './_lib/arena-guard.js';
 import { buildInfo } from './_lib/build-info.js';
 import {
   callArenaLLM, providerKey, buildAnthropicPayload, buildOpenRouterBody, anthropicCostUsd, withDeadline,
-  openRouterCostUsd, cachePrefixReport, diagnosticoDeCorte,
+  openRouterCostUsd, cachePrefixReport, diagnosticoDeCorte, respetoDelPresupuesto,
 } from './_lib/arena-model.js';
 import {
   activeAgents, agentById, ARENA_MAX_TOKENS, ARENA_EFFORT, ARENA_TEMPERATURE, modelSlugResolved,
   ANTHROPIC_CACHE_MIN_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ARENA_AGENT_DEADLINE_MS,
-  techoLlmSospechoso, VUELTAS_MINIMAS,
+  techoLlmSospechoso, VUELTAS_MINIMAS, presupuestoRazonamiento,
 } from './_lib/arena-registry.js';
 import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS, relojDisponible } from './_lib/arena-tool-loop.js';
 
@@ -414,6 +414,41 @@ async function probeAgent(agent, phase, prompts, timeoutMs = PROBE_TIMEOUT_MS, p
     cache_read: Number(usage.cache_read_input_tokens) || 0,
     cache_write: Number(usage.cache_creation_input_tokens) || 0,
   };
+  // VELOCIDAD DE SALIDA. Es la mitad que falta para elegir ARENA_MAX_TOKENS:
+  // un techo que el modelo no alcanza a escribir dentro de la reserva del
+  // cierre cambia un corte por un timeout (ver ?view=cierres de arena-audit).
+  row.tokens_por_s = row.tokens.output > 0 && row.ms > 0 ? +(row.tokens.output / (row.ms / 1000)).toFixed(1) : null;
+  // ── LA SONDA NO PRUEBA QUE SE RESPETE: SÓLO PUEDE PROBAR QUE NO ──────
+  // 2026-10-20: la sonda de qwen dio "respetado: true" con 1115 de 4000, y el
+  // cierre real del mismo día razonó 6000 de 4000. La sonda no mintió sobre
+  // el cuerpo —el parámetro llega igual por los dos caminos— pero su prompt
+  // es chico: el modelo nunca se acercó al presupuesto, así que "1115 ≤ 4000"
+  // es compatible con un proveedor que lo respeta Y con uno que lo ignora.
+  //
+  // Tres estados, entonces:
+  //   false → razonó MÁS que el presupuesto: lo ignora (esto sí es prueba);
+  //   true  → llegó cerca del techo (≥90%) y se quedó abajo;
+  //   null  → NO SE PUSO A PRUEBA. Ésa es la lectura de casi toda sonda.
+  // La medida que vale es la del camino real: /api/arena-audit?view=cierres
+  // marca cada cierre que pasó su presupuesto.
+  if (agent.provider === 'openrouter') {
+    const presu = presupuestoRazonamiento(agent.id).efectivo;
+    const usado = row.tokens.reasoning || 0;
+    const respetado = respetoDelPresupuesto(presu, usado);
+    row.razonamiento = {
+      presupuesto: presu,
+      usado,
+      respetado,
+      proveedor: llm.proveedor || null,
+      lectura: presu == null
+        ? 'sin presupuesto: corre con reasoning.effort (ARENA_REASONING_MAX_TOKENS_' + agent.id.toUpperCase() + ' no está puesta).'
+        : respetado === false
+          ? `NO RESPETADO: razonó ${usado} con un presupuesto de ${presu}${llm.proveedor ? ` (proveedor: ${llm.proveedor})` : ''}.`
+          : respetado === true
+            ? `respetado bajo carga: razonó ${usado} de ${presu} (≥90%) y se quedó abajo.`
+            : `NO SE PUSO A PRUEBA: razonó ${usado} de ${presu}, lejos del techo. Esto no dice si el proveedor lo respeta — mirá view=cierres del camino real.`,
+    };
+  }
   // COSTO, en orden de preferencia:
   //   1. lo que el proveedor COBRÓ (anthropic: precio de la casa; openrouter:
   //      usage.cost, el cobro real);

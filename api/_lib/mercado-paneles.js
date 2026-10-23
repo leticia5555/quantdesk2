@@ -103,7 +103,22 @@ export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), 
     // POR SEPARADO, nunca fundidas: ver la cabecera del archivo.
     fuentes: {
       macro: estadoFuente(macro, 'neon:macro_events', macroDespues, horizonte),
-      reportes: estadoFuente(reportes, 'finnhub:earnings-calendar', reportesDespues, horizonte),
+      reportes: {
+        // `mas_adelante` lo manda el llamador cuando lo PREGUNTÓ aparte (una
+        // consulta acotada al resto del horizonte). Contarlo de las filas sólo
+        // vale cuando se pidió una ventana ancha, que es justo lo que se dejó
+        // de hacer: una consulta de 30 días se recorta en el servidor de
+        // Finnhub y los que se pierden son los primeros.
+        ...estadoFuente(reportes, 'finnhub:earnings-calendar',
+          reportes.mas_adelante != null ? reportes.mas_adelante : reportesDespues, horizonte),
+        // CUÁNTOS REPORTES HAY ESTA SEMANA QUE EL FILTRO TIRÓ.
+        // "Sin reportes esta semana" era verdad sobre las mega-caps y falso
+        // sobre el mercado, y desde la pantalla no se distinguía. Esto es la
+        // diferencia entre "no hay" y "no pasan el filtro".
+        filtro: reportes.filtro || null,
+        filtrados_en_ventana: (reportes.descartados || []).filter((d) => dentro(d.date)).length,
+        filtrados_total: reportes.descartados_total || 0,
+      },
     },
   };
 }
@@ -120,11 +135,12 @@ function estadoFuente(f, nombre, masAdelante = 0, horizonte = DIAS_HORIZONTE) {
   const n = (f && f.filas ? f.filas.length : 0);
   return {
     fuente: nombre, ok: true, motivo: null,
-    // `filas` es lo que la fuente DEVOLVIÓ y `en_ventana` lo que se pinta. Que
-    // sean distintos es información, no un descuadre: es la respuesta a "¿dónde
-    // se perdieron los 9?".
+    // `filas` es lo que la fuente DEVOLVIÓ para la ventana y `mas_adelante` lo
+    // que hay después. Con las dos consultas acotadas ya no se restan entre sí
+    // —restar un conteo de otra pregunta fue el descuadre— así que
+    // `en_ventana` es lo que se pinta y punto.
     filas: n,
-    en_ventana: n - masAdelante,
+    en_ventana: n,
     mas_adelante: masAdelante,
     // Hasta dónde se miró: sin esto, "no hay nada" no dice "nada ¿hasta cuándo?".
     horizonte_dias: horizonte,
@@ -153,7 +169,12 @@ export function armaArena({ agents = [], error = null, n = 5 } = {}) {
       // su CAUSA REAL: nunca se despeja de `equity` acá, que sería una segunda
       // definición del mismo número.
       pct,
-      pct_motivo: pct == null ? motivoSinRetorno(a) : null,
+      pct_motivo: pct == null ? causaSinRetorno(a).frase : null,
+      // La clave agrupa; la frase se lee. Sin la clave, "todos por lo mismo"
+      // habría que adivinarlo comparando textos.
+      pct_clave: pct == null ? causaSinRetorno(a).clave : null,
+      // El párrafo técnico del leaderboard no se pierde, sólo deja de pintarse.
+      pct_detalle: pct == null ? causaSinRetorno(a).detalle : null,
     };
   });
   return {
@@ -164,29 +185,51 @@ export function armaArena({ agents = [], error = null, n = 5 } = {}) {
 }
 
 /**
- * POR QUÉ A ESTE AGENTE LE FALTA EL RENDIMIENTO.
+ * POR QUÉ A ESTE AGENTE LE FALTA EL RENDIMIENTO — EN UNA LÍNEA.
  *
- * Son tres causas distintas y se arreglan distinto, así que decir una sola
- * —"el leaderboard no trajo el rendimiento"— manda a revisar el leaderboard
- * cuando el problema puede estar en las llaves o en el baseline. Cuatro de
- * cinco agentes salían con esa frase genérica (Lety, 2026-10-05) y la verdad
- * era la primera: no tienen cuenta de Alpaca conectada.
+ * Son causas distintas y se arreglan distinto, así que una sola frase genérica
+ * manda a revisar el leaderboard cuando el problema son las llaves. Pero la
+ * frase la lee una persona en un teléfono, y lo que salía era el `detalle` del
+ * leaderboard tal cual: un párrafo con comillas invertidas —`equity`,
+ * `benchmark.abierto: false`— repetido cinco veces, una por agente (Lety,
+ * 2026-10-20).
+ *
+ * Ese `detalle` está bien escrito para quien depura la API y mal para quien
+ * mira una tarjeta. No se pierde: viaja en `pct_detalle`. Lo que se PINTA es
+ * una línea corta y sin jerga.
+ *
+ * `clave` sirve para agrupar: cuando los cinco fallan por lo mismo, la pantalla
+ * dice la frase UNA vez arriba en vez de repetirla en cada fila.
  */
-function motivoSinRetorno(a) {
-  // ── LA CAUSA QUE MANDA SOBRE LAS OTRAS TRES (2026-10-18) ───────────
+function causaSinRetorno(a) {
+  // ── LA CAUSA QUE MANDA SOBRE LAS OTRAS (2026-10-18) ────────────────
   // Si la temporada no arrancó, el rendimiento no FALTA: no existe. Las llaves
-  // pueden estar las siete puestas, la cuenta leerse perfecto y el baseline
-  // estar escrito —y los tres motivos de abajo mandarían a revisar cosas que
-  // están bien. Es el mismo error que esta función vino a arreglar, un escalón
-  // más arriba.
+  // pueden estar las siete puestas y el baseline escrito, y las causas de
+  // abajo mandarían a revisar cosas que están bien.
   //
   // `=== false` y no falsy: en una temporada abierta el campo no viaja, y un
   // `undefined` no puede disparar esto.
   if (a && a.temporada_abierta === false) {
-    return a.detalle || 'la temporada todavía no arrancó: el rendimiento se mide contra el baseline de la temporada';
+    return {
+      clave: 'sin_temporada',
+      frase: 'Temporada nueva sin arrancar · el reset no ha corrido',
+      detalle: a.detalle || null,
+    };
   }
-  if (a && a.has_keys === false) return 'este agente no tiene llaves de Alpaca configuradas';
-  if (num(a && a.equity) == null) return 'no se pudo leer su cuenta de Alpaca';
-  if (num(a && a.baseline_equity) == null) return 'no se pudo leer su capital inicial';
-  return 'el leaderboard no trajo el rendimiento de este agente';
+  if (a && a.has_keys === false) {
+    return { clave: 'sin_llaves', frase: 'Sin llaves de Alpaca conectadas', detalle: null };
+  }
+  if (num(a && a.equity) == null) {
+    return { clave: 'sin_cuenta', frase: 'No se pudo leer su cuenta de Alpaca', detalle: null };
+  }
+  if (num(a && a.baseline_equity) == null) {
+    return { clave: 'sin_baseline', frase: 'No se pudo leer su capital inicial', detalle: null };
+  }
+  return { clave: 'sin_dato', frase: 'Sin rendimiento publicado', detalle: null };
 }
+
+// La CAUSA COMÚN —cuando los cinco fallan por lo mismo— se calcula en
+// `qd-tablas.js`, con las demás frases de los paneles. Este módulo corre en el
+// servidor (ESM) y el navegador no lo puede cargar; el reparto ya era ése: acá
+// se deciden los HECHOS (`pct_clave`, `pct_motivo`) y la pantalla arma la
+// oración. Es el mismo error que costó una vuelta con `fraseDeFuente`.

@@ -25,32 +25,20 @@
 // ═══════════════════════════════════════════════════════════════════════
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { levantaPostgres, binDePostgres, SIN_POSTGRES, FALTA_POSTGRES } from './_postgres.mjs';
 
 import { SQL_MAPA_US } from '../api/mercado-mapa.js';
 import { SCHEMA_PRECIOS_US } from '../api/_lib/mercado-precios.js';
 import { SCHEMA_UNIVERSO_US, SQL_CAP_US } from '../api/mercado-r0.js';
+import { SCHEMA_NOTICIAS, SQL_INSERTA_NOTICIAS, SQL_PAGINA } from '../api/noticias.js';
+import { tickersDeFila } from '../api/_lib/noticias.js';
+import { SQL_NOTICIAS_LOCALES_TICKER, SQL_NOTICIAS_LOCALES_PALABRAS } from '../api/_lib/arena-tools.js';
+import { SCHEMA_FORM4, SUCIA_SQL, limpiaDocumento,
+  SQL_FORM4_PENDIENTES, SQL_FORM4_CUBOS, FORM4_MAX_INTENTOS } from '../api/stock-tracker.js';
 
 const PUERTO = 55433;
 
-/** El directorio de binarios del Postgres instalado, o null. */
-function binDePostgres() {
-  const raices = ['/usr/lib/postgresql', '/usr/local/pgsql', '/opt/homebrew/opt'];
-  for (const raiz of raices) {
-    if (!existsSync(raiz)) continue;
-    for (const v of readdirSync(raiz).sort().reverse()) {
-      const bin = join(raiz, v, 'bin');
-      if (existsSync(join(bin, 'initdb')) && existsSync(join(bin, 'pg_ctl'))) return bin;
-    }
-  }
-  for (const bin of ['/usr/bin', '/usr/local/bin']) {
-    if (existsSync(join(bin, 'initdb')) && existsSync(join(bin, 'pg_ctl'))) return bin;
-  }
-  return null;
-}
 
 /**
  * Los $1/$2/$3 con literales, porque `create table as` no acepta parámetros.
@@ -59,61 +47,178 @@ function binDePostgres() {
  */
 const conLiterales = (q) => q.replace(/\$1/g, "'2026-01-01'").replace(/\$2/g, '23');
 
-const SIN_POSTGRES = process.env.SIN_POSTGRES === '1';
 const BIN = SIN_POSTGRES ? null : binDePostgres();
 
 test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
-  assert.ok(
-    BIN,
-    'no se encontró un Postgres instalado (initdb/pg_ctl). Esta prueba NO se salta sola: ' +
-      'el SQL sin verificar fue exactamente cómo el mapa llegó roto a producción. ' +
-      'Instalá postgresql (apt install postgresql, o brew install postgresql) — ' +
-      'o, si sabés lo que estás haciendo, corré con SIN_POSTGRES=1.',
-  );
+  assert.ok(BIN, FALTA_POSTGRES);
 
-  const dir = mkdtempSync(join(tmpdir(), 'qd-pg-'));
-  const datos = join(dir, 'datos');
-  // initdb se niega a correr como root, así que si lo somos delegamos en un
-  // usuario sin privilegios. Es la misma configuración en los dos casos.
-  const comoRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-  const USUARIO = 'pgtest';
-  const corre = (cmd) => {
-    if (!comoRoot) return execSync(cmd, { encoding: 'utf8', stdio: 'pipe' });
-    return execSync(`su ${USUARIO} -c ${JSON.stringify(cmd)}`, { encoding: 'utf8', stdio: 'pipe' });
-  };
-  if (comoRoot) {
-    try { execSync(`id -u ${USUARIO}`, { stdio: 'ignore' }); }
-    catch { execSync(`useradd -m ${USUARIO}`, { stdio: 'ignore' }); }
-    execSync(`chown -R ${USUARIO} ${dir} && chmod 700 ${dir}`);
-  }
-
-  t.after(() => {
-    try { corre(`${join(BIN, 'pg_ctl')} -D ${datos} -m immediate -w stop`); } catch { /* ya estaba caído */ }
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* da igual */ }
-  });
-
-  corre(`${join(BIN, 'initdb')} -D ${datos} -A trust -U postgres`);
-  corre(
-    `${join(BIN, 'pg_ctl')} -D ${datos} ` +
-      `-o "-k ${dir} -p ${PUERTO} -c listen_addresses=''" -l ${join(dir, 'log')} -w start`,
-  );
-
-  /** Corre SQL y devuelve la salida; lanza con el error de Postgres si falla. */
-  const psql = (sql) =>
-    // `-q` es necesario, no cosmético: sin él psql mezcla las etiquetas de
-    // comando ("INSERT 0 1150", "SELECT 24") con las filas, y el test contaría
-    // ruido como si fueran datos.
-    execFileSync(join(BIN, 'psql'), ['-h', dir, '-p', String(PUERTO), '-U', 'postgres', '-tAq', '-v', 'ON_ERROR_STOP=1'], {
-      input: sql, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-    });
+  const psql = levantaPostgres(t, { bin: BIN, puerto: PUERTO });
 
   await t.test('la DDL real del repo crea el esquema', () => {
     // Si la DDL no corre, lo que siga no prueba nada: se para acá.
-    psql([...SCHEMA_UNIVERSO_US, ...SCHEMA_PRECIOS_US].map((q) => q + ';').join('\n'));
+    psql([...SCHEMA_UNIVERSO_US, ...SCHEMA_PRECIOS_US, ...SCHEMA_NOTICIAS].map((q) => q + ';').join('\n'));
     const tablas = psql(
       "select table_name from information_schema.tables where table_schema='public' order by 1;",
     ).trim().split('\n');
-    assert.deepEqual(tablas, ['mercado_precios_us', 'mercado_universo_us']);
+    assert.deepEqual(tablas,
+      ['mercado_noticias', 'mercado_noticias_fuentes', 'mercado_precios_us', 'mercado_universo_us']);
+  });
+
+  // ═════════════════════════════════════════════════════════════════════
+  // R3(b): LOS TICKERS SON UN ARREGLO POR FILA
+  //
+  // `unnest($n::text[][])` NO da un arreglo por fila: Postgres aplana el
+  // arreglo de dos dimensiones y cada elemento sale suelto, así que la columna
+  // `tickers text[]` recibía un `text`. El job entero tronaba al guardar
+  // —"column tickers is of type text[] but expression is of type text"— y eso
+  // sólo se vio corriéndolo contra producción (Lety, 2026-10-20).
+  //
+  // Acá se PREPARA y se EJECUTA contra un Postgres de verdad, que es lo único
+  // que distingue un INSERT que parsea de uno que además liga sus tipos.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('el INSERT de noticias liga sus tipos, y los tickers quedan como arreglo', () => {
+    psql(`prepare ins(text[], text[], text[], text[], text[], text[], text[], text[],
+                      timestamptz[], text[], text[], text[], text[]) as ${SQL_INSERTA_NOTICIAS};`);
+
+    // Tres filas: con dos tickers, con uno, y SIN ninguno — que es el caso que
+    // `string_to_array('')` convertiría en un arreglo con un elemento vacío.
+    psql(`
+      insert into mercado_noticias
+        (url, titular, titulo_norm, fuente_id, fuente_nombre, tipo, idioma, seccion,
+         publicado_en, imagen, imagen_via, tickers, fuente_dato)
+      select u.url, u.titular, u.titulo_norm, u.fuente_id, u.fuente_nombre, u.tipo,
+             u.idioma, u.seccion, u.publicado_en, u.imagen, u.imagen_via,
+             coalesce(string_to_array(nullif(u.tickers, ''), ','), '{}')::text[],
+             u.fuente_dato
+        from unnest(
+          array['https://a/1','https://a/2','https://a/3']::text[],
+          array['Dos','Uno','Cero']::text[],
+          array['dos','uno','cero']::text[],
+          array['cnbc','cnbc','banxico_sie']::text[],
+          array['CNBC','CNBC','Banxico']::text[],
+          array['medio','medio','oficial_derivado']::text[],
+          array['en','en','es']::text[],
+          array['mercado','mercado','oficiales']::text[],
+          array['2026-10-20T10:00:00Z','2026-10-20T11:00:00Z','2026-10-20T12:00:00Z']::timestamptz[],
+          array[null,null,null]::text[],
+          array[null,null,null]::text[],
+          array['NVDA,ORCL','AMX','']::text[],
+          array[null,null,'banxico:SF61745']::text[])
+          as u(url, titular, titulo_norm, fuente_id, fuente_nombre, tipo, idioma,
+               seccion, publicado_en, imagen, imagen_via, tickers, fuente_dato);`);
+
+    const filas = psql(
+      "select url, array_length(tickers,1), array_to_string(tickers,'|') from mercado_noticias order by url;")
+      .trim().split('\n');
+    assert.deepEqual(filas, [
+      'https://a/1|2|NVDA|ORCL',
+      'https://a/2|1|AMX',
+      // Sin tickers: arreglo VACÍO, no un arreglo con una cadena en blanco.
+      'https://a/3||',
+    ], filas.join(' · '));
+
+    // Y el tipo de la columna es el que se declaró, no texto.
+    const tipo = psql(`select data_type from information_schema.columns
+                        where table_name='mercado_noticias' and column_name='tickers';`).trim();
+    assert.equal(tipo, 'ARRAY');
+
+    // `on conflict (url) do nothing`: la misma URL no se duplica ni se pisa.
+    psql(`insert into mercado_noticias (url, titular, titulo_norm, fuente_id, publicado_en, tickers)
+          values ('https://a/1','OTRO','otro','x', now(), '{}'::text[])
+          on conflict (url) do nothing;`);
+    const quedo = psql("select titular from mercado_noticias where url='https://a/1';").trim();
+    assert.equal(quedo, 'Dos', 'la primera vez que se vio la nota manda');
+
+    // ── Y DE VUELTA: LO QUE LA LECTURA RECIBE ES UNA CADENA ───────────
+    // El driver HTTP de Neon entrega un `text[]` como el LITERAL de Postgres,
+    // no como arreglo de JavaScript. La pantalla hacía `.slice().map()` sobre
+    // esa cadena y "Lo de hoy" tronaba entero (Lety, 2026-10-20).
+    //
+    // Acá se lee una fila DE VERDAD —la que se acaba de insertar— y se le pasa
+    // el valor tal cual a `tickersDeFila`, que es lo que hace el endpoint.
+    const crudos = psql(
+      "select tickers::text from mercado_noticias order by url;").trim().split('\n');
+    assert.deepEqual(crudos, ['{NVDA,ORCL}', '{AMX}', '{}'], crudos.join(' · '));
+    assert.deepEqual(tickersDeFila(crudos[0]), ['NVDA', 'ORCL']);
+    assert.deepEqual(tickersDeFila(crudos[1]), ['AMX']);
+    assert.deepEqual(tickersDeFila(crudos[2]), [], 'el arreglo vacío no inventa un elemento');
+
+    // ── LAS DOS LECTURAS DE `noticias` (la herramienta del Arena) ──────
+    // Por ticker (`$1 = any(tickers)`) y por palabras (`ilike all`), contra
+    // las mismas filas: que parseen, liguen sus tipos y devuelvan la correcta.
+    // Cada `psql` es una sesión nueva: el PREPARE va en la misma llamada.
+    const nTicker = (args) => psql(`prepare n_ticker(text, timestamptz) as ${SQL_NOTICIAS_LOCALES_TICKER}; execute n_ticker(${args});`).trim();
+    const nPalabras = (args) => psql(`prepare n_palabras(text[], timestamptz) as ${SQL_NOTICIAS_LOCALES_PALABRAS}; execute n_palabras(${args});`).trim();
+    assert.equal(nTicker("'AMX', '2026-10-19T00:00:00Z'").split('|')[0], 'https://a/2');
+    assert.equal(nTicker("'AMX', '2026-10-21T00:00:00Z'"), '', 'la ventana de fechas se aplica');
+    assert.equal(nPalabras("array['%do%','%s%'], '2026-10-19T00:00:00Z'").split('|')[0], 'https://a/1',
+      'todas las palabras, en cualquier orden');
+
+    // Un ticker con punto —BRK.B— y uno que Postgres entrecomilla por el
+    // espacio: partir por comas a secas rompería el segundo.
+    psql(`insert into mercado_noticias (url, titular, titulo_norm, fuente_id, publicado_en, tickers)
+          values ('https://a/4','Raros','raros','x', now(), array['BRK.B','A B']::text[]);`);
+    const raro = psql("select tickers::text from mercado_noticias where url='https://a/4';").trim();
+    assert.equal(raro, '{BRK.B,"A B"}', raro);
+    assert.deepEqual(tickersDeFila(raro), ['BRK.B', 'A B']);
+    psql('delete from mercado_noticias;');
+  });
+
+  // ═════════════════════════════════════════════════════════════════════
+  // R3b: LA CONSULTA DE LA PÁGINA DE NOTICIAS, CONTRA POSTGRES
+  //
+  // Dos cosas que sólo un Postgres de verdad contesta:
+  //   · `($1 || ' hours')::interval` LIGA el parámetro. La forma que parece
+  //     natural —`interval '$1 hours'`— deja el $1 dentro del literal y
+  //     Postgres no lo liga: parsea igual y no filtra nada;
+  //   · la consulta con cursor y la consulta sin cursor son DOS textos
+  //     distintos, y la que casi nunca se ejerce es la del cursor. Se preparan
+  //     las dos.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('la consulta de la página de noticias PREPARA en sus dos formas, y la ventana filtra', () => {
+    // Las dos formas PARSEAN y ligan sus columnas. Esto solo ya atrapa un
+    // `$3` que sobra o una columna que no existe.
+    psql(`prepare pag(text, int) as ${SQL_PAGINA(false)};`);
+    psql(`prepare pagcur(text, int, timestamptz) as ${SQL_PAGINA(true)};`);
+
+    psql(`insert into mercado_noticias (url, titular, titulo_norm, fuente_id, tipo, idioma, seccion, publicado_en, tickers)
+          values
+            ('https://p/1','Fresca','fresca','cnbc','medio','en','mercado', now() - interval '1 hour', '{NVDA}'::text[]),
+            ('https://p/2','De ayer','de ayer','cnbc','medio','en','mercado', now() - interval '30 hours', '{}'::text[]),
+            ('https://p/3','Vieja','vieja','cnbc','medio','en','mercado', now() - interval '10 days', '{}'::text[]);`);
+
+    // CADA `psql` ES UNA SESIÓN NUEVA, así que un `prepare` de una llamada no
+    // existe en la siguiente: el PREPARE y el EXECUTE tienen que viajar en el
+    // MISMO psql. La primera versión de esta prueba los separó y falló con
+    // "prepared statement \"pag\" does not exist" — que es la prueba de que
+    // de verdad llega a Postgres y no a un simulador.
+    const ejecuta = (sqlTexto, params) =>
+      psql(`prepare p(text, int, timestamptz) as ${sqlTexto} execute p(${params});`)
+        .trim().split('\n').filter(Boolean);
+
+    // 72 horas: entran dos, la de 10 días NO.
+    const dentro = ejecuta(SQL_PAGINA(false) + ';', `'72', 400, null`);
+    assert.equal(dentro.length, 2, dentro.join(' · '));
+    assert.ok(dentro.every((l) => !l.startsWith('https://p/3')), 'la de 10 días queda fuera');
+
+    // 2 horas: entra UNA. Si el parámetro no se ligara —y es lo que pasa con
+    // `interval '$1 hours'`, que parsea igual— este caso daría dos.
+    const corta = ejecuta(SQL_PAGINA(false) + ';', `'2', 400, null`);
+    assert.equal(corta.length, 1, `la ventana no filtró: ${corta.join(' · ')}`);
+
+    // El cursor de "cargar más": con `antes_de` = ahora − 2 h, la fresca de
+    // hace 1 h ya no sale y la siguiente página empieza en la de ayer.
+    const paginada = psql(`prepare pc(text, int, timestamptz) as ${SQL_PAGINA(true)};
+                           execute pc('72', 400, now() - interval '2 hours');`)
+      .trim().split('\n').filter(Boolean);
+    assert.equal(paginada.length, 1, paginada.join(' · '));
+    assert.ok(paginada[0].startsWith('https://p/2'), 'la página siguiente es la de ayer');
+
+    // Y los tickers siguen llegando como el LITERAL de Postgres, que es lo que
+    // el endpoint normaliza con `tickersDeFila` antes de prometer un arreglo.
+    const t2 = psql("select tickers::text from mercado_noticias where url='https://p/1';").trim();
+    assert.deepEqual(tickersDeFila(t2), ['NVDA']);
+    psql('delete from mercado_noticias;');
   });
 
   await t.test('cada consulta del mapa US PREPARA: parsea y resuelve sus columnas', () => {
@@ -258,6 +363,186 @@ test('mercado-mapa: el SQL se prepara contra un Postgres real', { skip: SIN_POST
       alrededorDel10[alrededorDel10.length - 1] > '2026-09-10',
       `hacia adelante: ${alrededorDel10[alrededorDel10.length - 1]}`,
     );
+  });
+
+
+
+
+  // ═════════════════════════════════════════════════════════════════════
+  // LA LIMPIEZA DEL `&` GUARDADO, CONTRA POSTGRES DE VERDAD
+  //
+  // LA VERSIÓN ANTERIOR DE ESTA PRUEBA DEJÓ PASAR UN 500. Hacía los
+  // reemplazos sobre `filas::text` y su fila sucia traía `&amp;` y `&apos;`.
+  // El apóstrofo es válido suelto en JSON, así que pasó. En producción la
+  // fila real traía `&quot;`, que decodificado adentro de un string JSON mete
+  // una comilla sin escapar y parte el documento: Postgres devolvió "invalid
+  // input syntax for type json" y las 79 filas se quedaron sin escribir.
+  //
+  // Ahora el fixture trae las dos que faltaban —`&quot;` y `&#39;`— y la
+  // limpieza recorre el documento por VALOR, re-serializando con
+  // `JSON.stringify`, que escapa lo que haya que escapar.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('la limpieza por valor: `&quot;` y `&#39;` no rompen el jsonb, y es idempotente', () => {
+    psql(SCHEMA_FORM4.map((q) => q + ';').join('\n'));
+
+    const A = String.fromCharCode(38);   // el `&`, sin escribirlo literal
+    const comilla = `${A}quot;`;
+    const apos39 = `${A}#39;`;
+
+    // Tres filas: la que rompía en producción, una con la numérica del
+    // apóstrofo, y una limpia que no se debe tocar.
+    const sucia1 = JSON.stringify([{
+      ticker: 'BIGC', emisora: `Marsh ${A}amp; McLennan`,
+      cargo: `VP ${comilla}Ops${comilla} ${A}amp; Chief ${comilla}Data${comilla} Offr`,
+      nota: `Jefe de ${A}amp;lt;cosas${A}amp;gt;`,
+    }]);
+    const sucia2 = JSON.stringify([{
+      ticker: 'APOS', quien: `O${apos39}Brien`, cargo: `Director ${apos39}interino${apos39}`,
+      // Un valor que NO es string se queda como está, con su tipo.
+      monto: 12345.67, confirmado: true, nada: null,
+    }]);
+    const limpia = JSON.stringify([{ ticker: 'CLEAN', cargo: 'Chief Executive Officer' }]);
+    const lit = (x) => `'${x.replace(/'/g, "''")}'`;
+
+    psql(`
+      insert into mercado_form4_tx (accession, filing_fecha, filas) values
+        ('0000000000-26-000001', '2026-10-19', ${lit(sucia1)}::jsonb),
+        ('0000000000-26-000002', '2026-10-19', ${lit(sucia2)}::jsonb),
+        ('0000000000-26-000003', '2026-10-19', ${lit(limpia)}::jsonb);
+    `);
+
+    // ── LA CORRIDA, con la MISMA función que usa el job ────────────────
+    const candidatas = psql(`select accession from mercado_form4_tx
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')} order by accession;`)
+      .trim().split('\n').filter(Boolean);
+    assert.deepEqual(candidatas, ['0000000000-26-000001', '0000000000-26-000002'],
+      'la fila limpia no es candidata');
+
+    let tocadas = 0;
+    for (const acc of candidatas) {
+      const crudo = psql(`select filas::text from mercado_form4_tx where accession='${acc}';`).trim();
+      const { limpio, cambios } = limpiaDocumento(JSON.parse(crudo));
+      if (!cambios) continue;
+      // Escritura como la del job: documento re-serializado, no texto parcheado.
+      psql(`update mercado_form4_tx set filas = ${lit(JSON.stringify(limpio))}::jsonb,
+            entidades_limpias_en = now() where accession='${acc}';`);
+      tocadas++;
+    }
+    assert.equal(tocadas, 2);
+
+    // ── LO QUE IMPORTA: EL JSONB SIGUE SIENDO JSONB Y CONSULTABLE ──────
+    const cargo1 = psql(`select filas->0->>'cargo' from mercado_form4_tx
+      where accession='0000000000-26-000001';`).trim();
+    assert.equal(cargo1, 'VP "Ops" & Chief "Data" Offr',
+      'las comillas decodificadas quedaron ESCAPADAS en el documento, no sueltas');
+    assert.equal(psql(`select filas->0->>'emisora' from mercado_form4_tx
+      where accession='0000000000-26-000001';`).trim(), 'Marsh & McLennan');
+    // El orden de los reemplazos: la entidad doble es texto, no etiqueta.
+    assert.equal(psql(`select filas->0->>'nota' from mercado_form4_tx
+      where accession='0000000000-26-000001';`).trim(), `Jefe de ${A}lt;cosas${A}gt;`);
+
+    assert.equal(psql(`select filas->0->>'quien' from mercado_form4_tx
+      where accession='0000000000-26-000002';`).trim(), "O'Brien");
+    // Los tipos que no son string sobreviven con su tipo.
+    assert.equal(psql(`select jsonb_typeof(filas->0->'monto') || '|' ||
+        jsonb_typeof(filas->0->'confirmado') || '|' || jsonb_typeof(filas->0->'nada')
+      from mercado_form4_tx where accession='0000000000-26-000002';`).trim(),
+      'number|boolean|null');
+
+    // La limpia no se tocó ni se marcó.
+    assert.equal(psql(`select coalesce(entidades_limpias_en::text, 'sin marca')
+      from mercado_form4_tx where accession='0000000000-26-000003';`).trim(), 'sin marca');
+
+    // ── SEGUNDA CORRIDA: 0 CANDIDATAS ─────────────────────────────────
+    const candidatas2 = psql(`select accession from mercado_form4_tx
+      where entidades_limpias_en is null and ${SUCIA_SQL('filas::text')} order by accession;`)
+      .trim().split('\n').filter(Boolean);
+    assert.deepEqual(candidatas2, [], 'correrla dos veces no cambia nada (Lety)');
+  });
+
+
+
+  // ═════════════════════════════════════════════════════════════════════
+  // `pendientes` = `en_indice` − `guardados`. LA IDENTIDAD QUE SE ROMPIÓ.
+  //
+  // Lety, contra producción (2026-10-21): la cobertura se congeló en ~48% y
+  // el cron reportaba `leidos: 0, pendientes: 0` tras 120 corridas, con
+  // ~14.000 filings sin leer.
+  //
+  // La causa: "pendiente" era `leido_en is null`, y el job ponía `leido_en`
+  // TAMBIÉN al fallar. La fila fallida salía de pendientes sin haberse
+  // guardado nunca, así que no estaba en ninguno de los dos cubos y la suma
+  // daba menos que el total. Nadie sumaba, así que nadie lo vio.
+  //
+  // Esta prueba corre las consultas REALES contra Postgres con filas en los
+  // cuatro estados posibles, y exige que los cubos sumen.
+  // ═════════════════════════════════════════════════════════════════════
+  await t.test('pendientes = en_indice − guardados, con filas en los cuatro estados', () => {
+    psql(SCHEMA_FORM4.map((q) => q + ';').join('\n'));
+    psql('truncate mercado_form4_indice;');
+
+    const fila = (acc, { ok = null, intentos = 0 } = {}) =>
+      `('${acc}', '1', 'X', '2026-10-19', 'edgar/data/1/${acc}.txt', `
+      + (ok === null ? 'null' : (ok ? 'now()' : 'now()')) + ', '
+      + (ok === null ? 'null' : String(ok)) + `, ${intentos})`;
+
+    // 2 nunca intentadas · 3 guardadas · 2 fallidas con intentos de sobra ·
+    // 1 fallida que ya agotó sus intentos.
+    psql(`insert into mercado_form4_indice
+            (accession, cik, empresa, fecha_filing, archivo, leido_en, leido_ok, intentos)
+          values
+            ${fila('A-1')}, ${fila('A-2')},
+            ${fila('B-1', { ok: true, intentos: 1 })},
+            ${fila('B-2', { ok: true, intentos: 1 })},
+            ${fila('B-3', { ok: true, intentos: 2 })},
+            ${fila('C-1', { ok: false, intentos: 1 })},
+            ${fila('C-2', { ok: false, intentos: 3 })},
+            ${fila('D-1', { ok: false, intentos: FORM4_MAX_INTENTOS })};`);
+
+    const [en, gu, pe, ag] = psql(`${SQL_FORM4_CUBOS.replace(/\$1/g, String(FORM4_MAX_INTENTOS))};`)
+      .trim().split('|').map(Number);
+    assert.equal(en, 8, 'ocho en el índice');
+    assert.equal(gu, 3, 'tres guardadas');
+    assert.equal(ag, 1, 'una agotada');
+    // LA IDENTIDAD que pidió Lety: lo que falta tiene que estar en pendientes.
+    // Con la agotada aparte, porque ésa SE REPORTA en vez de desaparecer.
+    assert.equal(pe + ag, en - gu,
+      'todo lo que no está guardado tiene que estar en pendientes o en agotadas');
+    assert.equal(en, gu + pe + ag, 'los tres cubos suman el total: nada invisible');
+    assert.equal(pe, 4, 'dos sin intentar + dos fallidas con intentos de sobra');
+
+    // ── Y LA CONSULTA DE PENDIENTES DEVUELVE ESAS MISMAS ──────────────
+    // Que los conteos cuadren no alcanza: lo que el job PIDE tiene que ser
+    // el mismo conjunto, o volvemos al punto de partida con otro nombre.
+    const traidas = psql(`${SQL_FORM4_PENDIENTES
+      .replace('$1', '100').replace('$2', String(FORM4_MAX_INTENTOS))};`)
+      .trim().split('\n').filter(Boolean).map((l) => l.split('|')[0]);
+    assert.deepEqual(traidas.slice().sort(), ['A-1', 'A-2', 'C-1', 'C-2'],
+      'la fila fallida con intentos de sobra VUELVE a ser pendiente');
+    assert.ok(!traidas.includes('D-1'), 'la agotada no se reintenta para siempre');
+    assert.ok(!traidas.includes('B-1'), 'la guardada no se vuelve a pedir');
+
+    // Las NUNCA intentadas van primero: si los reintentos fueran al frente,
+    // una tanda vieja de fallos se comería el presupuesto de cada corrida y
+    // los filings nuevos no entrarían nunca.
+    assert.deepEqual(traidas.slice(0, 2).sort(), ['A-1', 'A-2'],
+      `las no intentadas van primero — orden real: ${traidas.join(',')}`);
+  });
+
+  await t.test('el bug exacto: marcar leido_en al fallar dejaba la fila invisible', () => {
+    psql('truncate mercado_form4_indice;');
+    // La forma que tenían las 14.000 filas: leída, no ok, y con el criterio
+    // viejo (`leido_en is null`) fuera de pendientes.
+    psql(`insert into mercado_form4_indice
+            (accession, cik, empresa, fecha_filing, archivo, leido_en, leido_ok, intentos)
+          values ('Z-1', '1', 'X', '2026-10-19', 'edgar/data/1/z.txt', now(), false, 1);`);
+
+    const viejo = psql(`select count(*)::int from mercado_form4_indice where leido_en is null;`).trim();
+    assert.equal(viejo, '0', 'con el criterio viejo esta fila NO era pendiente');
+
+    const nuevo = psql(`${SQL_FORM4_PENDIENTES
+      .replace('$1', '100').replace('$2', String(FORM4_MAX_INTENTOS))};`).trim();
+    assert.match(nuevo, /^Z-1\|/, 'con el criterio nuevo sí lo es');
   });
 
 });

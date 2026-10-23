@@ -101,10 +101,44 @@ export const ARENA_EFFORT = (() => {
 // MISMO techo — la respuesta se corta antes de emitir el JSON y la corrida
 // muere en `aborted_scan_malformed_json`. Es la causa raíz candidata #1 de los
 // abortos de grok (ver docs/arena-modelos-2026-09-15.md).
-export const ARENA_MAX_TOKENS = (() => {
-  const n = Number(process.env.ARENA_MAX_TOKENS);
-  return Number.isFinite(n) && n >= 500 && n <= 64000 ? Math.floor(n) : 6000;
-})();
+// La regla, en UNA función: la usa el techo y la usa `?compuertas=1` para
+// publicar qué techo está corriendo. Dos copias del parseo serían dos
+// respuestas posibles a "¿cuánto es el techo?".
+export const ARENA_MAX_TOKENS_DEFAULT = 6000;
+export function techoDeSalida(crudo) {
+  const n = Number(crudo);
+  return Number.isFinite(n) && n >= 500 && n <= 64000 ? Math.floor(n) : ARENA_MAX_TOKENS_DEFAULT;
+}
+export const ARENA_MAX_TOKENS = techoDeSalida(process.env.ARENA_MAX_TOKENS);
+
+// ── PRESUPUESTO DE RAZONAMIENTO, SEPARADO DEL TECHO (2026-10-20) ──────
+// La puerta del 20-oct: qwen cortó 3 de 3 cierres y el RAZONAMIENTO se comió
+// todo el techo (6000/6000/5616 de 6000). En la primera no quedó una sola
+// ficha para la respuesta. En un modelo de razonamiento `max_tokens` cubre
+// pensar + contestar, y subir el techo no lo arregla: tienden a llenar el
+// presupuesto que se les dé.
+//
+// El arreglo de raíz es separar los dos: `reasoning.max_tokens` en OpenRouter
+// le pone techo al PENSAMIENTO y deja el resto para la respuesta. Por agente y
+// por env var, SIN DEPLOY:
+//   ARENA_REASONING_MAX_TOKENS_QWEN=4000
+// Sin la variable, el agente sigue con `reasoning.effort` como hasta hoy.
+//
+// Se acota para que SIEMPRE quede respuesta: nunca más que el techo menos
+// RESPUESTA_MINIMA. Un presupuesto que se come el techo entero es el bug que
+// esto existe para cerrar.
+export const RESPUESTA_MINIMA_TOKENS = 1500;
+export function presupuestoRazonamiento(agentId, { env = process.env, techo = ARENA_MAX_TOKENS } = {}) {
+  const crudo = env['ARENA_REASONING_MAX_TOKENS_' + String(agentId || '').toUpperCase()];
+  if (crudo === undefined) return { crudo: null, efectivo: null };
+  const n = Math.floor(Number(crudo));
+  if (!Number.isFinite(n) || n < 256) return { crudo: String(crudo), efectivo: null, aviso: `"${crudo}" no es un número ≥ 256: se IGNORA y el agente sigue con reasoning.effort.` };
+  const tope = techo - RESPUESTA_MINIMA_TOKENS;
+  if (tope < 256) return { crudo: String(crudo), efectivo: null, aviso: `el techo (${techo}) no deja lugar para un presupuesto de razonamiento y ${RESPUESTA_MINIMA_TOKENS} de respuesta: se IGNORA.` };
+  return n > tope
+    ? { crudo: String(crudo), efectivo: tope, aviso: `${n} dejaría menos de ${RESPUESTA_MINIMA_TOKENS} tokens de respuesta con un techo de ${techo}: se ACOTA a ${tope}.` }
+    : { crudo: String(crudo), efectivo: n };
+}
 
 // ── MÍNIMO CACHEABLE DE PROMPT ───────────────────────────────────────
 // Piso del PROVEEDOR, no una preferencia nuestra: por debajo de este número de
@@ -336,6 +370,31 @@ export function estadoDeCompuertas(env = process.env) {
     ARENA_ENABLED: env.ARENA_ENABLED === undefined ? null : String(env.ARENA_ENABLED),
     ARENA_WATCH_ENABLED: env.ARENA_WATCH_ENABLED === undefined ? null : String(env.ARENA_WATCH_ENABLED),
     ARENA_LEAGUE: env.ARENA_LEAGUE ? String(env.ARENA_LEAGUE) : null,
+    // ── EL TECHO DE SALIDA, VISTO DESDE AFUERA (2026-10-20) ─────────────
+    // Con ARENA_ENABLED la variable no llegó a las funciones hasta un redeploy
+    // sin caché, y se perdieron 18 días midiendo con el valor viejo. Antes de
+    // correr la puerta hay que poder confirmar que el techo nuevo LLEGÓ.
+    //
+    // Dos números, porque no son el mismo: el CRUDO (lo que Vercel entregó) y
+    // el EFECTIVO (lo que la función usa). Un valor inválido cae en silencio al
+    // default, así que el crudo solo diría "llegó 12000" mientras se corre con
+    // 6000. `en_proceso` es el que se fijó al CARGAR este módulo: si difiere
+    // del efectivo, la lambda arrancó antes del cambio y hay que redesplegar.
+    ARENA_MAX_TOKENS: env.ARENA_MAX_TOKENS === undefined ? null : String(env.ARENA_MAX_TOKENS),
+    techo_de_salida: {
+      efectivo: techoDeSalida(env.ARENA_MAX_TOKENS),
+      en_proceso: ARENA_MAX_TOKENS,
+      default: ARENA_MAX_TOKENS_DEFAULT,
+      ...(env.ARENA_MAX_TOKENS !== undefined && techoDeSalida(env.ARENA_MAX_TOKENS) === ARENA_MAX_TOKENS_DEFAULT && String(env.ARENA_MAX_TOKENS).trim() !== String(ARENA_MAX_TOKENS_DEFAULT)
+        ? { aviso: `ARENA_MAX_TOKENS="${env.ARENA_MAX_TOKENS}" no es un número entre 500 y 64000: se IGNORA y corre el default (${ARENA_MAX_TOKENS_DEFAULT}).` } : {}),
+      ...(techoDeSalida(env.ARENA_MAX_TOKENS) !== ARENA_MAX_TOKENS
+        ? { aviso_proceso: `La variable dice ${techoDeSalida(env.ARENA_MAX_TOKENS)} pero este proceso cargó ${ARENA_MAX_TOKENS}: la lambda arrancó antes del cambio. Redesplegá (sin caché) antes de correr la puerta.` } : {}),
+    },
+    // El presupuesto de RAZONAMIENTO por agente de OpenRouter, crudo y
+    // efectivo (acotado contra el techo efectivo). null = sin presupuesto:
+    // ese agente corre con reasoning.effort.
+    presupuesto_razonamiento: Object.fromEntries(ARENA_AGENTS.filter((a) => a.provider === 'openrouter')
+      .map((a) => [a.id, presupuestoRazonamiento(a.id, { env, techo: techoDeSalida(env.ARENA_MAX_TOKENS) })])),
     lectura: liga
       ? 'LA LIGA CORRE: arena-run decide y arena-watch dispara.'
       : 'LA LIGA ESTÁ APAGADA: ni arena-run ni arena-watch hacen nada. arena-reset, arena-shadow y arena-smoke SÍ funcionan — no consultan esta compuerta, a propósito.',
@@ -568,6 +627,12 @@ export const ARENA_SEASON = {
   // temporada que dice "4 semanas" y corre 22 sesiones miente en la primera
   // línea que alguien lee.
   weeks: 4.4,
+  // ── LA TEMPORADA SE MIDE EN SESIONES, NO EN FECHAS (2026-10-20) ────
+  // `end` arriba es el cierre de la ventana PLANEADA (start + 22 sesiones). El
+  // cierre REAL se deriva del inicio que escribe el reset: abrir el 20-oct
+  // contra un `end` fijo del 30-oct dejaba una temporada de 9 sesiones que se
+  // seguía llamando "4.4 semanas". Ver `finDeTemporada` y `temporadaEfectiva`.
+  sesiones: 22,
   // Qué se mide para declarar al ganador. Equity, igual que el leaderboard:
   // `claude` arrastra días de ventaja de la T1, así que el return vs. baseline
   // viaja al lado — el caveat de ranking del scope sigue vigente y se publica.
@@ -579,6 +644,38 @@ export const ARENA_SEASON = {
 // registry → arena-run → registry.
 function easternToday(now) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+// ── FERIADOS DE LA NYSE (mercado cerrado todo el día) ───────────────
+// Sólo los que pueden caer dentro de una temporada que abra de acá a fin de
+// 2027. Una fecha fuera de la lista cuenta como sesión si es L-V: el error
+// posible es un cierre UN día antes, nunca una sesión inventada en sábado.
+export const FERIADOS_NYSE = [
+  /* date-lint-ok: calendario NYSE publicado */ '2026-11-26', '2026-12-25',
+  /* date-lint-ok: calendario NYSE publicado */ '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31',
+  /* date-lint-ok: calendario NYSE publicado */ '2027-06-18', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24',
+];
+
+export function esSesionHabil(fecha) {
+  const d = new Date(String(fecha).slice(0, 10) + 'T12:00:00Z');
+  const dow = d.getUTCDay();
+  return Number.isFinite(d.getTime()) && dow !== 0 && dow !== 6 && !FERIADOS_NYSE.includes(String(fecha).slice(0, 10));
+}
+
+// ── EL CIERRE = INICIO + N SESIONES HÁBILES ──────────────────────────
+// La sesión del inicio cuenta como la 1. Abriendo el 2026-10-20 con 22
+// sesiones: 20-24 oct, 27-31 oct, 3-7 nov, 10-14 nov, 17-18 nov → 2026-11-18.
+// Si el inicio cae en un día sin mercado, la 1 es la siguiente sesión.
+export function finDeTemporada(start, sesiones = ARENA_SEASON.sesiones) {
+  const n = Number(sesiones);
+  let t = Date.parse(String(start).slice(0, 10) + 'T12:00:00Z');
+  if (!Number.isFinite(t) || !(n >= 1)) throw new Error(`finDeTemporada: inicio "${start}" o sesiones "${sesiones}" inválidos`);
+  let cuenta = 0;
+  for (;;) {
+    const dia = new Date(t).toISOString().slice(0, 10);
+    if (esSesionHabil(dia) && ++cuenta === n) return dia;
+    t += 86400000;
+  }
 }
 
 // 'pending' (aún no arranca) · 'running' · 'ended' (ya pasó el cierre).
@@ -625,16 +722,24 @@ export const esDiaContaminado = (fecha, season = ARENA_SEASON.id) =>
 //
 // `abierta: false` cuando el reset no corrió: la temporada está DECLARADA y
 // no ABIERTA, que son cosas distintas y hasta hoy se veían iguales.
+//
+// El `end` también es efectivo: el que escribió el reset si lo escribió, y si
+// no, inicio + `sesiones`. NUNCA el `end` planeado con un inicio corrido: eso
+// acortaba la temporada en silencio y declaraba al ganador el día equivocado.
 export function temporadaEfectiva(inicioReal = null, season = ARENA_SEASON) {
   const start = inicioReal && inicioReal.start ? String(inicioReal.start) : null;
+  const end = start
+    ? (inicioReal.end ? String(inicioReal.end) : finDeTemporada(start, season.sesiones))
+    : season.end;
   return {
     ...season,
     start: start || season.start,
     start_planeado: season.start,
+    end,
+    end_planeado: season.end,
     abierta: !!start,
-    // Si el reset corrió DESPUÉS de la fecha planeada, la ventana se corrió y
-    // la temporada tiene menos sesiones de las que `weeks` declara. Se dice,
-    // no se recalcula en silencio.
+    // Si el reset corrió DESPUÉS de la fecha planeada, la ventana entera se
+    // corrió (inicio Y cierre: las sesiones no se pierden). Se dice cuánto.
     corrida_dias: start && start > season.start
       ? Math.round((Date.parse(start) - Date.parse(season.start)) / 86400000)
       : 0,

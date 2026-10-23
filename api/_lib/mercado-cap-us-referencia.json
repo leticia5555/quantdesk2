@@ -55,6 +55,73 @@
       "capturada_en": "2026-09-23",
       "vigente_hasta": "2026-09-30",
       "nota": "múltiplo observado 0.8612 con cap declarada en EUR: éste sí se explica casi entero por el tipo de cambio, y aun así no se convierte"
+    },
+    {
+      "clave": "BRK.B",
+      "cotizada": "BRK.B",
+      "clases": [
+        {
+          "nombre": "Class A",
+          "acciones": 488450,
+          "equivalencia_en_cotizada": 1500
+        },
+        {
+          "nombre": "Class B",
+          "acciones": 1408035161,
+          "equivalencia_en_cotizada": 1
+        }
+      ],
+      "fuente": "portada del 10-Q de Berkshire Hathaway Inc., accession 0001193125-26-341032 (periodo 2026-06-30, presentado 2026-08-10, conteo al 2026-07-29)",
+      "capturada_en": "2026-10-22",
+      "vigente_hasta": "2026-11-21",
+      "nota": "Equivalencia 1 Clase A = 1,500 Clase B, del estatuto. Suma en equivalentes B: 488.450×1500 + 1.408.035.161 = 2.140.710.161. La cap NO se captura: se pinta con nuestro cierre diario de BRK.B."
+    },
+    {
+      "clave": "SPCX",
+      "cotizada": "SPCX",
+      "clases": [
+        {
+          "nombre": "Class A common stock",
+          "acciones": 8246541218,
+          "equivalencia_en_cotizada": 1
+        },
+        {
+          "nombre": "Class B common stock",
+          "acciones": 5334522491,
+          "equivalencia_en_cotizada": 1
+        }
+      ],
+      "fuente": "portada del 10-Q de Space Exploration Technologies Corp. (CIK 1181412), accession 0001628280-26-066880 (periodo 2026-09-30, presentado 2026-10-22, conteo al 2026-10-15)",
+      "capturada_en": "2026-10-23",
+      "vigente_hasta": "2026-11-22",
+      "nota": "Equivalencia 1:1 entre las dos clases. La diferencia es de VOTOS, no economica, y eso es lo que decide la cuenta: nota 12 del 10-Q, seccion Voting Rights — \"Each holder of Class A is entitled to one vote for each share held\", \"Each holder of Class B is entitled to ten votes for each share held\", \"Each share of Class B will automatically convert into one share of Class A upon a transfer, other than a Permitted Transfer (as defined in the charter), of such share of Class B\". Diez votos no son diez acciones: la conversion 1:1 es la que fija el reclamo economico. Suma en equivalentes A: 8.246.541.218 + 5.334.522.491 = 13.581.063.709. LA CLASE C NO VA EN LA LISTA y no es un olvido: esta autorizada pero su conteo es CERO —\"All shares of Class C common stock outstanding prior to the IPO were reclassified into Class A common stock\"—, y `capPorClases` rechaza con razon una clase sin conteo utilizable, porque una clase incompleta deja la suma corta sin que nadie lo note. Una clase que no existe no es una clase incompleta. La cap NO se captura: se pinta con nuestro cierre diario de SPCX."
     }
-  ]
+  ],
+  "_clases_de_acciones": {
+    "que_son": "Emisoras con dos clases cotizadas (BRK.A/BRK.B). La cap es la SUMA de cada clase por su precio, y se resuelve con la misma idea que la razón de un ADR: lo que se captura es ESTRUCTURAL —la equivalencia entre clases, que está en el estatuto— y el tamaño se pinta con NUESTRO cierre diario de la clase cotizada.",
+    "la_cuenta": "cap = (Σ acciones_clase × equivalencia_en_cotizada) × nuestro cierre de la clase cotizada. Para BRK: (acciones_A × 1500 + acciones_B) × cierre de BRK.B.",
+    "por_que_manual": "`companyconcept` de EDGAR devuelve los conteos de portada SIN etiquetar la clase —la clase vive en el contexto XBRL, que esa API no manda—, así que se tienen los dos números sin saber cuál es cuál. La portada del 10-Q sí los nombra. Decisión de Lety, 2026-10-22.",
+    "que_leer": "De la PORTADA del último 10-Q de la emisora: las líneas que dicen cuántas acciones de cada clase estaban en circulación, con su fecha. Y la equivalencia entre clases, del estatuto o de la nota de la propia emisora (BRK: 1 Clase A = 1,500 Clase B).",
+    "caducidad": "Los conteos SÍ envejecen, a diferencia de la razón de un ADR: una recompra los mueve. Un trimestre mueve ~1%, muy dentro del 5% de tolerancia, así que vencer es una TAREA (aparece en `referencias_a_recapturar`) y NO apaga el cuadro.",
+    "forma_de_una_fila": {
+      "clave": "BRK.B",
+      "cotizada": "BRK.B",
+      "clases": [
+        {
+          "nombre": "Class A",
+          "acciones": 0,
+          "equivalencia_en_cotizada": 1500
+        },
+        {
+          "nombre": "Class B",
+          "acciones": 0,
+          "equivalencia_en_cotizada": 1
+        }
+      ],
+      "fuente": "portada del 10-Q de <emisora>, <accession>",
+      "capturada_en": "YYYY-MM-DD",
+      "vigente_hasta": "YYYY-MM-DD"
+    }
+  },
+  "_pendientes_de_captura": []
 }

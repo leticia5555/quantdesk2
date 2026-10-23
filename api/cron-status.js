@@ -70,6 +70,10 @@ export const EXPECTED = [
   // tomó", no "operó". Sin esta fila el reporte de 3 números no tiene datos.
   { job: 'libro:equity',    path: '/api/libro?equity=1',             schedule: '5 21 * * 1-5',          cadence: 'días hábiles ~21:05', stale_after_h: 80 },
   { job: 'earnings-beat:precios',  path: '/api/earnings-beat-harvest?job=precios',  schedule: '40 23 * * *', cadence: '1×/día (CLOB)',       stale_after_h: 30 },
+  // earnings-beat v2 (papel): recalcula pm_earnings_v2_features después de que
+  // `precios` dejó el T-24h, y —solo con EARNINGS_V2_VIGENTE_ENABLED=1— captura
+  // el consenso vigente de AV. Ver docs/earnings-beat-v2.md.
+  { job: 'earnings-beat:v2',       path: '/api/earnings-beat-v2?job=diario',         schedule: '55 23 * * *', cadence: '1×/día (Neon + AV opc.)', stale_after_h: 30 },
   { job: 'screener:refresh',path: '/api/arena-screener?job=refresh', schedule: '0 */4 * * *',           cadence: 'cada 4h',             stale_after_h: 9, vive_en: 'github-actions' },
   // R0(a): puebla mercado_universo_us (sector + cap) antes de la apertura, 30
   // min después del arena:universe que le da los símbolos. La ventana de stale
@@ -104,6 +108,38 @@ export const EXPECTED = [
   // 300 nombres a 100/min no cabe en una corrida; una vez sembrada, la cola
   // diaria termina en la primera y las otras dos no piden nada.
   { job: 'mercado:precios', path: '/api/mercado-precios?job=us',      schedule: '20,35,50 21 * * 1-5',   cadence: '3×/hora tras el cierre US', stale_after_h: 80 },
+  // R3(b). Cada 10 min, TODOS los días: las noticias no respetan el calendario
+  // bursátil. La ventana de stale es corta a propósito — con esta cadencia, dos
+  // horas sin latido ya no es "se perdió un tick", es que el job murió.
+  { job: 'mercado:noticias', path: '/api/noticias?job=feeds',         schedule: '*/10 * * * *',          cadence: 'cada 10 min', stale_after_h: 2 },
+  // Banxico por el SIE: la tasa objetivo se mira UNA vez al día. Sólo salen
+  // filas cuando la serie CAMBIA, así que el latido dice "se miró", no "hubo
+  // anuncio" — y por eso vale aunque pasen meses sin un solo cambio.
+  { job: 'mercado:banxico', path: '/api/noticias?job=banxico',        schedule: '25 23 * * 1-5',         cadence: '1×/día hábil', stale_after_h: 80 },
+  // ── LOS FORM 4 COMPLETOS (2026-10-22) ────────────────────────────
+  // Dos crons porque son dos trabajos de tamaños distintos: el índice es una
+  // petición por día hábil y deja la lista de lo que DEBERÍA estar; los XML
+  // son miles y se recogen a cuentagotas, con presupuesto.
+  //
+  // Una vez al día: el índice de un día cerrado ya no cambia. `dias=3` es el
+  // de ayer más margen por si una corrida falló.
+  // ── A LAS 04:10 UTC, NO A LAS 23:20 ─────────────────────────────────
+  // A las 23:20 UTC el índice del día NO EXISTE todavía: EDGAR acepta
+  // presentaciones hasta las 22:00 ET y publica después, o sea a las 02:00
+  // UTC en horario de verano y a las 03:00 en invierno. El cron corría una
+  // hora ANTES de la publicación y el día salía en 0/null (Lety, 2026-10-21).
+  //
+  // 04:10 UTC le da una hora de margen al caso más tardío (EST), así que
+  // funciona todo el año sin tocar nada en noviembre. Y `dias=3` sigue
+  // releyendo tres días hábiles, así que una corrida perdida se recupera
+  // sola al día siguiente.
+  { job: 'mercado:form4-indice', path: '/api/stock-tracker?job=indice&dias=3',
+    schedule: '10 4 * * *', cadence: 'diario ~04:10 UTC', stale_after_h: 30 },
+  // Cada diez minutos. Late SIEMPRE, incluso con cero pendientes —que es el
+  // estado bueno—: un cron que sólo late cuando hay trabajo no se distingue
+  // de un cron muerto.
+  { job: 'mercado:form4-xml', path: '/api/stock-tracker?job=form4',
+    schedule: '*/10 * * * *', cadence: 'cada 10 min', stale_after_h: 3 },
 ];
 
 // Crons de vercel.json que a propósito NO se vigilan acá, con el porqué. La

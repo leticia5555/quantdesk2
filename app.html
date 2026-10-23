@@ -1030,9 +1030,9 @@ td:first-child{color:var(--text);font-weight:500;}
        aparece, va a ser un campo nuevo con su nombre — no este % renombrado. -->
   <div style="background:#0d0d0d;padding:16px;margin-top:1px;border-bottom:1px solid #1a1a1a;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;border-bottom:1px solid #1a1a1a;padding-bottom:6px;flex-wrap:wrap;">
-      <span style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;" data-i18n="pmOpenMarkets">POLYMARKET · OPEN EARNINGS MARKETS</span>
+      <span style="font-family:var(--mono);font-size:9px;color:#ff6600;letter-spacing:.1em;">POLYMARKET · MERCADOS DE EARNINGS ABIERTOS</span>
       <span id="ebLiveMeta" style="font-family:var(--mono);font-size:9px;color:#444;"></span>
-      <button onclick="loadEarningsBeatLive(true)" style="margin-left:auto;font-family:var(--mono);font-size:9px;padding:2px 8px;background:none;border:1px solid #333;color:#888;border-radius:2px;cursor:pointer;" data-i18n="refresh">↻ refresh</button>
+      <button onclick="loadEarningsBeatLive(true)" style="margin-left:auto;font-family:var(--mono);font-size:9px;padding:2px 8px;background:none;border:1px solid #333;color:#888;border-radius:2px;cursor:pointer;">↻ actualizar</button>
     </div>
     <div id="ebLiveDisclaimer" style="font-family:var(--mono);font-size:9px;line-height:1.5;color:#7a6a45;background:#141109;border:1px solid #2a2212;border-radius:2px;padding:8px 10px;margin-bottom:12px;"></div>
     <div id="ebLivePanel"><div style="color:#333;font-family:var(--mono);font-size:11px;text-align:center;padding:24px 0;">…</div></div>
@@ -2475,7 +2475,7 @@ async function loadEarningsBeatLive(forzar){
   _ebLiveLoading=true;
   ebLiveDisclaimer();
   panel.innerHTML='<div style="color:#444;font-family:var(--mono);font-size:11px;text-align:center;padding:24px 0;">'
-    +smL('Consultando Polymarket…','Querying Polymarket…')+'</div>';
+    +'Consultando Polymarket…'+'</div>';
   try{
     const r=await fetch('/api/earnings-beat?vista=live');
     const d=await r.json();
@@ -2483,18 +2483,16 @@ async function loadEarningsBeatLive(forzar){
     renderEbLive(d);
   }catch(e){
     // Un fallo de red NO se pinta como "no hay mercados": son cosas distintas.
-    panel.innerHTML=ebLiveAviso(smL('No se pudo consultar Polymarket. Es un fallo de conexión, no que no haya mercados abiertos.',
-      'Could not reach Polymarket. This is a connection failure, not an absence of open markets.'));
+    panel.innerHTML=ebLiveAviso('No se pudo consultar Polymarket. Es un fallo de conexión, no que no haya mercados abiertos.');
   }finally{ _ebLiveLoading=false; }
 }
 
 function ebLiveDisclaimer(){
   const el=document.getElementById('ebLiveDisclaimer');
   if(!el) return;
-  const es='⚠ El histórico es un CONTEO de trimestres pasados, no una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.';
-  const en='⚠ The track record COUNTS past quarters — it is not a forecast. QuantDesk does not publish its own probability yet: it is still being validated.';
-  const primero=smL(es,en), segundo=smL(en,es);
-  el.innerHTML='<div>'+primero+'</div><div style="color:#4a4130;margin-top:3px;">'+segundo+'</div>';
+  // Solo en español: la tarjeta entera va en español (el título del mercado,
+  // que es cita de Polymarket, es la única excepción).
+  el.innerHTML='<div>⚠ El historial es un CONTEO de trimestres pasados, no una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.</div>';
 }
 
 function ebLiveAviso(txt){
@@ -2508,23 +2506,23 @@ function renderEbLive(d){
   if(meta) meta.textContent='';
 
   if(d && d.error){
-    panel.innerHTML=ebLiveAviso(smL('Polymarket no respondió: ','Polymarket did not respond: ')+String(d.error).slice(0,140));
+    panel.innerHTML=ebLiveAviso('Polymarket no respondió: '+String(d.error).slice(0,140));
     return;
   }
   const empresas=(d&&d.empresas)||[];
   if(!empresas.length){
     // Estado vacío HONESTO: el motivo que dio el endpoint, no un genérico.
-    const motivo=(d&&d.vacio&&d.vacio.motivo)||smL('sin datos','no data');
-    panel.innerHTML=ebLiveAviso(smL('Ningún mercado abierto ahora mismo. Motivo: ','No open markets right now. Reason: ')+motivo
+    const motivo=(d&&d.vacio&&d.vacio.motivo)||'sin datos';
+    panel.innerHTML=ebLiveAviso('Ningún mercado abierto ahora mismo. Motivo: '+motivo
       +'<div style="color:#444;margin-top:6px;font-size:10px;">'
-      +smL('Revisados: ','Reviewed: ')+((d&&d.vacio&&d.vacio.revisados)||0)+'</div>');
+      +'Revisados: '+((d&&d.vacio&&d.vacio.revisados)||0)+'</div>');
     return;
   }
 
   if(meta){
     const c=(d&&d.cobertura)||{};
-    let txt=empresas.length+smL(' empresa(s) · ',' compan'+(empresas.length===1?'y':'ies')+' · ')+(d.mercados_abiertos||0)+smL(' mercado(s) abierto(s)',' open market(s)');
-    if(c.parcial) txt+=smL(' · cobertura parcial ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' símbolos)',' · partial coverage ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' symbols)');
+    let txt=empresas.length+(empresas.length===1?' empresa · ':' empresas · ')+(d.mercados_abiertos||0)+' mercado(s) abierto(s)';
+    if(c.parcial) txt+=(' · cobertura parcial ('+(c.simbolos_probados||0)+'/'+(c.de||0)+' símbolos)');
     meta.textContent=txt;
   }
 
@@ -2537,23 +2535,39 @@ function ebLiveCard(e){
   const m=(e.mercados&&e.mercados[0])||{};
   const dias=ebDiasHasta(e.fecha_resolucion);
 
-  // "Histórico: superó 15 de 20 (75%) · completo: 77 de 121" — conteo, nunca
+  // "Historial: superó 15 de 20 (75%) · completo: 77 de 121" — conteo, nunca
   // probabilidad. El número PRINCIPAL es la ventana de 5 años: Micron en 1998
   // no informa sobre Micron hoy. El historial completo va al lado, secundario,
   // para no perder la profundidad.
   const v=h.ventana, comp=h.completo;
   const historicoTxt = (h.sin_datos||!v||!v.total)
-    ? smL('Histórico: sin trimestres comparables en nuestra base','Track record: no comparable quarters in our data')
-    : smL('Histórico: superó '+v.beats+' de '+v.total+' ('+v.pct+'%)',
-          'Track record: beat '+v.beats+' of '+v.total+' ('+v.pct+'%)');
+    ? 'Historial: sin trimestres comparables en nuestra base'
+    : 'Historial: superó '+v.beats+' de '+v.total+' ('+v.pct+'%)';
   const completoTxt = (!comp||!v||comp.total<=v.total) ? ''
-    : smL('histórico completo: '+comp.beats+' de '+comp.total+' ('+comp.pct+'%)',
-          'full history: '+comp.beats+' of '+comp.total+' ('+comp.pct+'%)');
+    : 'historial completo: '+comp.beats+' de '+comp.total+' ('+comp.pct+'%)';
 
-  // "Polymarket hoy: 68%" — con la fuente citada.
+  // "Polymarket hoy: 16% (punto medio del libro)" — con el TIPO de precio dicho. En
+  // META la tarjeta mostró 7% (outcomePrices), Polymarket 16% (mid) y entrar
+  // costaba 28¢ (ask): tres números para lo mismo, y no se sabía cuál era el
+  // nuestro. El tipo lo decide el endpoint (`precio_tipo`); acá se nombra.
+  const tipoTxt = m.precio_tipo==='mid' ? ' (punto medio del libro)'
+    : m.precio_tipo==='outcome_prices' ? ' (Gamma outcomePrices: no se sabe si es último precio o punto medio)'
+    : '';
   const pmTxt = (m.polymarket_yes_pct===null||m.polymarket_yes_pct===undefined)
-    ? smL('Polymarket hoy: sin precio','Polymarket today: no price')
-    : smL('Polymarket hoy: '+m.polymarket_yes_pct+'%','Polymarket today: '+m.polymarket_yes_pct+'%');
+    ? 'Polymarket hoy: sin precio'
+    : 'Polymarket hoy: '+m.polymarket_yes_pct+'%'+tipoTxt;
+  // Profundidad AL LADO del precio: compra, venta y diferencia del Sí, volumen
+  // y liquidez. Un precio de un libro de $1.3K no pesa lo mismo que uno de $1M.
+  const lb=m.libro||{};
+  const cts=x=>(x===null||x===undefined)?'—':(Number(x)*100).toFixed(1)+'¢';
+  const libroTxt = lb.estado==='ok'
+    ? 'compra '+cts(lb.bid)+' · venta '+cts(lb.ask)+' · diferencia '+Number(lb.spread_puntos).toFixed(1)+'¢'
+    : 'sin libro de órdenes del Sí'+(lb.estado?' ('+lb.estado+')':'');
+  const profTxt = 'volumen '+ebUsdCorto(m.volumen)+' · liquidez '+ebUsdCorto(m.liquidez);
+  // La fuente del precio, nombrada por el CÓDIGO del tipo (`precio_tipo`): el
+  // texto del endpoint (`fuente_precio`) es dato y queda como está.
+  const fuentePrecio = m.precio_tipo==='mid' ? 'Polymarket · punto medio del libro del Sí (CLOB)'
+    : m.precio_tipo==='outcome_prices' ? 'Polymarket · Gamma outcomePrices' : 'Polymarket';
 
   // La racha se cuenta sobre LA MISMA ventana del titular. Si el titular mira
   // 20 trimestres y la racha mira 121, la tarjeta se contradice sola. `tope`
@@ -2561,8 +2575,7 @@ function ebLiveCard(e){
   // larga, pero afirmarlo sería inventar el trimestre 21.
   const mas=(h.racha&&h.racha.tope)?'+':'';
   const racha = h.racha&&h.racha.largo
-    ? smL('Racha: '+h.racha.largo+mas+' '+(h.racha.tipo==='beats'?'trimestre(s) superando':'trimestre(s) fallando')+' al hilo',
-          'Streak: '+h.racha.largo+mas+' quarter(s) '+(h.racha.tipo==='beats'?'beating':'missing')+' in a row')
+    ? 'Racha: '+h.racha.largo+mas+' '+(h.racha.tipo==='beats'?'trimestre(s) superando':'trimestre(s) fallando')+' al hilo'
     : '';
 
   // MEDIANA, no promedio. Un trimestre con estimado ≈ $0.01 mete un −3000%
@@ -2570,50 +2583,68 @@ function ebLiveCard(e){
   // 13 beats al hilo. Cuando los dos se separan, se dice.
   const sp=h.sorpresa||{};
   const sorpresa = (sp.mediana_pct===null||sp.mediana_pct===undefined) ? ''
-    : smL('Sorpresa mediana: ','Median surprise: ')+(sp.mediana_pct>0?'+':'')+sp.mediana_pct+'%';
+    : 'Sorpresa mediana: '+(sp.mediana_pct>0?'+':'')+sp.mediana_pct+'%';
   // LA CAUSA LA DECIDE EL ENDPOINT, no esta función. Esta frase ya estuvo mal
   // una vez: con BA imprimía "distorsionado por 0 trimestre(s) con estimado
   // cerca de cero" — y el extremo de BA es est 0.09 → −6.18, el 737 MAX, un
   // trimestre real. Armar el texto acá es lo que permitió que la pantalla
   // afirmara una causa que el dato no decía. Ahora se elige por `sp.causa`.
   const causaTxt = sp.causa==='artefacto_denominador'
-    ? smL(sp.denominador_chico+' trimestre(s) con estimado de centavos: ahí el % no significa nada',
-          sp.denominador_chico+' quarter(s) with a pennies-sized estimate: the % means nothing there')
+    ? sp.denominador_chico+' trimestre(s) con estimado de centavos: ahí el % no significa nada'
     : sp.causa==='colas_reales'
-      ? smL('trimestres de pérdida o sorpresas muy grandes REALES'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' con estimado negativo)':''),
-            'REAL loss quarters or very large surprises'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' with a negative estimate)':''))
+      ? 'trimestres de pérdida o sorpresas muy grandes REALES'+(sp.estimado_no_positivo?' ('+sp.estimado_no_positivo+' con estimado negativo)':'')
       : '';
   const sorpresaNota = (sp.distorsionado&&causaTxt)
-    ? smL('promedio '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — ','mean '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — ')+causaTxt
+    ? 'promedio '+(sp.promedio_pct>0?'+':'')+sp.promedio_pct+'% — '+causaTxt
     : '';
 
   const quarters=(h.ultimos||[]).map(q=>{
     const marca=q.beat?'<span style="color:#00c97d;">✓</span>':'<span style="color:#ff4444;">✗</span>';
     const est=(q.estimado===null||q.estimado===undefined)?'—':Number(q.estimado).toFixed(2);
     const rep=(q.reportado===null||q.reportado===undefined)?'—':Number(q.reportado).toFixed(2);
-    const front=q.frontera?'<span title="'+smL('dentro de 1 centavo del estimado','within one cent of the estimate')+'" style="color:#7a6a45;"> ~</span>':'';
+    const front=q.frontera?'<span title="dentro de 1 centavo del estimado" style="color:#7a6a45;"> ~</span>':'';
     return '<div style="display:flex;gap:6px;justify-content:space-between;font-size:9px;color:#666;padding:1px 0;">'
       +'<span>'+marca+front+' '+q.fecha+'</span>'
-      +'<span style="color:#555;">'+smL('est ','est ')+est+' → '+rep+'</span></div>';
+      +'<span style="color:#555;">est '+est+' → '+rep+'</span></div>';
   }).join('');
 
-  const consenso=(m.consenso_eps===null||m.consenso_eps===undefined)?'' :
-    '<div style="font-size:9px;color:#666;margin-top:2px;">'+smL('Consenso del mercado: ','Market consensus: ')+Number(m.consenso_eps).toFixed(2)+'</div>';
-
-  // ── BLOQUE DE DESACUERDO ────────────────────────────────────────
-  // LA CAUSA LA DECIDE EL ENDPOINT. Acá solo se TRADUCE por código: la nota de
-  // sorpresa de BA ya afirmó una causa falsa por armarse el texto en el front,
-  // y no se repite. Si un código no se reconoce, no se escribe nada.
+  // NÚMEROS LADO A LADO, cada uno con lo que mide. QuantDesk NO dictamina el
+  // desacuerdo (decisión de Lety tras la alerta falsa de META): pone el precio
+  // del mercado con su métrica, el consenso con su fuente y el histórico con
+  // la suya, y el que compara es el usuario.
   //
-  // Y la brecha NUNCA se presenta como "QuantDesk dice 75%": es la distancia
-  // entre un precio y un CONTEO de trimestres pasados. Las dos cosas nombradas
-  // por lo que son, en la misma frase.
-  const desacuerdoTxt = ebDesacuerdoBloque(e, m);
+  // Qué mide el mercado, JUNTO al umbral: "Resuelve sobre EPS GAAP de $6.31".
+  // Si la métrica no se pudo leer, se dice así, sin inventarla.
+  const met=(m.metrica&&m.metrica.metrica)||'indeterminada';
+  const umbral=(m.consenso_eps!==null&&m.consenso_eps!==undefined)?m.consenso_eps:m.umbral_slug;
+  const umbralEs=(umbral===null||umbral===undefined)?null:'$'+Number(umbral).toFixed(2);
+  const pideTxt = met==='indeterminada'
+    ? 'Métrica del mercado: no determinada'+(umbralEs?' · umbral '+umbralEs:'')
+    : 'Resuelve sobre '+EB_METRICA_ES[met]+(umbralEs?' de '+umbralEs:'');
+
+  // El consenso de los analistas, con su fuente. Finnhub no declara si es GAAP
+  // o ajustado, y la tarjeta lo dice en vez de suponerlo.
+  const ca=m.consenso_analistas||{};
+  const consensoTxt = (ca.valor===null||ca.valor===undefined)
+    ? 'Consenso de analistas: no disponible'+(ca.motivo?' ('+ca.motivo+')':'')
+    : 'Consenso de analistas: $'+Number(ca.valor).toFixed(2)+' · Finnhub no declara si es EPS GAAP o ajustado';
+
+  // Línea NEUTRAL cuando el mercado mide otra cosa que el historial. Informa;
+  // no es una advertencia ni bloquea nada. Se arma por CÓDIGO (`mv.mercado`),
+  // no con la nota del endpoint, para que la etiqueta sea la de esta pantalla.
+  const mv=m.metrica_vs_historico||{};
+  const metricaDistinta = mv.estado==='distinta'&&EB_METRICA_ES[mv.mercado]
+    ? 'El mercado mide '+EB_METRICA_ES[mv.mercado]+'; el historial cuenta EPS ajustado.'
+    : '';
 
   const titulo=m.titulo?String(m.titulo).slice(0,90):(m.slug||'');
   const link=m.url?'<a href="'+m.url+'" target="_blank" rel="noopener noreferrer" style="color:#ff6600;text-decoration:none;">'+titulo+' ↗</a>':titulo;
+  // El título se queda en INGLÉS: es una cita de Polymarket. Debajo, en gris
+  // chico, su traducción — la arma el endpoint por plantilla (`titulo_es`), y
+  // si el título no encaja en ninguna, no se pinta nada.
+  const tituloEs=m.titulo_es?'<div style="font-size:8px;color:#555;line-height:1.3;">'+m.titulo_es+'</div>':'';
   const otros=(e.mercados&&e.mercados.length>1)
-    ? '<div style="font-size:9px;color:#555;margin-top:3px;">+'+(e.mercados.length-1)+smL(' mercado(s) más de esta empresa',' more market(s) for this company')+'</div>' : '';
+    ? '<div style="font-size:9px;color:#555;margin-top:3px;">+'+(e.mercados.length-1)+' mercado(s) más de esta empresa</div>' : '';
 
   return '<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-radius:3px;padding:12px;">'
     +'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px;">'
@@ -2621,92 +2652,45 @@ function ebLiveCard(e){
       +'<span style="font-family:var(--mono);font-size:9px;color:#666;">'+(e.fecha_resolucion||'—')+(dias!==null?' · '+dias:'')+'</span>'
     +'</div>'
     +'<div style="font-family:var(--mono);font-size:11px;color:#ff6600;">'+pmTxt+'</div>'
-    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">'+smL('fuente: ','source: ')+(m.fuente_precio||'Polymarket')+'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#888;">'+libroTxt+'</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#666;">'+profTxt+'</div>'
+    +'<div style="font-size:9px;color:#999;margin-top:2px;">'+pideTxt+'</div>'
+    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">fuente: '+fuentePrecio+'</div>'
+    +'<div style="font-family:var(--mono);font-size:10px;color:#aaa;">'+consensoTxt+'</div>'
+    +'<div style="font-size:8px;color:#444;margin-bottom:8px;">fuente: '+(ca.fuente||'Finnhub')+'</div>'
+    +'<div style="font-size:8px;color:#555;letter-spacing:.08em;">QUANTDESK · HISTORIAL</div>'
     +'<div style="font-family:var(--mono);font-size:11px;color:#ccc;">'+historicoTxt+'</div>'
     +(completoTxt?'<div style="font-size:9px;color:#666;">'+completoTxt+'</div>':'')
     +(racha?'<div style="font-size:9px;color:#888;margin-top:2px;">'+racha+'</div>':'')
     +(sorpresa?'<div style="font-size:9px;color:#888;">'+sorpresa+'</div>':'')
     +(sorpresaNota?'<div style="font-size:8px;color:#7a6a45;line-height:1.3;">'+sorpresaNota+'</div>':'')
-    +'<div style="font-size:8px;color:#444;margin-bottom:6px;">'+smL('fuente: historial de EPS (Alpha Vantage)','source: EPS history (Alpha Vantage)')+'</div>'
-    +desacuerdoTxt
+    +'<div style="font-size:8px;color:#444;'+(metricaDistinta?'':'margin-bottom:6px;')+'">contando EPS ajustado (Alpha Vantage)</div>'
+    +(metricaDistinta?'<div style="font-size:9px;color:#888;margin-bottom:6px;">'+metricaDistinta+'</div>':'')
     +(quarters?'<div style="border-top:1px solid #161616;padding-top:6px;margin-bottom:6px;">'
-      +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">'+smL('ÚLTIMOS TRIMESTRES','LAST QUARTERS')
-      +(v&&v.anios?'<span style="color:#444;"> · '+smL('titular sobre '+v.total+' trimestres ('+v.anios+' años)','headline over '+v.total+' quarters ('+v.anios+'y)')+'</span>':'')+'</div>'+quarters+'</div>':'')
-    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+consenso+otros+'</div>'
+      +'<div style="font-size:8px;color:#555;letter-spacing:.08em;margin-bottom:3px;">ÚLTIMOS TRIMESTRES'
+      +(v&&v.anios?'<span style="color:#444;"> · titular sobre '+v.total+' trimestres ('+v.anios+'a)</span>':'')+'</div>'+quarters+'</div>':'')
+    +'<div style="border-top:1px solid #161616;padding-top:6px;font-size:9px;color:#777;line-height:1.4;">'+link+tituloEs+otros+'</div>'
     +'<div style="margin-top:6px;font-size:8px;color:#5a4f38;line-height:1.4;">'
-      +smL('El histórico no es predicción · Track record is not a forecast',
-           'Track record is not a forecast · El histórico no es predicción')+'</div>'
+      +'El historial no es predicción.</div>'
   +'</div>';
 }
 
-// ─── BLOQUE DE DESACUERDO ────────────────────────────────────────────
-// Se dibuja SOLO cuando el endpoint dictaminó `clasificacion === 'desacuerdo'`.
-// Los motivos de "no comparable" (muestra corta, fecha pasada, sin consenso)
-// no pintan tarjeta: una advertencia que no se puede sostener es peor que el
-// silencio. El único que sí se dice es el de varios umbrales, porque ahí la
-// tarjeta muestra un precio que podría no ser el comparable.
-//
-// LO QUE ESTE BLOQUE NO PUEDE DECIR, y hay test que lo vigila: que el mercado
-// sepa algo. Un hueco grande tiene dos causas y la más probable, según las
-// cuatro correcciones de la Fase 0, es que los dos números sean sobre
-// preguntas distintas. Por eso el orden de "dónde mirar" lo manda el endpoint.
-const EB_DONDE_MIRAR_EN = {
-  instrumento: 'FIRST: is the market asking the same question? Compare its threshold and quarter against consensus — a threshold above consensus trades low for good reason.',
-  instrumento_sin_consenso: 'FIRST: the market declares no consensus, so what it resolves against is unknown. Open the market on Polymarket and read the question.',
-  revisiones: 'estimate revisions, last 30 days',
-  ocho_k: "the company's latest 8-Ks (EDGAR)",
-  pares: 'what its sector peers reported this quarter',
-};
-const EB_LECTURA_EN = {
-  instrumento_primero: 'A gap this size is produced more easily by a market asking something ELSE than by new information: check the instrument before the news.',
-  ambas_causas: 'It could be information the track record does not contain, or the two figures not measuring the same thing. There is no telling which without opening the market.',
+// Etiqueta en pantalla de la métrica que pide el mercado. El código lo decide
+// el endpoint (`m.metrica.metrica`, que NO se toca: es dato); acá se nombra.
+const EB_METRICA_ES = {
+  eps_gaap: 'EPS GAAP',
+  eps_ajustado: 'EPS ajustado',
+  indeterminada: 'no determinada',
 };
 
-function ebDesacuerdoBloque(e, m){
-  const ds=(e&&e.desacuerdos)||{};
-  const d=(m&&m.desacuerdo)||null;
-  const partes=[];
-
-  // Varios umbrales sobre el mismo reporte: el precio de arriba puede no ser el
-  // que se puede comparar con la tasa histórica. Se dice ANTES del hueco.
-  if(ds.varios_umbrales){
-    partes.push('<div style="font-size:9px;color:#7a6a45;line-height:1.35;">'
-      +smL(ds.cuantos_mercados+' mercados abiertos de esta empresa, con umbrales distintos sobre el mismo reporte. La tasa histórica solo es comparable con el que pregunta por el consenso.',
-           ds.cuantos_mercados+' open markets for this company, with different thresholds on the same report. The track record is only comparable with the one asking about consensus.')
-      +'</div>');
-  }
-
-  if(d&&d.clasificacion==='desacuerdo'&&d.gap_puntos!==null){
-    const abs=Math.abs(d.gap_puntos);
-    const debajo=d.gap_puntos<0;
-    const pistas=(d.donde_mirar||[]).map(function(x){
-      const en=EB_DONDE_MIRAR_EN[x.codigo];
-      // Código que esta pantalla no conoce: NO se escribe. Mejor una pista
-      // menos que una frase inventada.
-      if(!en) return '';
-      return '<div style="padding-left:8px;color:#888;">→ '+smL(x.texto,en)+'</div>';
-    }).filter(Boolean).join('');
-    const lecturaEn=EB_LECTURA_EN[d.lectura_codigo]||'';
-    partes.push('<div style="border-top:1px solid #2a2118;margin-top:6px;padding-top:6px;">'
-      +'<div style="font-family:var(--mono);font-size:10px;color:#e8a33d;letter-spacing:.06em;">'
-        +smL('⚠ DESACUERDO · brecha de '+abs+' puntos','⚠ DISAGREEMENT · '+abs+'-point gap')+'</div>'
-      // Los dos números nombrados por lo que son: un PRECIO y un CONTEO.
-      +'<div style="font-size:9px;color:#aaa;line-height:1.35;margin-top:3px;">'
-        +smL('El precio del mercado ('+d.precio_pct+'%) está '+(debajo?'muy por debajo':'muy por encima')+' de la tasa histórica ('+d.tasa_historica_pct+'%, '+d.beats+' de '+d.trimestres+' trimestres).',
-             'The market price ('+d.precio_pct+'%) is far '+(debajo?'below':'above')+' the historical rate ('+d.tasa_historica_pct+'%, '+d.beats+' of '+d.trimestres+' quarters).')
-        +'</div>'
-      +(lecturaEn?'<div style="font-size:9px;color:#888;line-height:1.35;margin-top:3px;">'+smL(d.lectura,'A '+abs+'-point gap. '+lecturaEn)+'</div>':'')
-      +'<div style="font-size:9px;color:#666;margin-top:4px;">'+smL('Dónde mirar:','Where to look:')+'</div>'
-      +pistas
-      +'<div style="font-size:8px;color:#7a6a45;line-height:1.35;margin-top:4px;">'
-        +smL('La tasa histórica es un CONTEO de trimestres pasados: no es predicción de este trimestre.',
-             'The historical rate is a COUNT of past quarters: it is not a forecast for this quarter.')+'</div>'
-      +'<div style="font-size:8px;color:#666;margin-top:2px;">'
-        +smL('No es señal de compra ni de venta. Es dónde mirar.','Not a buy or sell signal. It is where to look.')+'</div>'
-    +'</div>');
-  }
-
-  return partes.join('');
+// Monto AGREGADO en dólares, corto: $4.2K, $1.3M. No es un precio (el lint de
+// precios lo deja fuera a propósito): es volumen o liquidez de un mercado.
+function ebUsdCorto(n){
+  if(n===null||n===undefined||!isFinite(Number(n))) return '—';
+  const x=Number(n);
+  if(x>=1e6) return '$'+(x/1e6).toFixed(1)+'M';
+  if(x>=1e3) return '$'+(x/1e3).toFixed(1)+'K';
+  return '$'+x.toFixed(0);
 }
 
 // Días hasta la fecha, calculados en runtime (nunca una fecha tatuada).
@@ -2716,9 +2700,9 @@ function ebDiasHasta(iso){
   const d=new Date(iso+'T00:00:00');
   if(isNaN(d.getTime())) return null;
   const n=Math.round((d-hoy)/86400000);
-  if(n===0) return smL('hoy','today');
-  if(n<0) return smL('hace '+Math.abs(n)+'d',Math.abs(n)+'d ago');
-  return smL('en '+n+'d','in '+n+'d');
+  if(n===0) return 'hoy';
+  if(n<0) return 'hace '+Math.abs(n)+'d';
+  return 'en '+n+'d';
 }
 
 // Safe JSON parse - never throws, returns null on failure
@@ -7002,6 +6986,17 @@ function stFundBlock(f){
 // Estado vacío HONESTO: fuentes OK + 0 items no es un error — es "escaneé
 // N filings y ninguna compra calificó" (ventana fría del atom, caveat
 // documentado en el scope). Solo fuentes caídas muestran "unavailable".
+//
+// ── R5: EL ESTADO VACÍO YA NO ES UN CALLEJÓN SIN SALIDA ──────────────
+// "0 compras destacadas" era cierto y era inútil: la ventana SÍ traía
+// decenas de transacciones —awards, ejercicios, ventas— y el panel no
+// enseñaba ninguna. Ahora, cuando no hay compras destacadas, el mismo panel
+// carga TODAS las transacciones del mismo escaneo (`cat=form4`) y deja el
+// filtro de compras como una opción, no como la única realidad.
+//
+// Es el único cambio a app.html que el encargo de /mercado autoriza.
+let stTodasCache=null, stTodasSoloCompras=false;
+
 function stEmptyState(d){
   const s=d.scan||{};
   let h='<div class="analysis"><h3>'+t('stEmptyTitle')+'</h3>'+
@@ -7010,7 +7005,68 @@ function stEmptyState(d){
     (s.atom_entries!=null?s.atom_entries+' filings '+t('stEmptyInFeed')+' · ':'')+
     s.inspected+' '+t('stEmptyInspected')+' · '+(s.accumulated||0)+' '+t('stEmptyAccum')+'</span>';
   h+='<br>'+t('stEmptyNote')+'</div></div>';
+  // El contenedor de "Todas" se rellena cuando llega `cat=form4`.
+  h+='<div id="stTodas"><div style="font-size:11px;color:var(--text3);padding:8px 0;">'+
+    t('stTodasCargando')+'</div></div>';
   return h;
+}
+
+// Una transacción del Form 4, en una línea. Las columnas son las del
+// encargo; "le quedan" es la que no existía y es la que se mira.
+function stTxRow(f){
+  const col=f.tipo==='compra'?'var(--green,#4caf50)':(f.tipo==='venta'?'var(--red,#e05252)':'var(--text2)');
+  const quedan=f.le_quedan==null
+    ?'<span style="color:#555;" title="'+qdEscHTML(f.le_quedan_motivo||'')+'">—</span>'
+    :(f.le_quedan===0
+      ?'<span style="color:var(--red,#e05252);font-weight:600;" title="'+qdEscHTML(t('stSoldAllTip'))+'">0 · '+t('stSoldAll')+'</span>'
+      :Number(f.le_quedan).toLocaleString());
+  const valor=Number.isFinite(f.valor)?stFmtUsd(f.valor)
+    :'<span style="color:#555;" title="'+qdEscHTML(f.valor_motivo||'')+'">—</span>';
+  return '<div style="display:grid;grid-template-columns:62px minmax(0,1fr) auto;gap:2px 10px;'+
+    'padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;font-family:var(--mono);">'+
+    '<div style="color:var(--text);font-weight:600;">'+qdEscHTML(f.ticker||'—')+'</div>'+
+    '<div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2);">'+
+      qdEscHTML(f.quien||'—')+(f.cargo?' · '+qdEscHTML(f.cargo):'')+'</div>'+
+    '<div style="text-align:right;color:'+col+';">'+valor+'</div>'+
+    '<div style="grid-column:1/-1;color:#555;font-size:10px;">'+
+      qdEscHTML(f.codigo||'?')+' · '+qdEscHTML(f.nombre||'')+' · '+qdEscHTML(f.fecha||'')+
+      ' · '+t('stRemaining')+': '+quedan+
+      (f.link?' · <a href="'+qdEscHTML(f.link)+'" target="_blank" rel="noopener noreferrer">EDGAR ↗</a>':'')+
+    '</div></div>';
+}
+
+function stRenderTodas(){
+  const el=document.getElementById('stTodas');
+  if(!el)return;
+  const d=stTodasCache;
+  if(!d){el.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px 0;">'+t('stTodasCargando')+'</div>';return;}
+  const todas=Array.isArray(d.items)?d.items:[];
+  if(!todas.length){
+    el.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px 0;">'+
+      qdEscHTML(d.error||t('stTodasVacio'))+'</div>';
+    return;
+  }
+  const filas=stTodasSoloCompras?todas.filter(f=>f.tipo==='compra'):todas;
+  el.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px;">'+
+      '<div style="font-size:10px;color:var(--text3);letter-spacing:.06em;">'+t('stTodasTitulo')+
+        ' <span style="color:#555;">('+filas.length+(filas.length!==todas.length?'/'+todas.length:'')+')</span></div>'+
+      '<button type="button" id="stTodasFiltro" style="margin-left:auto;min-height:30px;padding:0 10px;'+
+        'background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text2);'+
+        'font-family:var(--mono);font-size:11px;cursor:pointer;">'+
+        (stTodasSoloCompras?t('stTodasVerTodas'):t('stTodasSoloCompras'))+'</button>'+
+    '</div>'+
+    filas.slice(0,40).map(stTxRow).join('')+
+    '<div style="font-size:10px;color:#555;margin-top:8px;line-height:1.6;">'+t('stTodasPie')+
+      ' · <a href="/mercado/insiders" target="_blank" rel="noopener noreferrer">/mercado/insiders ↗</a></div>';
+  const b=document.getElementById('stTodasFiltro');
+  if(b)b.onclick=function(){stTodasSoloCompras=!stTodasSoloCompras;stRenderTodas();};
+}
+
+function stCargarTodas(){
+  if(stTodasCache){stRenderTodas();return;}
+  qdFetchJSON('/api/stock-tracker?cat=form4',null,function(x){return x&&Array.isArray(x.items);})
+    .then(function(j){stTodasCache=j||{items:[],error:'sin respuesta'};stRenderTodas();})
+    .catch(function(e){stTodasCache={items:[],error:String((e&&e.message)||e)};stRenderTodas();});
 }
 
 function renderTracker(d){
@@ -7023,6 +7079,7 @@ function renderTracker(d){
     const items=Array.isArray(d.items)?d.items:[];
     if(!items.length){
       el.innerHTML=h+(srcOk?stEmptyState(d):qdUnavailableHTML('stock tracker · insider'));
+      if(srcOk)stCargarTodas();
       return;
     }
     h+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px;letter-spacing:.04em;">'+
@@ -10169,6 +10226,17 @@ const i18n = {
     stEmptyBody:'Sources are up — the recent Form 4 window just has no open-market buys by officers/directors ≥ $100k. Most filings are awards, option exercises and sales; notable buys are rare by design.',
     stEmptyInFeed:'in feed', stEmptyInspected:'inspected', stEmptyAccum:'accumulated',
     stEmptyNote:'The feed accumulates qualifying buys as they are filed (Form 4s arrive in batches, mostly after market close). Check back later today.',
+    // R5: the empty state is no longer a dead end — it shows EVERY
+    // transaction from the same scan, with the buy filter as an option.
+    stTodasTitulo:'ALL TRANSACTIONS IN THE WINDOW',
+    stTodasCargando:'loading every transaction from the same window…',
+    stTodasVacio:'the EDGAR feed window brought no transactions',
+    stTodasSoloCompras:'Buys only',
+    stTodasVerTodas:'Show all',
+    stTodasPie:'SEC Form 4 · size is what moved, not the holding · "remaining" comes from the filing itself',
+    stRemaining:'remaining',
+    stSoldAll:'all',
+    stSoldAllTip:'sold or disposed of the entire holding of this class, per the post-transaction amount in the filing',
     vcAiTitle:'// AI Scan · complementary',
     vcSourceDown:'source down', vcStaleNote:'all sources down — showing last good data',
     vcIpoCalendar:'IPO calendar · Finnhub',
@@ -10404,6 +10472,17 @@ const i18n = {
     stEmptyBody:'Las fuentes están arriba — la ventana reciente de Form 4 simplemente no trae compras open-market de officers/directors ≥ $100k. La mayoría de filings son awards, ejercicios de opciones y ventas; las compras destacadas son raras por diseño.',
     stEmptyInFeed:'en el feed', stEmptyInspected:'inspeccionados', stEmptyAccum:'acumulados',
     stEmptyNote:'El feed acumula compras calificantes conforme se reportan (los Form 4 entran en lotes, sobre todo tras el cierre del mercado). Vuelve más tarde.',
+    // R5: el estado vacío ya no es un callejón sin salida — muestra TODAS
+    // las transacciones del mismo escaneo, con el filtro de compras aparte.
+    stTodasTitulo:'TODAS LAS TRANSACCIONES DE LA VENTANA',
+    stTodasCargando:'cargando todas las transacciones de la misma ventana…',
+    stTodasVacio:'la ventana del feed de EDGAR no trajo ninguna transacción',
+    stTodasSoloCompras:'Sólo compras',
+    stTodasVerTodas:'Ver todas',
+    stTodasPie:'Form 4 de la SEC · el tamaño es lo que se movió, no la tenencia · "le quedan" sale del propio filing',
+    stRemaining:'le quedan',
+    stSoldAll:'todo',
+    stSoldAllTip:'vendió o entregó todo lo que tenía de esta clase, según la tenencia posterior del filing',
     vcAiTitle:'// Scan IA · complementario',
     vcSourceDown:'fuente caída', vcStaleNote:'fuentes caídas — mostrando lo último bueno',
     vcIpoCalendar:'Calendario IPO · Finnhub',

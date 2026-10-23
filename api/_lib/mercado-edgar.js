@@ -85,6 +85,40 @@ export const MAX_MESES_PORTADA = 15;
 /** Las formas que traen portada con conteo de acciones. Un 8-K no sirve. */
 export const FORMAS_CON_PORTADA = ['10-Q', '10-K', '10-K/A', '10-Q/A', '20-F', '40-F'];
 
+// ── EL SEGUNDO ESCALÓN: UNA EMISORA QUE TODAVÍA NO PRESENTA 10-Q ─────────
+// SPCX salió a bolsa el 2026-09-18 y no se pintaba: la cap de Finnhub era del
+// día de la IPO y difería 8% de acciones×precio, y EDGAR "no tenía" el conteo
+// de acciones. Cerró en $147.79 y fue de las más operadas del día — un hueco
+// de los que se notan (Lety, 2026-10-22).
+//
+// Y EDGAR SÍ LO TENÍA. `dei:EntityCommonStockSharesOutstanding` es un dato de
+// PORTADA, y lo trae cualquier presentación con portada: el prospecto
+// (424B4), el registro (S-1) y el 8-K del cierre de la oferta. La lista de
+// arriba sólo aceptaba informes periódicos, así que los descartaba.
+//
+// VA COMO ESCALÓN Y NO MEZCLADO, a propósito: el conteo de un prospecto puede
+// ser PREVIO a la oferta, y el de un S-1 puede quedar viejo entre enmiendas.
+// Mientras exista un informe periódico, ese manda. Esto entra sólo cuando no
+// hay ninguno — que es exactamente el caso de una emisora recién listada — y
+// el resultado declara de qué forma salió, para que la procedencia se vea.
+// ── LA VERSIÓN DE LA REGLA DE EXTRACCIÓN ────────────────────────────────
+// Cuando la regla cambia, lo que la regla VIEJA dio por perdido hay que
+// volver a preguntarlo. SPCX quedó marcado "EDGAR consultado el 2026-09-29,
+// sin dato" con la regla que sólo aceptaba informes periódicos; al agregar las
+// formas de IPO el arreglo no le llegaba, porque nadie vuelve a preguntar algo
+// que ya tiene respuesta (Lety, 2026-10-22).
+//
+// Se sube este número cada vez que cambia QUÉ se acepta. Una fila consultada
+// con una versión anterior vuelve a ser candidata, una sola vez, y queda
+// marcada con la nueva. No es un "reintentar todo": es "lo que se descartó
+// con un criterio que ya no usamos, se descartó por una razón que ya no vale".
+//
+//   1 → sólo 10-Q/10-K/20-F/40-F
+//   2 → + las formas de IPO (424B4, S-1, 8-K…) y se rechaza la portada futura
+export const REGLA_EDGAR_VERSION = 2;
+
+export const FORMAS_IPO = ['424B4', '424B1', '424B3', '424B2', 'S-1', 'S-1/A', '8-K', '8-K/A', 'F-1', 'F-1/A'];
+
 /**
  * El mapa ticker → CIK, desde `https://www.sec.gov/files/company_tickers.json`.
  *
@@ -103,6 +137,32 @@ export function mapaCik(json) {
     if (!out.has(t)) out.set(t, String(Math.trunc(cik)).padStart(10, '0'));
   }
   return out;
+}
+
+/**
+ * EL CIK DE UN SÍMBOLO, PROBANDO LAS DOS ORTOGRAFÍAS.
+ *
+ * `company_tickers.json` escribe las clases de acción con GUION —`BRK-B`— y
+ * nuestro universo con PUNTO —`BRK.B`—. La búsqueda era directa, así que
+ * BRK.B salía `sin_cik` y nunca llegaba a consultar sus acciones (Lety,
+ * 2026-10-22).
+ *
+ * CORRECCIÓN A UN COMENTARIO MÍO: en el PR del mapa escribí que el punto era
+ * "la forma de la SEC". Es al revés — la SEC usa guion igual que Yahoo, y el
+ * punto es nuestro. Queda dicho acá para que nadie lo lea al revés otra vez.
+ *
+ * Devuelve también CON QUÉ ortografía casó, porque "no está en EDGAR" y "está
+ * con otro nombre" son dos causas distintas y una de ellas es nuestra.
+ */
+export function cikDe(mapa, symbol) {
+  const base = String(symbol || '').toUpperCase().trim();
+  if (!base || !mapa) return { cik: null, como: null };
+  const formas = [base, base.replace(/\./g, '-'), base.replace(/-/g, '.')];
+  for (const f of formas) {
+    const cik = mapa.get ? mapa.get(f) : mapa[f];
+    if (cik) return { cik, como: f };
+  }
+  return { cik: null, como: null };
 }
 
 export const rutaCompanyConcept = (cik) =>
@@ -212,19 +272,53 @@ export function muestraCruda(json, max = 600) {
  * nos enteramos.
  */
 export function accionesDeCompanyConcept(json, {
-  formas = FORMAS_CON_PORTADA, hoy = new Date(), maxMeses = MAX_MESES_PORTADA,
+  formas = FORMAS_CON_PORTADA, formasRespaldo = FORMAS_IPO,
+  hoy = new Date(), maxMeses = MAX_MESES_PORTADA,
 } = {}) {
   const { filas: unidades, unidad, forma } = filasDeUnits(json);
-  const validas = unidades.filter((u) => {
+  const hoyIso = (hoy instanceof Date ? hoy : new Date(hoy || Date.now())).toISOString().slice(0, 10);
+  const utilizable = (u) => {
     const v = num(u && u.val);
-    return v != null && v > 0 && u.end && formas.includes(String(u.form || ''));
-  });
-  const base = { acciones: null, fecha_portada: null, presentado_en: null, form: null, unidad, forma };
+    if (v == null || v <= 0 || !u.end) return false;
+    // ── UNA PORTADA DEL FUTURO NO EXISTE ──────────────────────────────
+    // AAL resolvió con `portada: 2027-07-17` en un 10-Q presentado el
+    // 2026-07-23 (Lety, 2026-10-22). Un conteo de acciones fechado un año
+    // adelante del día en que se presentó es un error de etiquetado en el
+    // propio filing, y multiplicado por el cierre de hoy da un tamaño
+    // inventado con dos datos reales — el mismo modo de falla que la portada
+    // de 2009 de CMCSA, por el otro extremo.
+    //
+    // No se corrige la fecha ni se adivina cuál quiso decir: se descarta el
+    // hecho y, si no queda ninguno, el símbolo se va a gris con su causa.
+    if (String(u.end).slice(0, 10) > hoyIso) return false;
+    return true;
+  };
+  const deFormas = (lista) => unidades.filter((u) => utilizable(u) && lista.includes(String(u.form || '')));
+
+  // Los informes periódicos primero. El escalón de IPO sólo si no hay ninguno.
+  let validas = deFormas(formas);
+  let escalon = 'periodico';
+  if (!validas.length && Array.isArray(formasRespaldo) && formasRespaldo.length) {
+    validas = deFormas(formasRespaldo);
+    if (validas.length) escalon = 'ipo';
+  }
+  const base = { acciones: null, fecha_portada: null, presentado_en: null, form: null,
+    unidad, forma, escalon: null };
   if (!validas.length) {
     return {
       ...base,
       motivo: unidades.length
-        ? `EDGAR no trae ${formas.join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`
+        ? (() => {
+          // Si lo único que había estaba fechado adelante de hoy, eso es lo
+          // que hay que decir: "no trae formas con portada" mandaría a buscar
+          // el problema donde no está.
+          const futuras = unidades.filter((u) => u && u.end && String(u.end).slice(0, 10) > hoyIso).length;
+          if (futuras && futuras === unidades.filter((u) => num(u && u.val) != null && u.end).length) {
+            return `EDGAR trae ${futuras} conteo(s) de acciones con fecha de portada POSTERIOR a hoy (la más nueva, ${
+              unidades.map((u) => String(u.end)).sort().pop()}): es un error de etiquetado del filing y no se puede usar`;
+          }
+          return `EDGAR no trae ${formas.join('/')} ni ${(formasRespaldo || []).join('/')} con conteo de acciones utilizable (${unidades.length} hechos en "${unidad}")`;
+        })()
         // La huella va PEGADA al motivo: es la diferencia entre "EDGAR no tiene
         // el concepto" y "la respuesta vino con otra forma y no la supimos leer".
         : `EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (${formaDeUnits(json)})`,
@@ -278,7 +372,42 @@ export function accionesDeCompanyConcept(json, {
     return {
       ...base, fecha_portada: portada, presentado_en: u.filed ? String(u.filed) : null, form: String(u.form),
       meses_de_antiguedad: Math.round(meses),
-      motivo: `EDGAR sólo tiene portada de ${portada.slice(0, 4)} (${portada}, ${Math.round(meses)} meses): un conteo de acciones de esa fecha por el cierre de hoy no sostiene un tamaño`,
+      // ── QUÉ HAY EN LA RESPUESTA, PARA PODER DEPURARLA DESDE AFUERA ───
+      // ACN salió con "EDGAR sólo tiene portada de 2010" y Accenture reporta
+      // cada trimestre (Lety, 2026-10-22). Desde este contenedor no hay
+      // salida a sec.gov, así que lo único que puede explicar eso es lo que
+      // el job traiga en el motivo: cuántos hechos hay, de qué formas y de
+      // qué años. Con eso se distingue "la emisora usa otro concepto" de
+      // "estamos pegándole al CIK de la entidad vieja" —Accenture Ltd
+      // (Bermudas) y Accenture plc (Irlanda) son CIKs distintos— sin tener
+      // que adivinar.
+      hechos: validas.length,
+      formas_presentes: [...new Set(validas.map((x) => String(x.form || '?')))].sort(),
+      anios_presentes: [...new Set(validas.map((x) => String(x.end).slice(0, 4)))].sort(),
+      // ── LA CAUSA REAL, CONFIRMADA POR LETY (2026-10-22) ─────────────
+      // ACN resolvió con portada de 2010 teniendo el CIK correcto
+      // (1467373, Accenture plc) y sólo dos hechos, de 2009-2010. Mi
+      // hipótesis de la entidad de Bermudas no era.
+      //
+      // La causa es de la API: `companyconcept` OMITE los hechos con
+      // dimensión —los que llevan `StatementClassOfStockAxis`—. Una empresa
+      // con varias clases etiqueta la portada POR CLASE, así que desde el
+      // trimestre en que empezó a hacerlo sus hechos desaparecen de esta API
+      // y lo único que queda es el último sin dimensión, de hace quince años.
+      // Lety lo confirmó en el 10-Q de Berkshire: dos
+      // `dei:EntityCommonStockSharesOutstanding`, cada uno con su
+      // `contextref`.
+      //
+      // Afecta a TODAS las de varias clases, no sólo a ACN y BRK.B, y no se
+      // arregla con esta API: hace falta leer los contextos del filing, o
+      // capturar las clases a mano. Va en el motivo para que el próximo que
+      // lo vea no vuelva a buscar en el CIK.
+      motivo: `EDGAR sólo tiene portada de ${portada.slice(0, 4)} (${portada}, ${Math.round(meses)} meses): un conteo de acciones de esa fecha por el cierre de hoy no sostiene un tamaño`
+        + '. Causa frecuente: EDGAR separa la portada por clase y `companyconcept` no trae los hechos'
+        + ' con dimensión, así que de una emisora de varias clases sólo queda su último hecho sin'
+        + ' dimensión, que puede ser de hace años'
+        + ` — ${validas.length} hecho(s) utilizable(s), formas ${[...new Set(validas.map((x) => String(x.form || '?')))].sort().join('/')}`
+        + `, años ${[...new Set(validas.map((x) => String(x.end).slice(0, 4)))].sort().join(',')}`,
     };
   }
 
@@ -293,6 +422,12 @@ export function accionesDeCompanyConcept(json, {
     fy: u.fy != null ? Number(u.fy) : null,
     fp: u.fp ? String(u.fp) : null,
     accn: u.accn ? String(u.accn) : null,
+    // De qué escalón salió. `ipo` quiere decir "no hay informe periódico
+    // todavía y esto viene de la portada del prospecto o del 8-K". No es peor
+    // dato —es el mismo concepto de la misma fuente—, pero la procedencia se
+    // declara: la regla 3 pide que cada número diga de dónde sale, y "del
+    // 424B4 del 18-sep" no es lo mismo que "del 10-Q del 30-jun".
+    escalon,
     motivo: null,
   };
 }
@@ -496,24 +631,211 @@ export function estadoEdgar({ acciones = null, consultada_en = null, motivo = nu
  * EDGAR. Un cero sin desglose no se puede depurar: ahora cada descarte se
  * cuenta y la pregunta correcta es "¿tiene un conteo POSITIVO?".
  */
-export function candidatosParaEdgar({ entradas = [], veredictos = [], universoPorSymbol = new Map() } = {}) {
+export function candidatosParaEdgar({
+  entradas = [], veredictos = [], universoPorSymbol = new Map(), hoy = new Date(),
+  traza = null, forzar = null,
+} = {}) {
+  const hoyIso = (hoy instanceof Date ? hoy : new Date(hoy || Date.now())).toISOString().slice(0, 10);
   const porSymbol = new Map(entradas.map((e) => [e.symbol, e]));
   const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
   const diagnostico = {
     filas: veredictos.length, sin_precio: 0, sin_acciones: 0,
-    verificadas: 0, no_usd: 0, ya_con_edgar: 0, candidatos: 0,
+    verificadas: 0, verificadas_sin_contraste: 0, no_usd: 0, ya_con_edgar: 0, candidatos: 0,
   };
   const candidatos = [];
+  // ── POR QUÉ QUEDÓ FUERA CADA UNO, CON NOMBRE ──────────────────────────
+  // Los contadores dicen CUÁNTOS, no CUÁLES. Con SPCX gris y 52 candidatos,
+  // saber que hay "N sin acciones" no permite averiguar si SPCX es uno de
+  // ellos: hubo que inferirlo, y la inferencia puede estar mal. Ahora cada
+  // símbolo excluido viaja con su motivo.
+  const excluidos = [];
+  // ── UN SÍMBOLO, TODAS SUS COMPUERTAS ──────────────────────────────────
+  // `excluidos` se recorta a 40, y con 500 filas eso quiere decir que
+  // preguntar "¿y por qué no está SPCX?" no tiene respuesta: no aparece ni
+  // entre los candidatos ni entre los excluidos. Dos de las compuertas
+  // —verificada-y-cruzada, y ya-con-EDGAR— ni siquiera escriben en
+  // `excluidos`: sólo suman a un contador.
+  // `traza` sigue a UN símbolo por todas las compuertas, en orden, y dice en
+  // cuál se cayó. Es la misma lección del comentario de arriba —los contadores
+  // dicen cuántos, no cuáles— aplicada hasta el final (Lety, 2026-10-22).
+  const trazaSym = traza ? String(traza).toUpperCase() : null;
+  // ── LA LLAVE PARA UN SÍMBOLO, Y POR QUÉ HIZO FALTA ────────────────────
+  // El sello que arregló el atoro ("se preguntó con la regla vigente y no dio
+  // conteo" es una respuesta cerrada) crea un encierro para un caso concreto:
+  // una emisora cuyo 10-Q se presentó HOY. Si se le pregunta a EDGAR antes de
+  // que su XBRL esté indexado, contesta "no hay", la fila queda sellada, y la
+  // única forma de reabrirla es subir `REGLA_EDGAR_VERSION` — que reabre las
+  // 500, no la una.
+  //
+  // Es exactamente el caso de SPCX el 2026-10-22: 10-Q presentado ese mismo
+  // día. `forzar` salta SÓLO las compuertas de "ya se contestó": las
+  // estructurales —sin precio, sin conteo de Finnhub, cap en otra moneda—
+  // siguen frenando, porque ahí el problema no es que falte preguntar.
+  const forzado = forzar ? String(forzar).toUpperCase() : null;
+  const pasos = [];
+  const anota = (sym, paso, pasa, detalle) => {
+    if (trazaSym && sym === trazaSym) pasos.push({ paso, pasa, ...(detalle ? { detalle } : {}) });
+  };
+  const fuera = (sym, motivo) => { excluidos.push({ symbol: sym, motivo }); };
   for (const v of veredictos) {
     const e = porSymbol.get(v.symbol) || {};
     const u = universoPorSymbol.get(v.symbol) || {};
-    if (!(n(e.precio_usd) > 0)) { diagnostico.sin_precio++; continue; }
-    if (!(n(e.acciones) > 0)) { diagnostico.sin_acciones++; continue; }
-    if (v.estado === 'verificada') { diagnostico.verificadas++; continue; }
-    if (v.moneda !== 'USD') { diagnostico.no_usd++; continue; }
-    if (n(u.acciones_edgar_millones) > 0) { diagnostico.ya_con_edgar++; continue; }
+    anota(v.symbol, 'está en las entradas del mapa', true,
+      `estado=${v.estado} moneda=${v.moneda || '—'}`);
+    if (!(n(e.precio_usd) > 0)) {
+      anota(v.symbol, 'tiene precio en USD', false, `precio_usd=${e.precio_usd ?? 'null'}`);
+      diagnostico.sin_precio++; fuera(v.symbol, 'sin precio en USD'); continue;
+    }
+    anota(v.symbol, 'tiene precio en USD', true, String(e.precio_usd));
+    if (!(n(e.acciones) > 0)) {
+      anota(v.symbol, 'tiene conteo de acciones de Finnhub', false, `acciones=${e.acciones ?? 'null'}`);
+      diagnostico.sin_acciones++; fuera(v.symbol, 'sin conteo de acciones de Finnhub'); continue;
+    }
+    anota(v.symbol, 'tiene conteo de acciones de Finnhub', true, `${e.acciones} millones`);
+    // ── EL LAZO: "VERIFICADA" NO PUEDE SER MOTIVO PARA NO PREGUNTAR ────
+    // Acá decía `if (v.estado === 'verificada') continue;` a secas, y eso
+    // cerraba un círculo del que SPCX no podía salir:
+    //
+    //   · `veredictoCapUs` la daba por verificada porque EDGAR no tenía
+    //     conteo con qué contradecir a Finnhub;
+    //   · y este filtro no la mandaba a EDGAR porque estaba verificada.
+    //
+    // O sea que el cruce que #320 agregó NUNCA iba a correr para ella, y
+    // ningún job lo iba a arreglar: `?job=acciones-edgar` jamás la miraba.
+    // Peor, salía por acá ANTES de la lista de `excluidos`, así que tampoco
+    // aparecía entre los descartados: desaparecía en un contador (Lety,
+    // 2026-10-22).
+    //
+    // Una verificada SIN conteo de EDGAR está verificada por el par de
+    // Finnhub, que concuerda consigo mismo por construcción. Eso no es una
+    // verificación, es una tautología — y es exactamente lo que #320 dijo que
+    // no alcanza. Así que se pregunta igual: lo que no se puede es dar por
+    // confirmado lo que nadie confirmó.
+    //
+    // Las que SÍ tienen conteo de EDGAR siguen saliendo por acá: ésas se
+    // cruzaron de verdad y repreguntarlas gastaría la cuota de la SEC para
+    // confirmar lo que ya sabemos.
+    const yaCruzada = n(u.acciones_edgar_millones) > 0 || n(u.acciones_edgar_suma_millones) > 0;
+    if (v.estado === 'verificada' && yaCruzada && v.symbol !== forzado) {
+      anota(v.symbol, 'no es una verificada que YA se cruzó con EDGAR', false,
+        `acciones_edgar=${u.acciones_edgar_millones ?? 'null'} suma_clases=${u.acciones_edgar_suma_millones ?? 'null'}`);
+      diagnostico.verificadas++;
+      fuera(v.symbol, 'verificada y ya cruzada con EDGAR: repreguntarla gastaría cuota de la SEC');
+      continue;
+    }
+    anota(v.symbol, 'no es una verificada que YA se cruzó con EDGAR', true);
+    if (v.estado === 'verificada') {
+      diagnostico.verificadas_sin_contraste = (diagnostico.verificadas_sin_contraste || 0) + 1;
+    }
+    if (v.moneda !== 'USD') {
+      anota(v.symbol, 'la cap declarada está en USD', false, `moneda=${v.moneda || 'null'}`);
+      diagnostico.no_usd++; fuera(v.symbol, `la cap declarada está en ${v.moneda || 'otra moneda'}`); continue;
+    }
+    anota(v.symbol, 'la cap declarada está en USD', true);
+    // ── LA REPREGUNTA POR CAMBIO DE REGLA, ACOTADA ─────────────────────
+    // Cuando la regla cambia, lo que la regla VIEJA dio por perdido hay que
+    // volver a preguntarlo (SPCX). Pero NO todo: el cambio de la versión 2
+    // sólo AGREGÓ formas, así que un conteo que ya salió de un 10-Q sigue
+    // siendo el mismo conteo. Repreguntar las 35 filas que ya tienen dato
+    // gastaría la cuota de la SEC para confirmar lo que ya sabemos.
+    //
+    // Se repregunta en dos casos, y los dos son concretos:
+    //   · SIN dato y consultado con una regla anterior — lo de SPCX: la
+    //     respuesta "no hay" la produjo un criterio que ya no usamos;
+    //   · CON dato cuya portada quedó en el futuro — lo de AAL: la versión 2
+    //     rechaza esas fechas, así que el dato guardado es inválido aunque
+    //     exista.
+    const reglaVieja = n(u.edgar_regla) < REGLA_EDGAR_VERSION;
+    const tieneDato = n(u.acciones_edgar_millones) > 0;
+    const portadaFutura = u.acciones_edgar_portada
+      && String(u.acciones_edgar_portada).slice(0, 10) > hoyIso;
+    const repreguntar = (reglaVieja && !tieneDato && !!u.edgar_consultada_en)
+      || (reglaVieja && portadaFutura);
+    if (tieneDato && !repreguntar && v.symbol !== forzado) {
+      anota(v.symbol, 'no tiene ya un conteo de EDGAR vigente', false,
+        `acciones_edgar=${u.acciones_edgar_millones}`);
+      diagnostico.ya_con_edgar++;
+      fuera(v.symbol, 'ya tiene conteo de EDGAR con la regla vigente');
+      continue;
+    }
+    anota(v.symbol, 'no tiene ya un conteo de EDGAR vigente', true);
+
+    // ── EL ATORO: SIN DATO TAMBIÉN ES UNA RESPUESTA ────────────────────
+    // Una fila sin conteo caía acá SIEMPRE, consultada o no: `tieneDato` era
+    // false, así que el filtro de arriba no la frenaba y volvía a la cola en
+    // cada corrida. Con `limite=100`, las mismas ~100 ya preguntadas iban
+    // adelante en los siete lotes y empujaban a las nuevas: los `ok` bajaron
+    // 70 → 20 mientras `sin_dato` subía 29 → 79, y quedaron 158 sin preguntar
+    // nunca (Lety, 2026-10-22).
+    //
+    // El sello ya existía —`registroConsulta` graba `edgar_regla`— pero nadie
+    // lo leía para este caso: sólo servía para detectar la regla VIEJA. Ahora
+    // "se preguntó con la regla vigente y no dio conteo" es una respuesta
+    // cerrada, igual que un conteo. Se reabre sola el día que
+    // `REGLA_EDGAR_VERSION` suba, que es justo para lo que ese número existe.
+    //
+    // Lo que NO sella: un 5xx, un corte de red o un 429. Ésos no pasan por
+    // `registroConsulta`, así que `edgar_consultada_en` sigue vacío y la fila
+    // vuelve a la cola — que es lo correcto: no hubo respuesta, hubo un error.
+    const consultadaConEstaRegla = !!u.edgar_consultada_en && !reglaVieja;
+    if (!tieneDato && consultadaConEstaRegla && !portadaFutura && v.symbol !== forzado) {
+      anota(v.symbol, 'no se le preguntó ya con la regla vigente', false,
+        `consultada_en=${u.edgar_consultada_en} regla=${u.edgar_regla} motivo=${u.edgar_consulta_motivo || '—'}`);
+      diagnostico.ya_preguntada_sin_dato = (diagnostico.ya_preguntada_sin_dato || 0) + 1;
+      fuera(v.symbol, `ya se le preguntó con la regla ${REGLA_EDGAR_VERSION} y EDGAR no dio conteo`
+        + `${u.edgar_consulta_motivo ? `: ${u.edgar_consulta_motivo}` : ''}`);
+      continue;
+    }
+    anota(v.symbol, 'no se le preguntó ya con la regla vigente', true,
+      u.edgar_consultada_en ? `consultada_en=${u.edgar_consultada_en} regla=${u.edgar_regla}` : 'nunca preguntada');
+
+    if (repreguntar) {
+      diagnostico.repregunta_por_regla = (diagnostico.repregunta_por_regla || 0) + 1;
+    }
+    const esForzada = v.symbol === forzado;
+    if (esForzada) diagnostico.forzada = v.symbol;
+    anota(v.symbol, 'ES CANDIDATA', true,
+      esForzada ? 'forzada a mano' : (u.edgar_consultada_en ? 'repregunta' : 'nunca preguntada'));
     diagnostico.candidatos++;
-    candidatos.push(v.symbol);
+    // Una forzada va PRIMERA: se pidió por su nombre, y con `limite` chico no
+    // tiene sentido que quede detrás de 300 que nadie nombró.
+    candidatos.push({ symbol: v.symbol, consultada_en: u.edgar_consultada_en || null, forzada: esForzada });
   }
-  return { candidatos, diagnostico };
+
+  // ── PRIMERO LAS QUE NUNCA SE PREGUNTARON ──────────────────────────────
+  // Sin este orden, un lote de 100 vuelve a gastar su cuota en las de
+  // siempre. Las nunca preguntadas van primero; entre las repreguntas, la más
+  // vieja primero, para que ninguna se quede al fondo para siempre.
+  candidatos.sort((a, b) => {
+    if (a.forzada !== b.forzada) return a.forzada ? -1 : 1;
+    const an = a.consultada_en ? 1 : 0;
+    const bn = b.consultada_en ? 1 : 0;
+    if (an !== bn) return an - bn;
+    if (an === 1) return String(a.consultada_en).localeCompare(String(b.consultada_en));
+    return a.symbol.localeCompare(b.symbol);
+  });
+  diagnostico.nunca_preguntadas = candidatos.filter((c) => !c.consultada_en).length;
+  // El recorte se queda, pero ahora se DICE cuántos quedaron afuera de la
+  // lista: "40 excluidos" sobre 500 se lee como si fueran 40.
+  diagnostico.excluidos_total = excluidos.length;
+  diagnostico.excluidos = excluidos.slice(0, 40);
+  const salida = { candidatos: candidatos.map((c) => c.symbol), diagnostico };
+  if (trazaSym) {
+    salida.traza = {
+      symbol: trazaSym,
+      en_entradas: veredictos.some((v) => v.symbol === trazaSym),
+      pasos,
+      // La compuerta donde se cayó, dicha de una: es lo que se vino a
+      // preguntar.
+      se_cayo_en: (pasos.find((p) => !p.pasa) || {}).paso || null,
+      es_candidata: candidatos.some((c) => c.symbol === trazaSym),
+      forzada: trazaSym === forzado,
+    };
+    if (!salida.traza.en_entradas) {
+      salida.traza.explica = 'no está en las entradas del mapa: o no tiene `market_cap`, '
+        + 'o no tiene `sector_etf` (el job mira sólo las que el mapa dibuja), o no está en '
+        + '`mercado_universo_us`. Corré `?job=universo` y revisá su fila.';
+    }
+  }
+  return salida;
 }

@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 // Mismo motivo que en `mercado-bolsas`: este archivo lo va a cargar el
 // navegador con un <script> clásico, así que no lleva `export`.
 const require = createRequire(import.meta.url);
-const { rendimientoEnPesos, cruceContraPeso, enPesos, ETIQUETA_PESOS } =
+const { rendimientoEnPesos, cruceContraPeso, enPesos, ETIQUETA_PESOS, rendimientoEnDolares } =
   require(join(dirname(fileURLToPath(import.meta.url)), '..', 'qd-pesos.js'));
 
 // El % que devolvería `qdPeriodChange`: de un valor a otro, en por ciento.
@@ -135,4 +135,46 @@ test('cada rendimiento en pesos dice qué FIX usó y de qué fecha', () => {
 test('un FIX sin fecha se declara como lo que es, no se calla', () => {
   const r = enPesos({ pctLocal: 20, moneda: 'USD', usdMxnPct: 10 });
   assert.match(r.fuente, /FIX sin fecha declarada/);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// R4: EL CAMINO DE VUELTA — un rendimiento en pesos, leído en dólares.
+//
+// Las dos columnas del artboard 6 son "la moneda del índice" y "la otra".
+// Para el IPC —que ya está en pesos— la otra son los dólares, y sin esto la
+// segunda columna sería idéntica a la primera.
+// ═══════════════════════════════════════════════════════════════════════
+test('el IPC plano con el dólar subiendo 10% cae 9.09% en dólares, no 10%', () => {
+  // Restar los porcentajes daría −10%. La composición es multiplicativa y la
+  // vuelta es una división, no una resta: es el mismo error que el de ida.
+  const r = rendimientoEnDolares(0, 10);
+  assert.ok(Math.abs(r.pct - ((1 / 1.1 - 1) * 100)) < 1e-9, String(r.pct));
+  assert.ok(Math.abs(r.pct + 9.0909090909) < 1e-6, String(r.pct));
+});
+
+test('con el tipo de cambio quieto, en dólares es lo mismo que en pesos', () => {
+  // Con tolerancia: (1+x)/1 − 1 no vuelve EXACTAMENTE a x en punto flotante,
+  // y exigir igualdad estricta sería probar el redondeo del procesador.
+  assert.ok(Math.abs(rendimientoEnDolares(7.5, 0).pct - 7.5) < 1e-12);
+});
+
+test('ida y vuelta se cancelan: a pesos y de vuelta a dólares da el original', () => {
+  // La prueba que de verdad ata las dos funciones: si una usara resta y la
+  // otra producto, esto no cerraría.
+  const local = 4.2; const fx = -3.1;
+  const aPesos = rendimientoEnPesos(local, fx);
+  const vuelta = rendimientoEnDolares(aPesos.pct, fx);
+  assert.ok(Math.abs(vuelta.pct - local) < 1e-9, `${vuelta.pct} vs ${local}`);
+});
+
+test('sin tipo de cambio del periodo devuelve null CON su causa, no el número local', () => {
+  const r = rendimientoEnDolares(5, null);
+  assert.equal(r.pct, null);
+  assert.match(r.motivo, /tipo de cambio/);
+});
+
+test('un divisor que se anula se declara en vez de devolver Infinity', () => {
+  const r = rendimientoEnDolares(5, -100);
+  assert.equal(r.pct, null);
+  assert.match(r.motivo, /anula el divisor/);
 });

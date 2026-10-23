@@ -81,14 +81,49 @@ export async function enProceso(handler, query = {}, { topeMs = TOPE_FUENTE_MS }
     // Sin esto el temporizador mantiene viva la función después de responder.
     if (temporizador) clearTimeout(temporizador);
   }
-  if (code !== 200) return { error: `el handler respondió ${code}` };
+  if (code !== 200) {
+    // LA CAUSA DEL HANDLER GANA SOBRE EL NÚMERO.
+    // "el handler respondió 502" es verdad y no sirve para nada: en pantalla
+    // se lee como un error nuestro, y el hecho —que Yahoo está limitando las
+    // peticiones— se perdía acá (Lety lo vio en la ficha de índice,
+    // 2026-10-20). El código viaja igual, detrás.
+    const dicho = body && typeof body.error === 'string' ? body.error : null;
+    return { error: dicho ? `${dicho} (HTTP ${code})` : `la fuente respondió HTTP ${code}`, code };
+  }
   return { json: body };
+}
+
+/**
+ * Los reportes de la SEMANA (filas) y cuántos quedan en el resto del horizonte
+ * (sólo el conteo). Dos consultas acotadas, nunca una ancha recortada después.
+ */
+async function semanaDeReportes(ventana, horizonte) {
+  const desdeDespues = new Date(Date.parse(`${ventana.hasta}T12:00:00Z`) + 86400000)
+    .toISOString().slice(0, 10);
+  const [enSemana, despues] = await Promise.all([
+    enProceso(earningsHandler, { mega: '1', from: ventana.desde, to: ventana.hasta }),
+    enProceso(earningsHandler, { mega: '1', from: desdeDespues, to: horizonte.hasta }),
+  ]);
+  if (enSemana.error) return enSemana;
+  return {
+    filas: (enSemana.json && enSemana.json.earnings) || [],
+    // Si la segunda falla, el conteo va en null y no en 0: "no se pudo mirar"
+    // no es "no hay nada".
+    mas_adelante: despues.error ? null : ((despues.json && despues.json.earnings) || []).length,
+    // Lo que el filtro de mega-caps dejó fuera ESTA SEMANA, para que una
+    // semana vacía se pueda distinguir de una semana filtrada.
+    descartados: (enSemana.json && enSemana.json.descartados_muestra) || [],
+    descartados_total: (enSemana.json && enSemana.json.descartados) || 0,
+    filtro: (enSemana.json && enSemana.json.filtro) || null,
+    consulta: { desde: ventana.desde, hasta: ventana.hasta },
+  };
 }
 
 export default async function handler(req, res) {
   const t0 = Date.now();
   const ahora = new Date();
   const v = ventanaSemana(ahora);
+  const ventana = v;
   // EL HORIZONTE, NO LA VENTANA. Se pide un mes y se pinta una semana: así la
   // pantalla puede decir "sin eventos esta semana · 9 más adelante" en vez de
   // tirar nueve filas en silencio. `/api/earnings` sin fechas ya trae 30 días,
@@ -105,8 +140,21 @@ export default async function handler(req, res) {
           limit 200`, [horizonte.desde, horizonte.hasta])
       .then((filas) => ({ filas }))
       .catch((e) => ({ error: String((e && e.message) || e) })),
-    enProceso(earningsHandler, { mega: '1' })
-      .then((r) => (r.error ? r : { filas: (r.json && r.json.earnings) || [] })),
+    // LA MISMA CONSULTA QUE SE PINTA, CON SUS FECHAS EXPLÍCITAS.
+    //
+    // Antes se pedía `?mega=1` SIN fechas —el handler cae a hoy..hoy+30— y la
+    // semana se recortaba acá. El resultado no cuadraba con el mismo endpoint
+    // preguntado a mano: `?from=2026-10-19&to=2026-10-25&mega=1` traía 9
+    // (NFLX, TSLA, META, IBM, TXN, PG, XOM, BX, SPCX) y el panel decía "sin
+    // reportes de mega-caps esta semana" (Lety, 2026-10-20). Una ventana ancha
+    // y un recorte posterior no son lo mismo que preguntar por la ventana:
+    // el calendario de Finnhub acota lo que devuelve, y en 30 días lo que se
+    // pierde son justamente los primeros.
+    //
+    // Así que se pregunta DOS veces, las dos acotadas: una por la semana que se
+    // pinta y otra por el resto del horizonte, que sólo se cuenta. Cada
+    // respuesta contesta exactamente la pregunta que la pantalla hace.
+    semanaDeReportes(ventana, horizonte),
     enProceso(leaderboardHandler)
       .then((r) => (r.error ? r : { agents: (r.json && r.json.agents) || [] })),
   ]);

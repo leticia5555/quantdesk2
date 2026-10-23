@@ -48,7 +48,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
-import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay, PROBE_IDS } from './_lib/arena-registry.js';
+import { ARENA_AGENTS, ARENA_SEASON, seasonStatus, seasonDay, temporadaEfectiva, PROBE_IDS } from './_lib/arena-registry.js';
 import { pairwiseOverlap, sharedTopTicker, pisoDeRuido, deltaDePesos, lecturaDeCoincidencia, CAVEAT_ENFOQUE } from './_lib/arena-herding.js';
 import { claveDeOrden, detalleDeOrden, fillsDeActions, entradasDeCuenta, resumenDeOrdenes, resumenDeslizamiento, ordenesDeActions } from './_lib/arena-fills.js';
 // `effectiveCutoff` ya es "la más reciente de dos fechas, tolerando null" — la
@@ -82,19 +82,88 @@ export function identidad(agentId) {
   };
 }
 
+// ── CADA PASO, EN UNA LÍNEA QUE SE LEE ───────────────────────────────
+// "ficha MU → 9 líneas", "noticias NVDA → 5 titulares", "screener(rvol_top) →
+// falló". Se arma ACÁ y no en las páginas: /liga y /liga/libros dibujan la
+// misma cadena, y dos lugares escribiendo la regla es cómo un día difieren.
+const UNIDAD = {
+  screener: ['nombre', 'nombres'], sector: ['nombre', 'nombres'],
+  noticias: ['titular', 'titulares'], ficha: ['línea', 'líneas'],
+};
+const plural = (n, tool) => { const u = UNIDAD[tool] || ['fila', 'filas']; return `${n} ${n === 1 ? u[0] : u[1]}`; };
+export function etiquetaDePaso(tool, args) {
+  const a = args || {};
+  const foco = a.ticker || a.etf || a.tema || null;
+  if (foco) return `${tool} ${foco}`;
+  const resto = Object.entries(a).filter(([, v]) => v != null && v !== false && v !== '')
+    .map(([k, v]) => (v === true ? k : `${k}=${Array.isArray(v) ? v.join(',') : v}`));
+  return `${tool}(${resto.join(', ')})`;
+}
+// ── TRES VACÍOS, TRES PALABRAS (2026-10-20) ──────────────────────────
+// El "null" de Grok (screener, ficha MU/WDC/STX) NO era una falla: eran
+// intentos 21-24 con `refused: 'budget_exhausted'` — ni corrieron. Sin `n`,
+// sin `rows`, sin `result`, sin `error`. Leídos como "rows: null" parecían
+// la herramienta caída. Son tres cosas distintas y se dicen distinto:
+//
+//   rechazada    → ni corrió (cupo agotado / herramienta inexistente)
+//   falló        → corrió y la herramienta dio error
+//   sin resultado→ corrió y no devolvió nada usable
+//
+// EL ORDEN ES EL PUNTO: `refused` se resuelve PRIMERO. Un rechazo no tiene
+// `rows` por construcción, y cualquier chequeo de "sin conteo" que vaya antes
+// lo convertiría en falla.
+const RECHAZO = { budget_exhausted: 'presupuesto', unknown_tool: 'herramienta inexistente' };
+export function resultadoDePaso(s) {
+  if (s.refused) return `rechazada: ${RECHAZO[s.refused] || s.refused}`;
+  if (s.error && !s.sin_resultado) return s.fallo ? `falló: ${s.fallo}` : 'falló';
+  // Corrió bien y no tenía el dato: no es falla de la herramienta ni un cero.
+  if (Array.isArray(s.datos_faltantes) && s.datos_faltantes.length) return `sin dato: ${s.datos_faltantes.join(', ')}`;
+  if (s.sin_resultado || s.rows == null) return 'sin resultado';
+  // noticias: el cero dice CUÁL cero es, y lo que trajo dice de qué fuente.
+  if (s.tool === 'noticias' && Array.isArray(s.fuentes)) {
+    const caidas = s.fuentes.filter((f) => f.error).map((f) => f.id);
+    if (s.rows === 0) {
+      return s.cobertura === 'parcial'
+        ? `0 titulares (fuentes con falla: ${caidas.join(', ')})`
+        : '0 titulares (sin cobertura en nuestras fuentes)';
+    }
+    const con = s.fuentes.filter((f) => !f.error && f.n > 0).map((f) => f.id);
+    return plural(s.rows, s.tool) + (con.length ? ` · ${con.join('+')}` : '') + (s.truncated ? ' (truncado)' : '');
+  }
+  return plural(s.rows, s.tool) + (s.truncated ? ' (truncado)' : '');
+}
+
 // La secuencia, en forma de historia. Cada paso con lo justo para leerse.
 export function secuenciaPublicable(ctx) {
   const t = ctx && ctx.tools;
   if (!t) return null;
   if (t.enabled === false) return { usó_herramientas: false, motivo: t.reason || null, pasos: [] };
   const pasos = (t.summary || t.sequence || []).map((s) => ({
-    n: s.n, herramienta: s.tool,
+    // Un rechazo no tiene `n` (no consumió cupo); su número es el del intento.
+    n: s.n ?? null, ...(s.n == null && s.intento != null ? { intento: s.intento } : {}),
+    herramienta: s.tool,
     // Los argumentos YA acotados (lo que de verdad se ejecutó), no lo que pidió.
     argumentos: s.args || null,
-    filas: s.rows ?? null,
-    truncado: !!s.truncated,
+    // Un rechazo NO lleva `filas`: no corrió, así que no tiene ni cero ni null.
+    ...(s.refused ? {} : { filas: s.rows ?? null }),
+    // Sólo cuando lo está, como `rechazada`: un `false` repetido en cada paso
+    // de cada tarjeta no dice nada y paga bytes en un feed de 200 filas.
+    ...(s.truncated ? { truncado: true } : {}),
     ms: s.ms ?? null,
+    // Tokens que la llamada agregó a la conversación (corridas nuevas).
+    ...(s.tokens != null ? { tokens: s.tokens } : {}),
     ...(s.refused ? { rechazada: s.refused } : {}),
+    ...(Array.isArray(s.datos_faltantes) && s.datos_faltantes.length ? { datos_faltantes: s.datos_faltantes } : {}),
+    ...(Array.isArray(s.fuentes) ? { fuentes: s.fuentes } : {}),
+    ...(s.cobertura ? { cobertura: s.cobertura } : {}),
+    ...(Array.isArray(s.mapeo) && s.mapeo.length ? { mapeo: s.mapeo } : {}),
+    ...(s.fallo ? { fallo: s.fallo } : {}),
+    // Antes el `error` del ejecutor se quedaba en el journal y acá salía como
+    // "0 filas": una herramienta caída se leía igual que un filtro vacío. Un
+    // paso ejecutado sin conteo (`rows: null`) también es una falla.
+    ...((s.error || s.sin_resultado || (!s.refused && s.rows == null)) ? { falló: true } : {}),
+    etiqueta: etiquetaDePaso(s.tool, s.args),
+    resultado: resultadoDePaso(s),
   }));
   return {
     usó_herramientas: pasos.length > 0,
@@ -129,6 +198,117 @@ export function secuenciaPublicable(ctx) {
     loop_cortó_por: t.stopped_by || null,
     pasos,
   };
+}
+
+// ── LAS HERRAMIENTAS QUE FALLARON, EN AVISOS ─────────────────────────
+// Una falla escondida en el paso 3 de una tarjeta colapsada no la ve nadie.
+// Una línea por agente, arriba de la página: cuántas, en cuántas corridas y
+// cuáles. Si un agente no puede investigar porque la herramienta se cae, su
+// libro no mide al modelo — mide la herramienta.
+export function avisosDeHerramientas(libros = []) {
+  const por = new Map();
+  for (const l of libros || []) {
+    const fallidos = ((l.investigacion && l.investigacion.pasos) || []).filter((p) => p && p.falló);
+    if (!fallidos.length) continue;
+    const id = (l.agente && l.agente.id) || 'desconocido';
+    const a = por.get(id) || { nombre: (l.agente && l.agente.nombre) || id, n: 0, corridas: 0, cuales: [] };
+    a.n += fallidos.length;
+    a.corridas++;
+    for (const p of fallidos) if (a.cuales.length < 6) a.cuales.push(p.etiqueta || p.herramienta);
+    por.set(id, a);
+  }
+  return [...por.values()].map((a) => `${a.nombre}: ${a.n} llamada${a.n === 1 ? '' : 's'} a herramientas fallaron en ${a.corridas} corrida${a.corridas === 1 ? '' : 's'} (${a.cuales.join(', ')}${a.n > a.cuales.length ? ', …' : ''}). No es "0 filas": la herramienta no devolvió resultado, y el agente decidió sin ese dato.`);
+}
+
+// ── LA PUERTA, LEÍBLE DESDE AFUERA (2026-10-20) ──────────────────────
+// Dos de los tres criterios físicos de la puerta de apertura son
+// `reloj_pct < 90` y `lectura < 90.000 ms` (docs/arena-t3-apertura.md,
+// scripts/arena-humo.sh). Los dos estaban journaleados —`tools.limites` y
+// `tools.vueltas_medidas`— y solo salían en la respuesta HTTP de la corrida
+// misma: pasada esa respuesta, para leerlos había que ir a la base.
+//
+// Se calculan IGUAL que `resumenDelLoop` de arena-shadow.js (la prueba lo
+// compara), con una diferencia declarada: una vuelta sin `ms` medido no
+// cuenta como 0 ms. Si NINGUNA vuelta trae tiempo, la lectura máxima es null —
+// "no medido" y "cero" mandan a lugares opuestos.
+//
+// Este archivo NO importa arena-shadow (regla del encabezado: el camino de
+// decisión no se toca ni de lectura), por eso la cuenta vive acá también.
+export const PUERTA_RELOJ_PCT = 90;
+export const PUERTA_LECTURA_MS = 90000;
+
+// ── UN CORTE NUESTRO ES UN CORTE NUESTRO, CAIGA DONDE CAIGA (2026-10-21) ──
+// La fila 13 del 20-oct (deepseek, 255 s) salía con `cortes_nuestros: 0`: el
+// corte fue en el CIERRE, que no es una vuelta y no está en `vueltas_medidas`.
+// El cierre cortado por nuestro reloj queda journaleado en otro lado —
+// `context.llm_error.cuerpos_vacios`, con `vuelta: 'cierre'` y
+// `timeout_nuestro` (arena-shadow / arena-tool-loop)—, y se cuenta desde ahí.
+// La salida dice DÓNDE cayó (`cortes: {loop, cierre: {cortado,
+// intentos_cortados}}`) y la puerta juzga la SUMA: loop + (cierre ? 1 : 0).
+//
+// Lo que no se puede ver desde acá: un cierre cortado por nuestro reloj que
+// después se RESCATÓ con el reintento y la corrida terminó bien. Ese corte no
+// se journalea en ninguna parte (solo el camino de aborto escribe
+// `llm_error`), así que no hay de dónde contarlo.
+// Una corrida tiene UN cierre: o lo cortamos o no. `cortado` es lo que suma a
+// la puerta (0 o 1, nunca 2); `intentos_cortados` es el detalle (el cierre se
+// reintenta una vez, y los dos intentos pueden morir por nuestro reloj).
+export function cortesDelCierre(ctx) {
+  const le = ctx && ctx.llm_error;
+  if (!le) return { cortado: false, intentos_cortados: 0 };
+  // Con `cuerpos_vacios` journaleado, manda la lista: cada vacío del cierre
+  // queda ahí con su intento (arena-tool-loop los empuja todos; un intento
+  // OMITIDO —sin reloj, sin proveedor— no trae `timeout_nuestro` y no cuenta).
+  if (Array.isArray(le.cuerpos_vacios)) {
+    const n = le.cuerpos_vacios.filter((x) => x && x.vuelta === 'cierre' && x.timeout_nuestro).length;
+    return { cortado: n > 0, intentos_cortados: n };
+  }
+  // Filas sin `cuerpos_vacios`: si el error final fue nuestro reloj y el loop
+  // NO murió antes (si murió, esa vuelta ya está en `vueltas_medidas`), el
+  // corte fue el cierre.
+  const murioEnLoop = !!(ctx.murio_en || le.murio_en);
+  const cortado = !!(le.timeout_nuestro && le.motivo === 'cuerpo_vacio_reloj_nuestro' && !murioEnLoop);
+  return { cortado, intentos_cortados: cortado ? 1 : 0 };
+}
+
+export function puertaDeCorrida(t, ctx = null) {
+  if (!t || (!t.limites && !Array.isArray(t.vueltas_medidas))) return null;
+  const v = Array.isArray(t.vueltas_medidas) ? t.vueltas_medidas : [];
+  const lim = t.limites || {};
+  const ms = v.map((x) => (x && x.ms != null ? Number(x.ms) : NaN)).filter(Number.isFinite);
+  const reloj = (lim.reloj_ms && lim.reloj_ms.pct) ?? null;
+  const lectura = ms.length ? Math.max(...ms) : null;
+  const cortes = { loop: v.filter((x) => x && x.reloj_nuestro).length, cierre: cortesDelCierre(ctx) };
+  const total = cortes.loop + (cortes.cierre.cortado ? 1 : 0);
+  return {
+    vueltas: t.turns ?? (v.length || null),
+    cortó_por: t.stopped_by || null,
+    reloj_pct: reloj,
+    lectura_max_ms: lectura,
+    vacias: v.filter((x) => x && x.vacio).length,
+    // La suma (lo que juzga la puerta) y el desglose (dónde cayó).
+    cortes_nuestros: total,
+    cortes,
+    // El veredicto de ESTA corrida contra cada criterio físico. null = no se
+    // puede juzgar (dato no journaleado), que NO es lo mismo que verde. Un
+    // corte del cierre ya es rojo aunque no haya vueltas medidas.
+    puertas: {
+      reloj: reloj == null ? null : reloj < PUERTA_RELOJ_PCT,
+      lectura: lectura == null ? null : lectura < PUERTA_LECTURA_MS,
+      cortes_nuestros: total ? false : (v.length ? true : null),
+    },
+  };
+}
+
+export function puertaPorCorrida(libros = []) {
+  return (Array.isArray(libros) ? libros : []).filter((l) => l && l.puerta).map((l) => ({
+    corrida_id: l.corrida_id || null,
+    agente: (l.agente && l.agente.id) || null,
+    fecha: l.fecha || null,
+    fuente: l.fuente || null,
+    estado: l.estado || null,
+    ...l.puerta,
+  }));
 }
 
 // ── LA COHERENCIA ENTRE LAS DOS ETAPAS ───────────────────────────────
@@ -306,6 +486,9 @@ export function libroDeFila(row, fuente) {
   const reb = row.rebalance || null;
   return {
     fuente,                                   // 'en_vivo' | 'prueba' — NUNCA se infiere
+    // El id de la fila en el journal: con él, `puerta_por_corrida` nombra la
+    // corrida exacta que se pasó del reloj.
+    corrida_id: row.id || null,
     // La etiqueta ya armada, con las dos cosas que tiene que decir.
     sello: selloDe(fuente, ctx.ejecucion),
     fecha: row.created_at || row.run_date,
@@ -325,6 +508,9 @@ export function libroDeFila(row, fuente) {
     enfoque_nota: ctx.lens ? 'El enfoque rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ese día.' : null,
     // CÓMO INVESTIGÓ.
     investigacion: secuenciaPublicable(ctx),
+    // reloj_pct, lectura máxima por vuelta y cortes nuestros: los criterios
+    // físicos de la puerta, por corrida. null si la corrida no los journaleó.
+    puerta: puertaDeCorrida(ctx.tools, ctx),
     // null cuando no hubo reintento, que es el caso normal: cuatro campos en
     // null se leerían como "hubo y no sabemos".
     reintento: reintentoPublicable(ctx),
@@ -494,13 +680,13 @@ export function ordenesSueltas(actions = [], account = null, estado = null) {
 //   · `abortadas` — una corrida que murió antes de investigar no cuenta como
 //     "decidió no usarla". Mezclarlas haría parecer desuso lo que es una falla
 //     del proveedor.
-export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector'];
+export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector', 'eventos', 'historia'];
 
 export function resumenDeHerramientas(libros = []) {
   const porAgente = new Map();
   const vacio = () => ({
     corridas: 0, abortadas: 0, con_investigacion: 0, sin_uso: 0,
-    llamadas: 0, por_herramienta: {}, corridas_con_uso: {},
+    llamadas: 0, por_herramienta: {}, corridas_con_uso: {}, fallidas: 0,
   });
 
   for (const l of (Array.isArray(libros) ? libros : [])) {
@@ -517,6 +703,7 @@ export function resumenDeHerramientas(libros = []) {
       const t = String((p && p.herramienta) || '').trim().toLowerCase();
       if (!t) continue;
       a.llamadas++;
+      if (p.falló) a.fallidas++;
       a.por_herramienta[t] = (a.por_herramienta[t] || 0) + 1;
       enEstaCorrida.add(t);
     }
@@ -553,6 +740,7 @@ export function resumenDeHerramientas(libros = []) {
       corridas_vivas: vivasTotal,
       abortadas: filas.reduce((s, f) => s + f.abortadas, 0),
       llamadas: filas.reduce((s, f) => s + f.llamadas, 0),
+      fallidas: filas.reduce((s, f) => s + f.fallidas, 0),
       por_herramienta: porHerramienta,
       screener_pct_corridas: pct,
       // La lectura, para que el número no haya que interpretarlo dos veces.
@@ -779,6 +967,8 @@ export default async function handler(req, res) {
     avisos.push('No se pudo leer el arranque real de la temporada (' + String((e && e.message) || e) + '): la ventana se acotó con el arranque DECLARADO.');
   }
   const pisoTemporada = (inicioReal && inicioReal.start) || ARENA_SEASON.start;
+  // La temporada EFECTIVA: inicio del reset y cierre = inicio + N sesiones.
+  const temporada = temporadaEfectiva(inicioReal);
   const desde = effectiveCutoff(pisoTemporada, desdePedido);
 
   if (fuente === FUENTE_VIVA || fuente === 'ambas') {
@@ -791,7 +981,7 @@ export default async function handler(req, res) {
       // dibujado siete tarjetas vacías el día del encendido. La sombra se veía
       // bien porque allá sí son columnas.
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error,
+        `select id, run_date, created_at, agent_id, status, plan, error,
                 -- actions es la UNICA columna que el reconcile re-escribe:
                 -- sin ella no hay precio de ejecucion ni hora. account es el
                 -- libro de ANTES de operar, que es contra lo que se mide una
@@ -859,7 +1049,7 @@ export default async function handler(req, res) {
   if (fuente === FUENTE_PRUEBA || fuente === 'ambas') {
     try {
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error, target, rebalance,
+        `select id, run_date, created_at, agent_id, status, plan, error, target, rebalance,
                 jsonb_build_object(
                   'lens', context->>'lens',
                   'tools', context->'tools',
@@ -906,15 +1096,18 @@ export default async function handler(req, res) {
 
   libros.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
 
+  avisos.push(...avisosDeHerramientas(libros));
+
   const conObjetivo = libros.filter((l) => l.portafolio);
   const conHerramientas = libros.filter((l) => l.investigacion && l.investigacion.usó_herramientas);
 
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
   return res.status(200).json({
     temporada: {
-      id: ARENA_SEASON.id, nombre: ARENA_SEASON.name,
-      start: ARENA_SEASON.start, end: ARENA_SEASON.end,
-      estado: seasonStatus(), dia: seasonDay(),
+      id: temporada.id, nombre: temporada.name,
+      start: temporada.start, end: temporada.end, sesiones: temporada.sesiones,
+      abierta: temporada.abierta,
+      estado: seasonStatus(new Date(), temporada), dia: seasonDay(new Date(), temporada),
     },
     // LA VENTANA, CON SU PISO A LA VISTA. Una ventana acotada en silencio y
     // una temporada sin corridas se ven idénticas desde la pantalla: las dos
@@ -957,6 +1150,10 @@ export default async function handler(req, res) {
     // Sale de las mismas órdenes que ya se publican, así que no cuesta una
     // consulta más.
     deslizamiento: deslizamientoPorAgente(libros),
+    // ── LA PUERTA, CORRIDA POR CORRIDA ───────────────────────────────
+    // Lo mismo que `libros[].puerta`, aplanado: se lee con un solo `jq`
+    // (`.puerta_por_corrida[] | select(.puertas.reloj == false)`).
+    puerta_por_corrida: puertaPorCorrida(libros),
     avisos: avisos.length ? avisos : null,
     libros,
   });

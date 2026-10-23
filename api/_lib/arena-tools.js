@@ -40,9 +40,13 @@
 
 import { createHash } from 'node:crypto';
 import { getNews, getSnapshots } from './alpaca.js';
-import { fetchDeepDive } from './finnhub-dive.js';
+import { fetchDeepDive, FINNHUB_LIMITE, FINNHUB_CAIDO } from './finnhub-dive.js';
 import { SECTOR_ETFS } from './arena-board.js';
 import { readDayCache, writeDayCache, marketDay } from './arena-buffet-cache.js';
+import { sql } from './db.js';
+import { tickersDeFila } from './noticias.js';
+import { runHistoria } from './arena-tools-historia.js';
+import { runEventos, DIAS_DEFAULT as EVENTOS_DIAS_DEFAULT, DIAS_MAX as EVENTOS_DIAS_MAX } from './arena-tools-eventos.js';
 
 // Tope DURO de llamadas por corrida. Las rondas fijas tienen 8; una corrida por
 // disparador tiene 3 (está acotada a un nombre — no necesita explorar).
@@ -144,7 +148,7 @@ export const TOOL_DEFS = [
     description: 'Headlines for one ticker, or for a topic across the universe. Returns headline, source and date — not article bodies.',
     params: {
       ticker: { type: 'string', desc: 'One ticker. Mutually exclusive with `tema`.' },
-      tema: { type: 'string', desc: 'A topic to match in headlines, e.g. "merger", "guidance". Mutually exclusive with `ticker`.' },
+      tema: { type: 'string', desc: 'A topic or a company name, e.g. "merger", "Howmet". Company names are looked up as their ticker; other words are matched in any order. Mutually exclusive with `ticker`.' },
       days: { type: 'number', desc: 'How many days back (1-5, default 2).' },
       limit: { type: 'number', desc: 'Max headlines (1-8, default 8).' },
     },
@@ -161,6 +165,43 @@ export const TOOL_DEFS = [
   },
 ];
 
+// ── LAS HERRAMIENTAS NUEVAS, APAGADAS HASTA QUE SE DECIDA (2026-10-20) ──
+// `eventos` (8-K de EDGAR) existe, está probada y NO se le ofrece a ningún
+// agente por defecto. Ofrecerla cambia el esquema que viaja en cada llamada
+// —o sea, el experimento— y eso se decide con Lety, no en un merge. Se
+// enciende sin deploy con `ARENA_TOOLS_EXTRA=eventos` (o `eventos,historia`).
+// `historia` es la misma regla: lee la narración ya escrita, no narra.
+//
+// Mientras esté apagada, `TOOL_DEFS` (las cuatro de siempre) es exactamente lo
+// que ven los siete, y una llamada a `eventos` se responde como herramienta
+// inexistente: un agente no puede usar algo que no se le ofreció.
+export const TOOL_DEFS_OPCIONALES = [
+  {
+    name: 'eventos',
+    description: 'Recent SEC 8-K filings for ONE name, from EDGAR: one line per filing with its date and item codes (2.02 results, 1.01 material agreement, 5.02 officer/director change, 8.01 other events…). Never the filing text. Use it to check whether something material was filed before you size a position.',
+    params: {
+      ticker: { type: 'string', desc: 'The ticker.', required: true },
+      days: { type: 'number', desc: `How many days back (1-${EVENTOS_DIAS_MAX}, default ${EVENTOS_DIAS_DEFAULT}).` },
+    },
+  },
+  {
+    name: 'historia',
+    description: 'The company\'s story from its own SEC filings, as already written by our HISTORIA module: ~2 paragraphs (promised vs. delivered, catalysts, where it breaks), with the date it was written and a hash. It is a reading as of that date, not today. If the name is not covered, it says "sin_cobertura" — that means not read, not "nothing to tell".',
+    params: { ticker: { type: 'string', desc: 'The ticker.', required: true } },
+  },
+];
+
+export function herramientasActivas(env = process.env) {
+  const pedidas = String((env && env.ARENA_TOOLS_EXTRA) || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const extra = TOOL_DEFS_OPCIONALES.filter((d) => pedidas.includes(d.name)).map((d) => d.name);
+  return [...TOOL_DEFS.map((d) => d.name), ...extra];
+}
+
+export function definicionesActivas(env = process.env) {
+  const activas = herramientasActivas(env);
+  return [...TOOL_DEFS, ...TOOL_DEFS_OPCIONALES].filter((d) => activas.includes(d.name));
+}
+
 // ── TRADUCCIÓN POR PROVEEDOR ─────────────────────────────────────────
 // Anthropic: {name, description, input_schema}. OpenAI/OpenRouter:
 // {type:'function', function:{name, description, parameters}}. El schema JSON
@@ -175,8 +216,9 @@ function jsonSchema(params) {
   return { type: 'object', properties, ...(required.length ? { required } : {}) };
 }
 
-export function toolsForProvider(provider, names = null) {
-  const defs = names ? TOOL_DEFS.filter((d) => names.includes(d.name)) : TOOL_DEFS;
+export function toolsForProvider(provider, names = null, env = process.env) {
+  const activas = definicionesActivas(env);
+  const defs = names ? activas.filter((d) => names.includes(d.name)) : activas;
   if (provider === 'anthropic') {
     return defs.map((d) => ({ name: d.name, description: d.description, input_schema: jsonSchema(d.params) }));
   }
@@ -231,6 +273,11 @@ export function clampArgs(name, raw) {
     up('ticker');
   } else if (name === 'sector') {
     up('etf');
+  } else if (name === 'historia') {
+    up('ticker');
+  } else if (name === 'eventos') {
+    up('ticker');
+    num('days', 1, EVENTOS_DIAS_MAX, EVENTOS_DIAS_DEFAULT);
   }
   return { args: a, notes };
 }
@@ -293,6 +340,20 @@ export async function runScreener(args, ctx) {
   const sectorDe = ctx.sectorOf || (() => null);
   const conNoticia = ctx.newsSymbols || new Set();
   let r = filas;
+
+  // ── SIN RVOL HOY: SE DICE, NO SE DEVUELVE UNA LISTA VACÍA ───────────
+  // Si el tablero no tiene RVOL para ningún nombre (falló el promedio de 20
+  // sesiones), `rvol_top` y `min_rvol` vacían el embudo por construcción. Eso
+  // no es "ningún nombre cumple": es "no tenemos el dato". Se contesta ANTES
+  // de filtrar, con el motivo, y se marca como dato faltante.
+  const pideRvol = args.rvol_top === true || args.min_rvol != null;
+  const sinRvol = (ctx.board && ctx.board.sin_rvol) || (!filas.some((f) => f.rvol != null) ? { motivo: 'ningún nombre del tablero tiene RVOL' } : null);
+  if (pideRvol && sinRvol) {
+    return {
+      text: `Screener sin RVOL hoy: ${sinRvol.motivo}. El filtro \`${args.rvol_top ? 'rvol_top' : 'min_rvol'}\` no se puede aplicar — NO significa que no haya volumen inusual, significa que hoy no lo pudimos medir. Probá el mismo pedido sin filtrar por RVOL.`,
+      rows: 0, datos_faltantes: ['rvol'],
+    };
+  }
 
   // ── EL EMBUDO: QUÉ FILTRO SE LLEVÓ LAS FILAS ───────────────────────
   // "0 filas" es la respuesta menos accionable posible: no distingue un
@@ -441,70 +502,266 @@ export async function runScreener(args, ctx) {
   return { text: t.text, rows: t.shown, truncated: t.truncated };
 }
 
+// ── NOTICIAS: TRES FUENTES, Y CADA TITULAR DICE DE CUÁL VINO (2026-10-20) ──
+// Día 1 de la T3: 15 de 72 llamadas a `noticias` devolvieron "0 titulares"
+// (DVA×4, HWM×5, BX×2, BMY, NU y 2 por tema) y los agentes compraron DVA, BMY,
+// NU y HWM igual, sin noticia.
+//
+// LA FUENTE PRIMARIA ES ALPACA NEWS (`/v1beta1/news`, Benzinga), no
+// `mercado_noticias`: así estaba y así sigue. El hueco es de cobertura — Benzinga
+// casi no cubre nombres como DVA o HWM en una ventana de 2 días. Por eso, cuando
+// Alpaca da 0 por ticker, se consultan las OTRAS dos fuentes que ya tenemos:
+//   · finnhub  → `company-news` por símbolo (la misma que alimenta `ficha`)
+//   · rss_8k   → `mercado_noticias` en Neon: los RSS generales + 8-K de EDGAR,
+//                con los tickers ya cruzados contra `mercado_universo_us`
+// Se unen, se deduplican por URL y cada titular lleva su fuente.
+export const FUENTES_NOTICIAS = {
+  alpaca: 'Alpaca/Benzinga',
+  finnhub: 'Finnhub',
+  rss_8k: 'RSS+8-K (mercado_noticias)',
+};
+const FINNHUB_TIMEOUT_MS = 5000;
+
+export async function finnhubNoticias(ticker, { start, now, key }) {
+  if (!key) throw new Error('sin FINNHUB_API_KEY');
+  const from = String(start).slice(0, 10);
+  const to = now.toISOString().slice(0, 10);
+  const r = await fetch(`https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${from}&to=${to}&token=${key}`,
+    { signal: AbortSignal.timeout(FINNHUB_TIMEOUT_MS) });
+  if (r.status === 429) throw new Error(FINNHUB_LIMITE);
+  if (!r.ok) throw new Error(`Finnhub ${r.status}`);
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error('Finnhub: respuesta sin lista');
+  return j.filter((n) => n && n.headline).map((n) => ({
+    headline: String(n.headline).trim(), summary: String(n.summary || '').trim(),
+    created_at: Number.isFinite(n.datetime) ? new Date(n.datetime * 1000).toISOString() : null,
+    symbols: [String(ticker).toUpperCase()], url: n.url || null, source: n.source || null,
+  }));
+}
+
+// Por ticker (`tickers` es text[]) o por palabras en el titular (todas).
+export const SQL_NOTICIAS_LOCALES_TICKER = `select url, titular, fuente_nombre, publicado_en, tickers
+  from mercado_noticias where $1 = any(tickers) and publicado_en >= $2
+  order by publicado_en desc limit 30`;
+export const SQL_NOTICIAS_LOCALES_PALABRAS = `select url, titular, fuente_nombre, publicado_en, tickers
+  from mercado_noticias where titular ilike all($1::text[]) and publicado_en >= $2
+  order by publicado_en desc limit 30`;
+
+export async function noticiasLocales({ ticker = null, palabras = null, start }) {
+  const rows = ticker
+    ? await sql(SQL_NOTICIAS_LOCALES_TICKER, [ticker, start])
+    : await sql(SQL_NOTICIAS_LOCALES_PALABRAS, [palabras.map((p) => `%${p}%`), start]);
+  return (rows || []).map((r) => ({
+    headline: String(r.titular || '').trim(), summary: '',
+    created_at: r.publicado_en ? new Date(r.publicado_en).toISOString() : null,
+    symbols: tickersDeFila(r.tickers), url: r.url || null, source: r.fuente_nombre || null,
+  })).filter((n) => n.headline);
+}
+
+// Una fuente: nunca lanza. `{ id, ok, n, items }` o `{ id, ok:false, motivo }`.
+async function consultar(id, fn) {
+  try {
+    const items = await fn();
+    return { id, ok: true, n: items.length, items: items.map((x) => ({ ...x, fuente: id })) };
+  } catch (e) {
+    return { id, ok: false, motivo: String((e && e.message) || e).slice(0, 160), items: [] };
+  }
+}
+
+// Unión deduplicada por URL (y por titular normalizado si no hay URL), más
+// reciente primero.
+export function unirTitulares(listas) {
+  const vistos = new Set();
+  const out = [];
+  for (const n of listas.flat()) {
+    const k = n.url ? 'u:' + n.url : 'h:' + String(n.headline).toLowerCase().replace(/\W+/g, ' ').trim();
+    if (vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(n);
+  }
+  return out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+}
+
+// ── TEMA: DEL NOMBRE AL TICKER, Y PALABRAS EN VEZ DE FRASE ──────────
+// "GE Aerospace earnings outlook" → 0 y ticker GE → 8. "Howmet" → 0. La
+// búsqueda por tema era una regex de la frase EXACTA sobre 200 titulares.
+// Ahora: (1) si el tema nombra empresas del catálogo (`mercado_universo_us`,
+// symbol + nombre) o trae un ticker en mayúsculas, se busca POR TICKER, con
+// la misma cadena de fuentes; (2) si no, se buscan las PALABRAS, en cualquier
+// orden.
+const SUFIJOS = new Set(['inc', 'incorporated', 'corp', 'corporation', 'co', 'company', 'companies', 'ltd', 'limited', 'plc', 'holdings', 'holding', 'group', 'class', 'the', 'sa', 'nv', 'ag', 'lp', 'llc', 'trust', 'reit', 'de', 'cv', 'sab', 'and', 'a', 'b', 'c', 'com', 'shs', 'new']);
+// Palabras de nombre demasiado genéricas para identificar SOLAS a una empresa.
+const GENERICAS = new Set(['american', 'america', 'first', 'general', 'united', 'international', 'national', 'global', 'energy', 'financial', 'health', 'healthcare', 'bank', 'capital', 'data', 'technologies', 'technology', 'systems', 'services', 'industries', 'resources', 'communications', 'entertainment', 'pharmaceuticals', 'therapeutics', 'realty', 'properties', 'insurance', 'motors', 'foods', 'brands', 'labs', 'solutions', 'partners', 'royal', 'western', 'eastern', 'southern', 'northern', 'pacific', 'atlantic', 'texas', 'york', 'digital', 'electric', 'power', 'water', 'gas', 'oil', 'airlines', 'air', 'micro', 'devices', 'semiconductor', 'software', 'network', 'networks', 'medical', 'life', 'sciences', 'home', 'street', 'state', 'news', 'market', 'markets', 'earnings', 'outlook', 'guidance', 'results', 'stock', 'shares']);
+// Siglas en mayúsculas que NO son el ticker aunque coincidan con uno.
+const SIGLAS = new Set(['AI', 'CEO', 'CFO', 'COO', 'EPS', 'IPO', 'ETF', 'FDA', 'US', 'USA', 'UK', 'EU', 'GDP', 'CPI', 'PPI', 'FED', 'FOMC', 'SEC', 'DOJ', 'FTC', 'OPEC', 'EV', 'EVS', 'Q1', 'Q2', 'Q3', 'Q4', 'YOY', 'M', 'A', 'IT', 'ON', 'ALL', 'ARE', 'NOW', 'OR', 'SO', 'KEY', 'BIG', 'PM', 'AM', 'TV', 'API', 'LLM', 'GPU', 'CPU', 'HBM', 'AT', 'BE', 'GO', 'HAS', 'AN', 'BY', 'FOR', 'DE', 'TO']);
+const PALABRAS_VACIAS = new Set(['the', 'and', 'for', 'with', 'from', 'about', 'into', 'over', 'its', 'their', 'news', 'latest', 'today', 'this', 'that', 'de', 'la', 'el', 'los', 'las', 'del', 'en', 'y', 'por', 'para', 'con', 'sobre']);
+
+const normal = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+export const tokensDeNombre = (nombre) => normal(nombre).split(' ').filter((t) => t && !SUFIJOS.has(t));
+
+// Pura. `catalogo` = [{symbol, nombre}]. Devuelve hasta 3 tickers con el porqué.
+export function tickersDelTema(tema, catalogo = []) {
+  const crudo = String(tema || '');
+  const toks = normal(crudo).split(' ').filter(Boolean);
+  const tset = new Set(toks);
+  const porSimbolo = new Map(catalogo.map((c) => [String(c.symbol).toUpperCase(), c]));
+  const hallados = [];
+  const agrega = (symbol, por) => { if (!hallados.some((h) => h.symbol === symbol) && hallados.length < 3) hallados.push({ symbol, por }); };
+  // (a) un ticker escrito en MAYÚSCULAS que está en el catálogo.
+  for (const m of crudo.match(/\b[A-Z][A-Z.]{0,5}\b/g) || []) {
+    if (!SIGLAS.has(m) && porSimbolo.has(m)) agrega(m, 'ticker');
+  }
+  // (b) el nombre de la empresa: todos sus tokens en el tema, o su primer
+  // token si es distintivo (≥4 letras y no genérico).
+  for (const c of catalogo) {
+    const nt = tokensDeNombre(c.nombre);
+    if (!nt.length) continue;
+    const completo = nt.length > 1 && nt.every((t) => tset.has(t));
+    const primero = nt[0].length >= 4 && !GENERICAS.has(nt[0]) && tset.has(nt[0]);
+    if (completo || primero) agrega(String(c.symbol).toUpperCase(), 'nombre: ' + c.nombre);
+  }
+  return hallados;
+}
+
+export const palabrasDelTema = (tema) => normal(tema).split(' ').filter((t) => t.length >= 3 && !PALABRAS_VACIAS.has(t));
+
+let catalogoCache = null;
+export async function catalogoDeEmpresas() {
+  if (catalogoCache) return catalogoCache;
+  const rows = await sql('select symbol, nombre from mercado_universo_us where nombre is not null');
+  catalogoCache = (rows || []).filter((r) => r.symbol && r.nombre);
+  return catalogoCache;
+}
+
+// Las fuentes de UN ticker: Alpaca primero; si da 0, Finnhub y RSS+8-K.
+async function fuentesDeTicker(ticker, { start, ctx }) {
+  const d = ctx.deps || {};
+  const alpaca = await consultar('alpaca', () => (d.getNews || getNews)({ symbols: [ticker], limit: 50, start, creds: ctx.creds, pages: 1 }));
+  if (alpaca.ok && alpaca.n > 0) return [alpaca];
+  const [fh, loc] = await Promise.all([
+    consultar('finnhub', () => (d.finnhubNoticias || finnhubNoticias)(ticker, { start, now: ctx.now, key: ctx.finnhubKey })),
+    consultar('rss_8k', () => (d.noticiasLocales || noticiasLocales)({ ticker, start })),
+  ]);
+  return [alpaca, fh, loc];
+}
+
+const lineaFuente = (f) => `${FUENTES_NOTICIAS[f.id] || f.id} ${f.ok ? '✓ ' + f.n : '✕ ' + f.motivo}`;
+
 export async function runNoticias(args, ctx) {
   const dias = args.days || 2;
   const start = new Date(ctx.now.getTime() - dias * 86400000).toISOString();
-  // ── LA BÚSQUEDA POR TEMA MIRABA 50 TITULARES ───────────────────────
-  // Y después decía "sin titulares para el tema Hormuz". Eso se lee como "no
-  // hay noticias de Hormuz" cuando lo que pasaba es "no estaba entre los 50 más
-  // recientes" — una afirmación fuerte sobre una muestra chica, que es
-  // exactamente la clase de error que el resto del sistema evita.
-  //
-  // Por tema se paginan 4 páginas (200 titulares). Por ticker alcanza con una:
-  // el feed ya viene filtrado por el servidor.
-  const porTema = !!args.tema && !args.ticker;
+  const d = ctx.deps || {};
+  let consultas = [];      // [{ id, ok, n, motivo, items }]
   let items = [];
-  try {
-    items = await (ctx.deps.getNews || getNews)({
-      symbols: args.ticker ? [args.ticker] : [], limit: 50, start, creds: ctx.creds,
-      pages: porTema ? 4 : 1,
-    });
-  } catch (e) {
-    return { text: `No se pudieron traer noticias: ${String((e && e.message) || e)}. No hay titulares para esta consulta — no significa que no haya noticias.`, rows: 0, error: true };
+  let encabezado = '';
+  let vacio = '';
+  let mapeo = null;
+
+  if (args.ticker) {
+    consultas = await fuentesDeTicker(args.ticker, { start, ctx });
+    items = unirTitulares(consultas.map((c) => c.items));
+    encabezado = `${args.ticker}`;
+    vacio = `${args.ticker} en los últimos ${dias} día(s)`;
+  } else {
+    // ── TEMA ──
+    let catalogo = [];
+    let catalogoError = null;
+    try { catalogo = await (d.catalogoDeEmpresas || catalogoDeEmpresas)(); } catch (e) { catalogoError = String((e && e.message) || e); }
+    mapeo = tickersDelTema(args.tema, catalogo);
+    if (mapeo.length) {
+      const porTicker = await Promise.all(mapeo.map((m) => fuentesDeTicker(m.symbol, { start, ctx })));
+      // Una fila por fuente, sumando lo que trajo para cada ticker.
+      for (const id of Object.keys(FUENTES_NOTICIAS)) {
+        const de = porTicker.flat().filter((c) => c.id === id);
+        if (!de.length) continue;
+        const caidas = de.filter((c) => !c.ok);
+        consultas.push(caidas.length === de.length
+          ? { id, ok: false, motivo: caidas[0].motivo, items: [] }
+          : { id, ok: true, n: de.reduce((s, c) => s + (c.n || 0), 0), items: de.flatMap((c) => c.items), ...(caidas.length ? { parcial: caidas[0].motivo } : {}) });
+      }
+      items = unirTitulares(consultas.map((c) => c.items));
+      encabezado = `"${args.tema}" → ${mapeo.map((m) => m.symbol).join(', ')} (${mapeo.map((m) => m.por).join('; ')})`;
+      vacio = `"${args.tema}" (→ ${mapeo.map((m) => m.symbol).join(', ')}) en los últimos ${dias} día(s)`;
+    } else {
+      const palabras = palabrasDelTema(args.tema);
+      // Se busca en el TITULAR Y en el RESUMEN, en 200 titulares de Alpaca
+      // (4 páginas: la muestra chica era el error de "Hormuz") y en los RSS.
+      const [alp, loc] = await Promise.all([
+        consultar('alpaca', () => (d.getNews || getNews)({ symbols: [], limit: 50, start, creds: ctx.creds, pages: 4 })),
+        palabras.length
+          ? consultar('rss_8k', () => (d.noticiasLocales || noticiasLocales)({ palabras, start }))
+          : Promise.resolve({ id: 'rss_8k', ok: true, n: 0, items: [] }),
+      ]);
+      const revisados = alp.n || 0;
+      const puntaje = (n) => { const txt = normal(n.headline + ' ' + (n.summary || '')); return palabras.filter((p) => txt.split(' ').some((t) => t.startsWith(p))).length; };
+      // Todas las palabras; si ningún titular las tiene todas, la mayoría.
+      const minimo = (lista) => (lista.some((n) => puntaje(n) === palabras.length) ? palabras.length : Math.max(1, Math.ceil(palabras.length / 2)));
+      const candidatos = alp.items;
+      const umbral = palabras.length ? minimo(candidatos) : Infinity;
+      alp.items = candidatos.filter((n) => puntaje(n) >= umbral);
+      alp.n = alp.items.length;
+      consultas = [alp, loc];
+      items = unirTitulares([alp.items, loc.items]);
+      encabezado = `"${args.tema}" — palabras ${palabras.map((p) => `"${p}"`).join(' ') || '(ninguna utilizable)'}${umbral < palabras.length ? ` (ningún titular las tiene todas: se muestran los que tienen ${umbral}+)` : ''}, sobre ${revisados} titulares de Alpaca y los RSS+8-K`;
+      vacio = `el tema "${args.tema}" (palabras: ${palabras.join(', ') || 'ninguna'}; ${revisados} titulares revisados${catalogoError ? `; el catálogo de empresas no respondió: ${catalogoError}` : ''}) en los últimos ${dias} día(s)`;
+    }
   }
-  const buscados = items.length;
-  if (args.tema) {
-    // Se busca en el TITULAR Y en el RESUMEN. Un tema como "Hormuz" o "crypto"
-    // aparece muchas veces en el cuerpo y no en el título, y buscar solo el
-    // título devolvía cero sobre noticias que sí estaban ahí.
-    const re = new RegExp(String(args.tema).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    items = items.filter((n) => re.test(n.headline) || re.test(n.summary || ''));
-  }
-  const coincidencias = items.length;
-  items = items.slice(0, args.limit || 8);
+
+  const fuentes = consultas.map((c) => (c.ok ? { id: c.id, n: c.n, ...(c.parcial ? { parcial: c.parcial } : {}) } : { id: c.id, error: c.motivo }));
+  const caidas = consultas.filter((c) => !c.ok);
   if (!items.length) {
-    // EL CERO HONESTO: dice sobre cuántos se buscó. "Sin titulares" a secas no
-    // distingue "no hay noticias" de "no miramos suficientes".
+    if (consultas.length && caidas.length === consultas.length) {
+      return { text: `La herramienta falló: ninguna fuente de noticias respondió (${consultas.map(lineaFuente).join(' · ')}). No hay titulares para ${vacio} — no significa que no haya noticias.`, rows: 0, error: true, fuentes, ...(mapeo ? { mapeo } : {}) };
+    }
+    if (caidas.length) {
+      return {
+        text: `0 titulares (fuentes consultadas: ${consultas.map(lineaFuente).join(' · ')}) para ${vacio}. Una fuente NO respondió: esto no es falta de cobertura, es una consulta incompleta.`,
+        rows: 0, cobertura: 'parcial', fuentes, ...(mapeo ? { mapeo } : {}),
+      };
+    }
     return {
-      text: args.tema
-        ? `Ningún titular menciona "${args.tema}" entre los ${buscados} más recientes de los últimos ${dias} día(s) (se buscó en título y resumen). Eso NO significa que no haya pasado nada sobre el tema: significa que no está en esta ventana.`
-        : `Sin titulares para ${args.ticker} en los últimos ${dias} día(s).`,
-      rows: 0, buscados,
+      text: `0 titulares (sin cobertura en nuestras fuentes: ${consultas.map((c) => FUENTES_NOTICIAS[c.id]).join(', ')} — todas respondieron y ninguna tiene nada de ${vacio}). Que no haya titular en nuestras fuentes no significa que no haya pasado nada.`,
+      rows: 0, cobertura: 'sin_cobertura', fuentes, ...(mapeo ? { mapeo } : {}),
     };
   }
-  const header = args.tema
-    ? `${coincidencias} titular(es) mencionan "${args.tema}" de ${buscados} revisados, últimos ${dias} día(s):`
-    : `${items.length} titular(es), últimos ${dias} día(s):`;
-  const rows = items.map((n) => `${String(n.created_at || '').slice(0, 10)} [${(n.symbols || []).slice(0, 3).join(',') || '—'}] ${n.headline}`);
+  const total = items.length;
+  items = items.slice(0, args.limit || 8);
+  const header = `${total} titular(es) de ${encabezado}, últimos ${dias} día(s). Fuentes: ${consultas.map(lineaFuente).join(' · ')}`;
+  const rows = items.map((n) => `${String(n.created_at || '').slice(0, 10)} [${(n.symbols || []).slice(0, 3).join(',') || '—'}] {${n.fuente}} ${n.headline}`);
   const t = truncateRows(rows, { header });
-  return { text: t.text, rows: t.shown, truncated: t.truncated };
+  return { text: t.text, rows: t.shown, truncated: t.truncated, cobertura: 'con_titulares', fuentes, ...(mapeo ? { mapeo } : {}) };
 }
 
 export async function runFicha(args, ctx) {
   const tk = args.ticker;
   if (!tk) return { text: 'ficha necesita un ticker.', rows: 0, error: true };
   let dive = null;
+  // POR QUÉ no llegaron los fundamentales, si no llegaron. `fetchDeepDive`
+  // distingue el límite de tasa (429), la caída y la falta de cobertura.
+  let motivo = null;
   try {
     const r = await (ctx.deps.fetchDeepDive || fetchDeepDive)([tk], ctx.finnhubKey, ctx.now);
     dive = (r && r.data && r.data[tk]) || null;
-  } catch (e) { /* best-effort: la parte de mercado igual sirve */ }
+    motivo = (r && r.errors && r.errors[tk]) || null;
+  } catch (e) { motivo = FINNHUB_CAIDO + ': ' + String((e && e.message) || e); }
+  const limitado = motivo === FINNHUB_LIMITE;
+  const caido = !!motivo && motivo.startsWith(FINNHUB_CAIDO);
 
   const enTablero = filasDelTablero(ctx).find((f) => f.symbol === tk) || null;
   const w = (ctx.universe && ctx.universe.fifty_two_week && ctx.universe.fifty_two_week[tk]) || null;
+  // ── LO QUE EL AGENTE TIENE, CON SU PRECIO (2026-10-20) ──────────────
+  // 11 de 15 fichas decían "precio: no está entre los nombres que el tablero
+  // cubre hoy": las posiciones propias casi nunca están en un extremo. Decirle
+  // "no tengo precio" de lo que él mismo tiene es confuso — el precio está en
+  // su libro de Alpaca, que la corrida ya leyó. Se usa ése, ROTULADO como de
+  // su posición para que no se mezcle con el reloj del tablero.
+  const mia = (ctx.tenencias && ctx.tenencias[tk]) || null;
 
   const lineas = [`FICHA ${tk}`];
   if (enTablero) lineas.push(`precio ${n2(enTablero.price)} · 1d ${sg(enTablero.change_pct)}% · RVOL ${enTablero.rvol ?? '—'}`);
+  else if (mia && Number.isFinite(mia.price)) lineas.push(`precio ${n2(mia.price)} (de TU posición en Alpaca — no está en ningún extremo del tablero) · 1d ${sg(mia.change_today_pct)}%`);
   else lineas.push('precio: no está entre los nombres que el tablero cubre hoy (no es que no cotice — es que no está en ningún extremo del tablero).');
+  if (mia) lineas.push(`TU POSICIÓN: peso ${n2(mia.weight_pct)}% · entrada ${n2(mia.avg_entry)} · desde tu entrada ${sg(mia.pnl_since_entry_pct)}%`);
   if (w) lineas.push(`52 semanas: máx ${n2(w.high_52w)} (${sg(w.pct_from_high)}%) · mín ${n2(w.low_52w)} (+${n2(w.pct_from_low)}%)`);
   if (dive && dive.profile) lineas.push(`${dive.profile.name || ''} · ${dive.profile.industry || 'sector s/d'} · mcap ${dive.profile.marketCapM != null ? '$' + (dive.profile.marketCapM / 1000).toFixed(1) + 'B' : '—'}`);
   if (dive && dive.fundamentals) {
@@ -517,10 +774,24 @@ export async function runFicha(args, ctx) {
     lineas.push(`analistas: ${r.strongBuy ?? 0} strong buy / ${r.buy ?? 0} buy / ${r.hold ?? 0} hold / ${r.sell ?? 0} sell`);
   }
   for (const n of ((dive && dive.news) || []).slice(0, 5)) lineas.push(`  ${String(n.date || '').slice(0, 10)} ${n.headline}`);
+  // ── UN 429 O UNA CAÍDA NO SON "SIN COBERTURA" ──────────────────────
+  // Sin un solo campo de negocio y con Finnhub limitado o caído: la
+  // herramienta FALLÓ (error, no se cachea), y lo dice con el motivo. Con
+  // algo de dato pero un 429 en alguna de las cuatro: la ficha sale, avisa que
+  // está incompleta y tampoco se cachea — el próximo agente merece la completa.
+  const vacia = (o) => !o || Object.values(o).every((v) => v == null);
+  const sinNegocio = !dive || (vacia(dive.profile) && vacia(dive.fundamentals) && vacia(dive.recommendation) && !((dive.news || []).length));
+  if ((limitado || caido) && sinNegocio) {
+    const fallo = limitado ? 'límite de Finnhub' : 'Finnhub no respondió';
+    lineas[0] = `La herramienta falló en los fundamentales: ${motivo}. NO es "sin cobertura": Finnhub no contestó con datos. Arriba de esto no hay nada de negocio; lo que sigue sale del tablero. FICHA ${tk}`;
+    const t = truncateRows(lineas.slice(1), { header: lineas[0] });
+    return { text: t.text, rows: 0, truncated: t.truncated, error: true, fallo, no_cachear: true };
+  }
+  if (limitado) lineas.push(`(ficha INCOMPLETA: parte de los datos no llegó por el ${FINNHUB_LIMITE}. Lo que falta no es cero.)`);
   if (!dive) lineas.push('(sin cobertura de fundamentales para este nombre: los campos de negocio no están disponibles, no son cero.)');
 
   const t = truncateRows(lineas.slice(1), { header: lineas[0] });
-  return { text: t.text, rows: t.shown, truncated: t.truncated };
+  return { text: t.text, rows: t.shown, truncated: t.truncated, ...(limitado ? { fallo: 'límite de Finnhub (parcial)', no_cachear: true } : {}) };
 }
 
 export async function runSector(args, ctx) {
@@ -542,9 +813,38 @@ export async function runSector(args, ctx) {
   return { text: t.text, rows: t.shown, truncated: t.truncated };
 }
 
-export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector };
+export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: runFicha, sector: runSector, eventos: runEventos, historia: runHistoria };
 
 // ── EL EJECUTOR, con presupuesto y caché ─────────────────────────────
+// Posiciones de Alpaca → { SYM: {price, change_today_pct, weight_pct, avg_entry, pnl_since_entry_pct} }.
+// Fracciones de Alpaca (0.012) a porcentaje (1.2), igual que el resto de la ficha.
+export function tenenciasDe(posiciones = [], equity = null) {
+  const eq = Number(equity);
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const out = {};
+  for (const p of posiciones || []) {
+    const sym = String((p && p.symbol) || '').trim().toUpperCase();
+    if (!sym) continue;
+    const mv = num(p.market_value);
+    const ct = num(p.change_today);
+    const pl = num(p.unrealized_plpc);
+    out[sym] = {
+      price: num(p.current_price),
+      change_today_pct: ct == null ? null : ct * 100,
+      weight_pct: mv != null && eq > 0 ? (mv / eq) * 100 : null,
+      avg_entry: num(p.avg_entry_price),
+      pnl_since_entry_pct: pl == null ? null : pl * 100,
+    };
+  }
+  return out;
+}
+
+// Un resultado de herramienta usable: texto para el modelo y un conteo. Lo que
+// no cumple esto es una falla, venga del runner o de la caché del día.
+function resultadoValido(out) {
+  return !!out && typeof out.text === 'string' && Number.isFinite(out.rows);
+}
+
 // Crea un ejecutor con estado PARA UNA CORRIDA DE UN AGENTE: lleva la cuenta
 // de llamadas, la secuencia journaleada y la caché.
 //
@@ -553,6 +853,10 @@ export const RUNNERS = { screener: runScreener, noticias: runNoticias, ficha: ru
 export function createToolExecutor({
   budget = TOOL_BUDGET.fixed_round, board = null, universe = null, creds = null,
   finnhubKey = process.env.FINNHUB_API_KEY, now = new Date(), deps = {}, cache = true,
+  // Las posiciones del agente, como las devuelve Alpaca, y su equity. Sólo
+  // las usa `ficha`, para dar el precio de lo que el agente ya tiene.
+  posiciones = [], equity = null,
+  herramientas = herramientasActivas(),
 } = {}) {
   const sectorOf = deps.sectorOf || (() => null);
   const newsSymbols = new Set();
@@ -570,7 +874,8 @@ export function createToolExecutor({
   // Para ellos el market cap es una COTA INFERIOR, no una medición.
   const asumidos = new Set(((universe && universe.market_caps_asumidos) || []).map((x) => String(x || '').toUpperCase()));
   const capEsAsumido = deps.capEsAsumido || ((sym) => asumidos.has(String(sym || '').toUpperCase()));
-  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf };
+  const tenencias = tenenciasDe(posiciones, equity);
+  const ctx = { board, universe, creds, finnhubKey, now, deps, sectorOf, newsSymbols, marketCapOf: capOf, capEsAsumido, retornosOf, tenencias };
   const sequence = [];
   // DOS CONTADORES, Y LA DIFERENCIA ES LA MITAD DEL BUG REPORTADO.
   //   `used`     = llamadas EJECUTADAS. Nunca puede pasar del techo.
@@ -625,9 +930,11 @@ export function createToolExecutor({
       // ahora ve el número correcto.
       const n = ++used;
 
-      const runner = RUNNERS[name];
+      // Solo las OFRECIDAS: una herramienta que existe en el código pero no
+      // se le ofreció a este agente es, para él, una herramienta inexistente.
+      const runner = herramientas.includes(name) ? RUNNERS[name] : null;
       if (!runner) {
-        const text = `No existe una herramienta llamada "${name}". Las disponibles son: ${Object.keys(RUNNERS).join(', ')}.`;
+        const text = `No existe una herramienta llamada "${name}". Las disponibles son: ${herramientas.join(', ')}.`;
         sequence.push({ n, intento: intentos, tool: name, args: rawArgs, refused: 'unknown_tool', ms: 0 });
         return { text, unknown_tool: true };
       }
@@ -645,7 +952,7 @@ export function createToolExecutor({
 
       let out;
       let source = 'cache';
-      if (hit && hit.payload && hit.payload.text) {
+      if (resultadoValido(hit && hit.payload)) {
         out = hit.payload;
       } else {
         source = 'run';
@@ -654,7 +961,23 @@ export function createToolExecutor({
         } catch (e) {
           out = { text: `La herramienta falló: ${String((e && e.message) || e)}. No hay resultado para esta consulta.`, rows: 0, error: true };
         }
-        if (cache && !out.error) await writeDayCache(key, out, now).catch(() => {});
+        // ── NULL NO ES CERO FILAS (2026-10-20) ─────────────────────────
+        // Grok: screener()→null, ficha(MU)→null, ficha(WDC)→null. Un resultado
+        // sin texto o sin conteo NO es "no hay nada": es la herramienta
+        // fallando sin decirlo. El agente tiene que recibirlo como falla, con
+        // palabras, y el journal tiene que marcarlo `error` — si no, se publica
+        // igual que un filtro que legítimamente dejó cero nombres.
+        if (!resultadoValido(out)) {
+          out = {
+            text: `La herramienta falló: no devolvió un resultado (${out == null ? 'null' : 'sin ' + [typeof out.text !== 'string' ? 'texto' : null, !Number.isFinite(out.rows) ? 'conteo de filas' : null].filter(Boolean).join(' ni ')}). No hay datos para esta consulta — no significa que no haya nombres que cumplan.`,
+            rows: 0, error: true, sin_resultado: true,
+          };
+        }
+        // Una consulta con una fuente caída (`cobertura: 'parcial'`) tampoco se
+        // cachea: el próximo agente que pregunte lo mismo merece la consulta
+        // completa, no el hueco de la caída.
+        // Ni lo que vino recortado por el límite de Finnhub (`no_cachear`).
+        if (cache && !out.error && !out.no_cachear && out.cobertura !== 'parcial') await writeDayCache(key, out, now).catch(() => {});
       }
 
       let text = out.text;
@@ -663,6 +986,15 @@ export function createToolExecutor({
       sequence.push({
         n, intento: intentos, tool: name, args, ms: Date.now() - t0, source,
         rows: out.rows ?? null, truncated: !!out.truncated, error: !!out.error,
+        ...(out.sin_resultado ? { sin_resultado: true } : {}),
+        ...(Array.isArray(out.datos_faltantes) && out.datos_faltantes.length ? { datos_faltantes: out.datos_faltantes } : {}),
+        // De qué fuentes salió (o no) cada noticia, y si el cero es falta de
+        // cobertura o una fuente caída. /liga/libros lo publica.
+        ...(Array.isArray(out.fuentes) ? { fuentes: out.fuentes } : {}),
+        ...(out.cobertura ? { cobertura: out.cobertura } : {}),
+        ...(Array.isArray(out.mapeo) && out.mapeo.length ? { mapeo: out.mapeo } : {}),
+        // POR QUÉ falló, corto ("límite de Finnhub"): /liga/libros lo publica.
+        ...(out.fallo ? { fallo: String(out.fallo).slice(0, 120) } : {}),
         // El resultado COMPLETO, no el resumen: sin esto el replay no puede
         // reproducir la corrida — el modelo decidió mirando algo que no
         // guardamos. Ver el encabezado.
@@ -680,8 +1012,18 @@ export function createToolExecutor({
       return sequence.map((s) => ({
         n: s.n, tool: s.tool, args: s.args, ms: s.ms,
         rows: s.rows, truncated: s.truncated,
+        // LOS TOKENS QUE AGREGÓ ESTA LLAMADA a la conversación (estimados,
+        // 4 caracteres ≈ 1 token — la misma cuenta del techo de contexto). Es
+        // lo que una herramienta nueva le cuesta a la corrida, por llamada.
+        ...(s.tokens_est != null ? { tokens: s.tokens_est } : {}),
         ...(s.refused ? { refused: s.refused } : {}),
         ...(s.error ? { error: true } : {}),
+        ...(s.sin_resultado ? { sin_resultado: true } : {}),
+        ...(s.datos_faltantes ? { datos_faltantes: s.datos_faltantes } : {}),
+        ...(s.fuentes ? { fuentes: s.fuentes } : {}),
+        ...(s.cobertura ? { cobertura: s.cobertura } : {}),
+        ...(s.mapeo ? { mapeo: s.mapeo } : {}),
+        ...(s.fallo ? { fallo: s.fallo } : {}),
       }));
     },
   };

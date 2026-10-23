@@ -1001,102 +1001,87 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" \
 
 ---
 
-## TARJETA DE DESACUERDO ✅ IMPLEMENTADA (`?vista=live` + `?diag=desacuerdos`)
+## TARJETA DE DESACUERDO — ❌ RETIRADA. La tarjeta pone los números lado a lado
 
-Cuando el precio de un mercado abierto está lejos de la tasa histórica de la
-empresa, la tarjeta lo dice y manda a mirar. **No es señal de compra ni de
-venta. Es dónde mirar.**
+**Qué era.** En `?vista=live`, cada mercado abierto llevaba un dictamen
+(`evaluaDesacuerdo`): la brecha entre el precio del Yes y la tasa histórica de
+beats, con umbrales congelados (`CRITERIOS_DESACUERDO`: ventana 20, mínimo 12
+trimestres, 25 / 50 puntos), la alerta "⚠ DESACUERDO · N puntos", un bloque de
+"dónde mirar" y el `?diag=desacuerdos`.
 
-### Cicatriz: el borrador decía lo que no se sabe
+**Por qué se retiró.** META, mercado abierto que resolvía el 2026-10-21
+(`meta-quarterly-earnings-gaap-eps-10-21-2026-6pt31`): la tarjeta dijo
+"DESACUERDO · 68 puntos" y era **falsa**, por dos causas que ningún umbral
+arreglaba del todo:
 
-El borrador de la tarjeta traía esta frase:
+1. **Métrica distinta.** El mercado resuelve sobre **GAAP EPS > $6.31**; el
+   histórico cuenta el EPS de Alpha Vantage, que es **ajustado**. En 2025-10-29
+   el histórico marca ✓ (est 6.71 → 7.25) y el GAAP fue $1.05 (cargo fiscal
+   único de $15.93B). Meta tuvo cargos extraordinarios grandes en 3 de los
+   últimos 4 trimestres.
+2. **Libro vacío.** $4.2K de volumen, $1.3K de liquidez; Yes a 28¢ y No a
+   96.3¢. La tarjeta mostró 7% (`outcomePrices`), Polymarket 16% (mid).
 
-> *"Algo que el historial no contiene está moviendo el precio."*
+Se probó primero cerrar la alerta por métrica y por spread (PR #308). Después
+**Lety decidió que QuantDesk NO juzga el desacuerdo**: se quitaron la alerta,
+el cálculo de la brecha, "dónde mirar" y el umbral de spread como condición.
+`?diag=desacuerdos` contesta `retirado: true`. `tests/earnings-beat-live.test.mjs`
+falla si la alerta, la brecha o "dónde mirar" vuelven a la pantalla o al
+endpoint: volver a tenerla es una decisión, no un descuido.
 
-Esa frase **afirma que el mercado está informado**, y es justo lo que no se
-sabe. Un hueco grande tiene dos causas:
+### Lo que muestra la tarjeta ahora — cada número con lo que mide
 
-1. el mercado sabe algo que el historial no contiene;
-2. **los dos números no son sobre la misma pregunta.**
-
-Y la segunda es la más probable, no por escepticismo sino por historia: **la
-Fase 0 de este experimento se corrigió cuatro veces por (2)** — mercados de
-menciones, emparejamiento con el trimestre siguiente, ruido por substring, tope
-de offset. Además la vista en vivo ya sabe que *"una misma empresa puede tener
-varios mercados abiertos a la vez (distintos umbrales de EPS sobre el mismo
-reporte)"*: un mercado que pregunta "¿EPS por encima de $3.20?" cotiza 8% con
-toda la razón si el consenso es $2.75, y restarle la tasa de beats a ese 8% no
-significa nada.
-
-Por eso la regla que quedó en código: **cuanto MÁS grande el hueco, MÁS arriba
-va la revisión del instrumento** en "dónde mirar". A partir de
-`gap_instrumento_primero_puntos` (50) el instrumento es el primer renglón, y la
-lectura dice que un hueco así *se produce más fácil con un mercado que pregunta
-otra cosa que con información nueva*. Hay test de que la frase del borrador no
-puede aparecer.
-
-Otras tres cosas del borrador que no pasaron:
-
-| Traía | Problema | Quedó |
+| Bloque | Qué | Fuente / métrica |
 |---|---|---|
-| `Histórico: 78% (21 de 27)` | 27 no es ninguna ventana del proyecto. El titular está congelado en **20 trimestres** (la cicatriz de MU: *"lo que arregló el número fue la VENTANA"*). Un conteo de 27 al lado de una brecha hace que la brecha sea de otra cosa que lo que se muestra. | La brecha se calcula sobre la **misma ventana de 20** que el titular. Hay test con 27 trimestres que verifica que sale 20. |
-| `reporta 22-jul` | Una fecha ya pasada. Eso no es una advertencia, es una fila rancia. | `motivo: 'fecha_pasada'` cierra el dictamen y **no se pinta tarjeta**. El día entra por parámetro (la función es pura; el endpoint lo calcula una vez). |
-| `Brecha: −70 puntos`, a secas | Restar un precio a una tasa histórica es legítimo, pero **solo si cada número se nombra por lo que es**. Un "78%" suelto al lado de un "8%" se lee como dos probabilidades, y ahí la tasa histórica se volvió el pronóstico de QuantDesk por la puerta de atrás — que es la regla que la tarjeta en vivo existe para no romper. | La brecha va siempre con las dos cosas nombradas: *"El precio del mercado (8%) está muy por debajo de la tasa histórica (75%, 15 de 20 trimestres)"*, y debajo: *"La tasa histórica es un CONTEO de trimestres pasados: no es predicción de este trimestre."* |
+| **Polymarket** | Precio del Yes **dicho como mid** del libro, con bid · ask · spread, volumen y liquidez. "Resuelve sobre GAAP EPS de $6.31". | CLOB `/book` (token del Yes). Sin libro: `outcomePrices` de Gamma, dicho como tal. Métrica y umbral leídos del slug / la descripción. |
+| **Consenso de analistas** | `$X · métrica no declarada por la fuente`, o "no disponible (motivo)". | Finnhub `/calendar/earnings` (`epsEstimate`), UN request por vista; fila del símbolo a ±5 días de la resolución. Finnhub no declara si es GAAP o ajustado. |
+| **QuantDesk · historial** | **Tal cual**: "Historial: superó N de 20", historial completo, racha, sorpresa mediana, últimos 8 trimestres. Etiquetado "contando EPS ajustado (Alpha Vantage)". | `pead_earnings` (Alpha Vantage `reportedEPS`, ajustado). |
+| Título del mercado | **En inglés**, tal cual: es una cita de Polymarket ("Will Meta (META) beat quarterly earnings?"). Debajo, en gris chico, su traducción: "¿Meta superará sus resultados trimestrales?". | `traduceTituloMercado`, por PLANTILLA: un título que no encaja en una forma conocida no se traduce (null), no se inventa. |
+| Línea neutral | Si la métrica del mercado no empata: "El mercado mide EPS GAAP; el historial cuenta EPS ajustado." Si no se pudo leer: "Métrica del mercado: no determinada". | Informativa: no es advertencia ni bloquea nada. |
 
-### Los umbrales (congelados, `CRITERIOS_DESACUERDO`)
+**Idioma:** todo el panel de Polymarket va **solo en español** — encabezado, botón,
+etiquetas, disclaimer (ya no sale la copia en inglés debajo) y el pie ("El historial
+no es predicción."). Única excepción: el título del mercado, que es cita. Los códigos
+del JSON (`sin_ask`, `sin_fila_en_el_calendario`, `eps_gaap`…) no se traducen: son
+datos. `tests/earnings-beat-live.test.mjs` pinta la tarjeta con las funciones reales
+y falla si el texto renderizado dice beat, track record, streak, spread, bid, ask,
+volume, liquidity, threshold, not available, not determined, forecast, full
+history, last quarters o median surprise.
 
-| Umbral | Valor | Por qué |
-|---|---|---|
-| `ventana_trimestres` | 20 | La misma del titular. Si fuera otra, la brecha no sería la de lo que se muestra. |
-| `min_trimestres` | 12 | Una tasa de 6 trimestres se mueve 17 puntos con un solo trimestre. |
-| `gap_min_puntos` | 25 | Por debajo: **coincide**, y no se manda a mirar nada. |
-| `gap_instrumento_primero_puntos` | 50 | Por encima: el instrumento va primero. |
-| `tolerancia_umbral_pct` | 20 | El umbral declarado contra el nivel reciente de EPS. Más lejos que esto y la pregunta puede no ser "beat vs consenso". |
+Siguen igual: el disclaimer (ahora solo en español), "no es predicción",
+`probabilidad_quantdesk: null` y el **NO-GO** de la Fase 2.
 
-### Lo que cierra el dictamen ANTES de restar
+### El lector de métrica (`extraeMetricaMercado`)
 
-`sin_precio` · `sin_historial` · `muestra_corta` · `fecha_pasada` ·
-`sin_consenso_declarado`. Ninguno pinta tarjeta: una advertencia que no se
-puede sostener es peor que el silencio.
+- Lee el slug, la pregunta y la descripción **por separado**. `non-gaap-eps`
+  contiene `gaap-eps`: el no-GAAP se mira primero. "adjusted" suelto no cuenta
+  ("adjusted for splits"). Sin mención → no determinada (`sin_mencion`);
+  fuentes que se contradicen → no determinada (`conflicto`). No se adivina.
+- **Cláusulas condicionales de respaldo, ignoradas.** De 30 mercados abiertos,
+  20 salían `conflicto` con el MISMO fragmento («…the market will resolve
+  according to the GAAP EPS listed in…»): es el respaldo "If X releases earnings
+  without a non-GAAP EPS, then…", no la métrica principal, y el slug de esos 20
+  dice `nongaap-eps`. Ahora se descarta toda oración (o cláusula tras `;`) que
+  **empieza** con If / In the event / In case / Should / Unless / Otherwise. La
+  oración principal ("… will resolve to Yes if …") nunca se descarta aunque
+  empiece con "If". Un respaldo metido DENTRO de la principal no encaja en el
+  patrón y sigue no determinado.
 
-Un bug que salió de estos tests: `Number(null)` es **0**, no `NaN`, así que un
-mercado que no declaraba consenso pasaba como si declarara **$0.00** y el camino
-de "no se sabe contra qué resuelve" no se disparaba nunca.
+### Censo — `GET /api/earnings-beat?vista=live&diag=instrumento&format=md`
 
-### Por MERCADO, no por empresa
-
-El desacuerdo se calcula por mercado, con **el umbral de ese mercado**. Cuando
-una empresa tiene varios mercados abiertos, la tarjeta lo avisa antes del hueco:
-solo el que pregunta por el consenso es comparable con la tasa histórica.
-
-### La causa viaja como CÓDIGO
-
-`donde_mirar` son `{codigo, texto}` y la lectura lleva `lectura_codigo`. La
-pantalla **traduce** por código; no re-decide. Es la lección de la nota de
-sorpresa de BA, que afirmó "estimado cerca de cero" con
-`denominador_chico: 0` porque el texto se armaba en el front. Un código que la
-pantalla no reconoce **no se escribe**: mejor una pista menos que una frase
-inventada.
-
-### El diag: la fila en la mano
-
-```bash
-curl -s "https://quantdesk2.vercel.app/api/earnings-beat?vista=live&diag=desacuerdos" | jq
-```
-
-Por cada mercado abierto: **la pregunta literal** (sin recortar), el umbral
-declarado, el nivel reciente de EPS, el desvío entre los dos, la tasa histórica,
-el hueco y el dictamen. Es lo único con lo que se puede decidir si un −70 es
-información o es que el mercado pregunta otra cosa. Corre la **misma**
-`vistaLive()` que la pantalla: si dijera otros números no serviría de evidencia.
+Cuántos mercados piden GAAP / ajustado / no determinada; **lector viejo contra
+lector nuevo** (cuántos cambian, de los que eran `conflicto` cuántos cambian y a
+qué, y los slugs que siguen sin determinarse, con la cláusula ignorada citada);
+el estado del consenso de Finnhub; y el libro (bid, ask, spread, volumen,
+liquidez) como **descripción**, sin umbral.
 
 | Archivo | Qué |
 |---|---|
-| `api/_lib/earnings-beat.js` | `evaluaDesacuerdo` + `CRITERIOS_DESACUERDO`. Función PURA: `hoy` entra por parámetro. |
-| `api/earnings-beat.js` | El desacuerdo por mercado en `vistaLive()` y el `?diag=desacuerdos`. |
-| `app.html` | `ebDesacuerdoBloque()` — bilingüe, traduce por código, nunca decide la causa. |
-| `tests/earnings-beat-desacuerdo.test.mjs` | Umbrales pineados, los cierres previos, la ventana de 20, y que la lectura NO afirme que el mercado sabe algo. |
-| `tests/earnings-beat-live.test.mjs` | El lint de honestidad, ampliado al bloque nuevo y al diag. |
+| `api/_lib/earnings-beat.js` | `extraeMetricaMercado` (+ `sinCondicionales`), `comparaMetricas` (nota neutral), `METRICA_HISTORICO`, `libroDelYes`, `umbralDelSlug`. Sin `evaluaDesacuerdo` ni `CRITERIOS_DESACUERDO`. |
+| `api/earnings-beat.js` | `vistaLive()`: libro del Yes, `consensoDeAnalistas()` (Finnhub), `metrica_vs_historico`; `?diag=instrumento` (`diagInstrumento`, `instrumentoMd`); `?diag=desacuerdos` → retirado. |
+| `app.html` | `ebLiveCard()`: los tres bloques lado a lado y la línea neutral. Sin bloque de desacuerdo. |
+| `tests/earnings-beat-instrumento.test.mjs` | Lector de métrica y cláusulas condicionales, libro, consenso, la vista y el censo de punta a punta (caso META y la forma de los 20). |
+| `tests/earnings-beat-live.test.mjs` | Lint de honestidad + **la alerta NO existe** (pantalla, endpoint y exports). |
 
 ---
 

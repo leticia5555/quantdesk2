@@ -33,7 +33,7 @@
 import { ensureSchema } from './_lib/db.js';
 import { checkAdminAuth } from './_lib/arena-admin.js';
 import * as alpaca from './_lib/alpaca.js';
-import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_REINTENTO_JSON, PROMPT_VERSION } from './_lib/arena-registry.js';
+import { activeAgents, agentById, agentAlpacaCreds, ARENA_MAX_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_REINTENTO_JSON, PROMPT_VERSION, presupuestoRazonamiento } from './_lib/arena-registry.js';
 import { callArenaLLM, withDeadline, cachePrefixReport, anthropicCostUsd, diagnosticoDeCorte } from './_lib/arena-model.js';
 // `PROMPT_VERSION` ya NO viene de acá: era la única arista del ciclo que no
 // hoisteaba. Sale de _lib/arena-registry.js, que es hoja. Los cuatro que
@@ -148,6 +148,13 @@ export function relojDeReintento({ budgetMs, elapsedMs }) {
 // `necesitó_reintento`, y las dos cifras se leen juntas. Un riel que en la
 // práctica alcanza a cinco de siete y no lo dice es el patrón de B45 otra vez,
 // un límite que no llega al camino que corre.
+// Presupuesto de razonamiento del reintento solo-JSON (OpenRouter). Chico a
+// propósito: el reintento reimprime una decisión, no la vuelve a tomar.
+export const REINTENTO_RAZONAMIENTO_TOKENS = (() => {
+  const n = Number(process.env.ARENA_REINTENTO_RAZONAMIENTO);
+  return Number.isFinite(n) && n >= 256 ? Math.floor(n) : 1024;
+})();
+
 async function rescatarConSoloJson({ agent, system, loop, textoMalo, corte, parseError, now, trace }) {
   // La CAUSA, del diagnóstico del cierre y no de una suposición. Se publica
   // separada porque manda a lugares opuestos: `corte` es NUESTRO techo de
@@ -189,6 +196,17 @@ async function rescatarConSoloJson({ agent, system, loop, textoMalo, corte, pars
   try {
     r = await callArenaLLM({
       agent, system, messages: msgs, maxTokens: ARENA_MAX_TOKENS, now,
+      // ── EL RESCATE NO PUEDE TENER EL MISMO TECHO QUE LA FALLA (2026-10-20) ──
+      // Puerta del 20-oct, qwen 05:28: el razonamiento se comió las 6000 del
+      // cierre, el reintento salió con el MISMO max_tokens y el MISMO effort,
+      // volvió a razonar 6000 y tampoco entregó — la corrida más cara ($0.28)
+      // y la que menos sirvió. Peor: sin portafolio escrito, "reenviá el MISMO"
+      // obliga a decidir de nuevo, o sea a volver a pensar.
+      // El reintento compra FORMATO: razonamiento mínimo. `effort: low` para
+      // los siete (riel igual para todos) y, en OpenRouter, un presupuesto de
+      // razonamiento chico y explícito.
+      effort: 'low',
+      reasoningMaxTokens: REINTENTO_RAZONAMIENTO_TOKENS,
       // Mismo criterio que el cierre: es la ÚLTIMA llamada de la corrida, así
       // que no hay "siguientes" cuyo presupuesto proteger con un techo.
       timeoutMs: Math.max(PISO_VUELTA_MS, restante),
@@ -206,6 +224,9 @@ async function rescatarConSoloJson({ agent, system, loop, textoMalo, corte, pars
   const parsed = parsePortfolioResponse(texto);
   return {
     ...base, concedido: true, resuelto: !!parsed.ok, ms,
+    // Con qué se reintentó, para que el journal diga si el rescate tuvo un
+    // techo distinto del de la falla.
+    razonamiento: { effort: 'low', ...(agent.provider === 'openrouter' ? { max_tokens: REINTENTO_RAZONAMIENTO_TOKENS } : {}) },
     lectura: corte2,
     ...(parsed.ok ? {} : { parse_error_2: parsed.error }),
     // El PRIMER intento no se pierde. Si el rescate funciona, el hallazgo
@@ -362,6 +383,7 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   const executor = createToolExecutor({
     budget: toolsMax, board: buffet.board_raw || null, universe: buffet.universe_raw || null,
     creds, now,
+    posiciones: libro.positions || [], equity,
     // ── `sectorOf` DEVOLVÍA null LITERALMENTE ──────────────────────────
     // Por eso `sector({etf:'XLE'})` daba 0 filas: ningún nombre del tablero
     // podía coincidir con ningún sector, porque la función decía que nadie
@@ -387,6 +409,9 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
     cache_prefix: cachePrefixReport(agent, [system, shared]),
     lens: cola.lens, tail_tokens: cola.tokens_est,
     tier: tier ? { tier: tier.tier, tools_max: toolsMax } : null,
+    // Qué entró al universo por la puerta en vivo en esta corrida (igual para
+    // los siete). Es lo que contesta "¿IONQ llegó a estar frente a los agentes?".
+    puerta_en_vivo: (buffet && buffet.puerta_en_vivo) || null,
   };
 
   let loop;
@@ -585,6 +610,23 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
   // herramientas) y cuál ganó se deducía de `resuelto_por`. Una derivación
   // frágil para el dato que decide el diagnóstico.
   const corte = diagnosticoDeCorte(llm.data, { maxTokens: ARENA_MAX_TOKENS, texto: text });
+  // ── CUÁNTO TARDÓ EL CIERRE, Y A QUÉ VELOCIDAD (2026-10-20) ─────────
+  // Para subir `ARENA_MAX_TOKENS` no alcanza saber que cortó: hay que saber
+  // si un techo más alto CABE en el reloj del cierre (reserva de 70s). Un
+  // techo de tokens que el modelo no alcanza a escribir antes del reloj sólo
+  // cambia un corte por un timeout. Sin la duración no hay velocidad, y sin
+  // velocidad el número se adivina.
+  // ── QUÉ SE PIDIÓ Y QUIÉN LO SIRVIÓ (2026-10-20) ────────────────────
+  // La sonda dio `respetado: true` (1115 de 4000) y el cierre real razonó
+  // 6000 de 4000. Para separar "el parámetro no llegó" de "el proveedor lo
+  // ignora", la fila del cierre tiene que decir las dos cosas: el presupuesto
+  // que pedimos y el proveedor que atendió. Sin esto, la causa es arqueología.
+  corte.presupuesto_razonamiento = presupuestoRazonamiento(agent.id, { techo: ARENA_MAX_TOKENS }).efectivo;
+  corte.proveedor = llm.proveedor || null;
+  if (Number.isFinite(llm.ms)) {
+    corte.ms = llm.ms;
+    corte.tokens_por_s = corte.output_tokens && llm.ms > 0 ? +(corte.output_tokens / (llm.ms / 1000)).toFixed(1) : null;
+  }
   ctx.lectura_cierre = corte;
   let texto = text;
   let parsed = parsePortfolioResponse(texto);
@@ -1025,6 +1067,7 @@ export default async function handler(req, res) {
       cost_usd: +costo.toFixed(4),
       board: buffet.board_meta || null,
       universe: (buffet.universe_diagnostics && buffet.universe_diagnostics.base) || null,
+      puerta_en_vivo: buffet.puerta_en_vivo || null,
       agents: results,
       verdict: verdes.length === results.length
         ? `VERDE: los ${verdes.length} produjeron un objetivo que pasa los rieles. Costo de la sombra: $${costo.toFixed(4)}.`
