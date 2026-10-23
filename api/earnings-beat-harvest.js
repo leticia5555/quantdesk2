@@ -5,6 +5,11 @@
 //   GET /api/earnings-beat-harvest                  (job=mercados, default)
 //   GET /api/earnings-beat-harvest?job=precios      completa T-24h pendientes
 //   GET /api/earnings-beat-harvest?job=status       stats (sin escribir)
+//   GET /api/earnings-beat-harvest?job=kpi          cosecha PARALELA de rangos de KPI
+//       &dry=1        en seco (descubre y cuenta, no escribe)
+//       &format=md    lectura: eventos abiertos con sus rangos y precios
+//     Ver _lib/earnings-kpi-cosecha.js. Flag PROPIA (EARNINGS_KPI_HARVEST_ENABLED),
+//     y se despacha ANTES del gate de beat/miss: una no prende ni apaga a la otra.
 //
 // GATES (en orden): CRON_SECRET → EARNINGS_BEAT_HARVEST_ENABLED=1.
 // Heartbeat `earnings-beat:mercados` / `earnings-beat:precios`, para que
@@ -30,7 +35,8 @@
 // sobreviva va a ser el otro. El aporte de cada uno se journalea por corrida.
 //
 // ENV VARS: DATABASE_URL · CRON_SECRET (opc) · EARNINGS_BEAT_HARVEST_ENABLED ·
-//           FINNHUB_API_KEY (opc, nombres de empresa para resolver símbolos)
+//           FINNHUB_API_KEY (opc, nombres de empresa para resolver símbolos) ·
+//           EARNINGS_KPI_HARVEST_ENABLED (job=kpi; apagada por default)
 // ═══════════════════════════════════════════════════════════════════
 
 import { sql } from './_lib/db.js';
@@ -48,6 +54,9 @@ import {
 import {
   ensureSchema, upsertMercados, statsMercados, mercadosPendientes, preparaFila,
 } from './_lib/earnings-beat-db.js';
+import * as kpiDb from './_lib/earnings-kpi-db.js';
+import { cosechaKpi } from './_lib/earnings-kpi-cosecha.js';
+import { markdownEventos } from './_lib/earnings-kpi.js';
 
 export const maxDuration = 300;
 
@@ -257,6 +266,8 @@ export default async function handler(req, res) {
 
   const job = String(q.job || 'mercados').toLowerCase();
 
+  if (job === 'kpi') return handlerKpi(q, res);
+
   if (process.env.EARNINGS_BEAT_HARVEST_ENABLED !== '1') {
     if (job === 'mercados' || job === 'precios') await beat('earnings-beat:' + job, 'disabled');
     return res.status(200).json({ disabled: true, hint: 'EARNINGS_BEAT_HARVEST_ENABLED != 1' });
@@ -285,6 +296,48 @@ export default async function handler(req, res) {
   } catch (err) {
     await beat('earnings-beat:' + job, 'error', { msg: String((err && err.message) || err).slice(0, 200) });
     return res.status(500).json({ error: 'earnings-beat-harvest: ' + ((err && err.message) || 'unknown') });
+  }
+}
+
+// ─────────────────── job: kpi (rangos de KPI) ───────────────────
+// Cosecha paralela; no toca pm_earnings_markets ni el filtro v1.
+//   format=md → lectura (no necesita la flag: no escribe ni sale a la red)
+//   dry=1     → en seco (no necesita la flag: no escribe)
+//   resto     → cosecha + snapshot + backfill CLOB + T-24h (necesita la flag)
+
+async function handlerKpi(q, res) {
+  if (String(q.format || '').toLowerCase() === 'md') {
+    let filas = [];
+    try {
+      filas = await kpiDb.leeAbiertos();
+    } catch (e) {
+      // Tabla inexistente = la cosecha nunca corrió. Se dice así, no como error.
+      if (!/does not exist|no existe/i.test(String((e && e.message) || e))) {
+        return res.status(500).json({ error: 'earnings-kpi md: ' + ((e && e.message) || 'unknown') });
+      }
+    }
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    return res.status(200).send(markdownEventos(filas, { generado: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC' }));
+  }
+
+  const seco = q.dry === '1' || q.dry === 'true';
+  if (!seco && process.env.EARNINGS_KPI_HARVEST_ENABLED !== '1') {
+    await beat('earnings-kpi:snapshot', 'disabled');
+    return res.status(200).json({ disabled: true, hint: 'EARNINGS_KPI_HARVEST_ENABLED != 1' });
+  }
+  try {
+    if (!seco) await kpiDb.ensureSchema();
+    const out = await cosechaKpi({ gamma, clob, db: seco ? null : kpiDb, ahora: new Date(), presupuestoMs: PRESUPUESTO_MS });
+    if (!seco) {
+      const ok = out.frontera && out.frontera.estado === 'ok';
+      await beat('earnings-kpi:snapshot', ok ? 'ok' : 'error', {
+        frontera: out.frontera, rangos: out.conteos ? out.conteos.rangos : null, escritura: out.escritura,
+      });
+    }
+    return res.status(200).json(out);
+  } catch (err) {
+    if (!seco) await beat('earnings-kpi:snapshot', 'error', { msg: String((err && err.message) || err).slice(0, 200) });
+    return res.status(500).json({ error: 'earnings-kpi: ' + ((err && err.message) || 'unknown') });
   }
 }
 

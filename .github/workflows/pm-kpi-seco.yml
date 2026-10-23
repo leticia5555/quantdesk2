@@ -1,0 +1,59 @@
+# ═══════════════════════════════════════════════════════════════════
+# .github/workflows/pm-kpi-seco.yml — la cosecha de rangos de KPI, EN SECO.
+#
+# Corre scripts/pm-kpi-seco.mjs contra Polymarket real desde un runner (las
+# sesiones de desarrollo no siempre llegan a gamma-api / clob). NO escribe a
+# Postgres: el script no recibe DB. Deja el reporte en el RESUMEN del job y
+# como anotación, legibles sin abrir el log.
+#
+# No es una compuerta: una falla de la frontera sale como advertencia y exit 0.
+# ═══════════════════════════════════════════════════════════════════
+name: pm-kpi-seco
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'api/_lib/earnings-kpi*.js'
+      - 'scripts/pm-kpi-seco.mjs'
+      - '.github/workflows/pm-kpi-seco.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  seco:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: corrida en seco
+        run: |
+          node scripts/pm-kpi-seco.mjs --clob --json > /tmp/kpi.json
+          node -e "
+            import('./api/_lib/earnings-kpi-cosecha.js').then(({ markdownSeco }) => {
+              const r = JSON.parse(require('fs').readFileSync('/tmp/kpi.json', 'utf8'));
+              process.stdout.write(markdownSeco(r));
+            })" | tee /tmp/kpi.md
+          cat /tmp/kpi.md >> "$GITHUB_STEP_SUMMARY"
+          # Los conteos del candado, como anotación (se leen por la API de check-runs).
+          node -e "
+            const r = JSON.parse(require('fs').readFileSync('/tmp/kpi.json', 'utf8'));
+            const s = Object.entries(r.por_semilla || {}).map(([k, v]) => k + '=' + v.eventos_crudos + '/' + (v.eventos_kpi ?? '-')).join(' · ');
+            console.log('::notice title=frontera::' + r.frontera.estado + (r.frontera.motivo ? ' — ' + r.frontera.motivo : ''));
+            console.log('::notice title=conteos::' + JSON.stringify(r.conteos || null));
+            console.log('::notice title=por semilla (devueltos/kpi)::' + s);
+            console.log('::notice title=clob::' + JSON.stringify(r.clob_en_seco || null));
+          "
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pm-kpi-seco
+          path: |
+            /tmp/kpi.json
+            /tmp/kpi.md

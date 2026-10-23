@@ -70,7 +70,9 @@ export const EXPECTED = [
   // tomó", no "operó". Sin esta fila el reporte de 3 números no tiene datos.
   { job: 'libro:equity',    path: '/api/libro?equity=1',             schedule: '5 21 * * 1-5',          cadence: 'días hábiles ~21:05', stale_after_h: 80 },
   { job: 'earnings-beat:precios',  path: '/api/earnings-beat-harvest?job=precios',  schedule: '40 23 * * *', cadence: '1×/día (CLOB)',       stale_after_h: 30 },
-  // earnings-beat v2 (papel): recalcula pm_earnings_v2_features después de que
+  // Cosecha PARALELA de rangos de KPI (pm_kpi_markets). Flag propia
+  // EARNINGS_KPI_HARVEST_ENABLED; apagada late 'disabled'.
+  { job: 'earnings-kpi:snapshot',  path: '/api/earnings-beat-harvest?job=kpi',      schedule: '20 23 * * *', cadence: '1×/día (Polymarket)', stale_after_h: 30 },  // earnings-beat v2 (papel): recalcula pm_earnings_v2_features después de que
   // `precios` dejó el T-24h, y —solo con EARNINGS_V2_VIGENTE_ENABLED=1— captura
   // el consenso vigente de AV. Ver docs/earnings-beat-v2.md.
   { job: 'earnings-beat:v2',       path: '/api/earnings-beat-v2?job=diario',         schedule: '55 23 * * *', cadence: '1×/día (Neon + AV opc.)', stale_after_h: 30 },
