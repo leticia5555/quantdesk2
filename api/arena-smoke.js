@@ -88,7 +88,7 @@ import {
   ANTHROPIC_CACHE_MIN_TOKENS, ARENA_LLM_TIMEOUT_MS, ARENA_LLM_TIMEOUT_ORIGEN, ARENA_AGENT_DEADLINE_MS,
   techoLlmSospechoso, VUELTAS_MINIMAS, presupuestoRazonamiento,
 } from './_lib/arena-registry.js';
-import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS, relojDisponible } from './_lib/arena-tool-loop.js';
+import { LOOP_BUDGET_MS, RESERVA_CIERRE_MS, MARGEN_MS, relojDisponible, PISO_VUELTA_MS, PISO_VUELTA_ORIGEN, minimoParaOtraVuelta } from './_lib/arena-tool-loop.js';
 
 // ── LOS RELOJES, EN UN SOLO LUGAR Y CON SU ORIGEN ────────────────────
 // Cuatro techos distintos gobiernan una corrida y viven en tres archivos:
@@ -137,6 +137,14 @@ export function relojesEfectivos() {
     // pantalla se pueda identificar en vez de confundir.
     loop_contrato_acciones_ms: LOOP_BUDGET_MS,
     reserva_cierre_ms: RESERVA_CIERRE_MS,
+    // ── EL PISO DE VUELTA VIGENTE (2026-10-23) ──────────────────────
+    // El techo mínimo con el que se ARRANCA una vuelta. Si no queda reserva +
+    // piso, el loop no arranca otra vuelta: va directo al cierre con la
+    // reserva intacta. Se publica con su origen para verificar la env var.
+    piso_vuelta_ms: PISO_VUELTA_MS,
+    piso_vuelta_origen: PISO_VUELTA_ORIGEN,
+    minimo_para_otra_vuelta_ms: minimoParaOtraVuelta(),
+    nota_piso: `una vuelta solo arranca si quedan ${Math.round(minimoParaOtraVuelta() / 1000)}s (reserva de cierre ${Math.round(RESERVA_CIERRE_MS / 1000)}s + piso ${Math.round(PISO_VUELTA_MS / 1000)}s); si no, va directo al cierre. Ninguna vuelta arranca con un techo menor a ${Math.round(PISO_VUELTA_MS / 1000)}s.`,
     margen_ms: MARGEN_MS,
     deadline_agente_ms: ARENA_AGENT_DEADLINE_MS,
     funcion_max_duration_s: 300,
