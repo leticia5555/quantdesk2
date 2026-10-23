@@ -25,8 +25,28 @@ const OUT = (() => { const i = args.indexOf('--out'); return i >= 0 ? args[i + 1
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
 const require = createRequire(import.meta.url);
-const PW = process.env.PW_PATH || '/tmp/claude-0/-home-user-quantdesk2/978a1f3c-866a-59be-9b12-d16e6c760a3e/scratchpad/node_modules/playwright-core';
+// ── DÓNDE ESTÁ PLAYWRIGHT ───────────────────────────────────────────
+// Acá había clavada una ruta absoluta a un scratchpad con el id de UNA
+// sesión adentro. O sea que estos arneses corrían en un solo contenedor y
+// nada más: en CI, en otra máquina o en una sesión nueva tiraban
+// MODULE_NOT_FOUND antes de abrir el navegador. Y de hecho dejaron de
+// correr acá mismo cuando ese scratchpad se limpió.
+// Ahora se busca por candidatos, con `PW_PATH` ganando por si hace falta
+// apuntarlo a mano.
+const PW = (() => {
+  const candidatos = [
+    process.env.PW_PATH,
+    'playwright-core',
+    '/opt/node-tools/node_modules/playwright-core',
+    join(ROOT, 'node_modules/playwright-core'),
+  ].filter(Boolean);
+  for (const c of candidatos) { try { return require.resolve(c); } catch { /* el siguiente */ } }
+  throw new Error('no se encontró playwright-core; poné PW_PATH apuntando a su carpeta');
+})();
 const { chromium } = require(PW);
+// `resumenFaltantes` del lib de verdad: el fixture de `faltantes` se armaba
+// a mano y por eso le faltó `frases` cuando el endpoint empezó a mandarlas.
+const { resumenFaltantes } = await import(join(ROOT, 'api/_lib/mercado-mapa.js'));
 // El MISMO calculador que la pantalla (regla 1): la comprobación de la cuenta
 // en pesos no puede traer su propia aritmética del periodo.
 const { qdPeriodChange } = require(join(ROOT, 'qd-periods.js'));
@@ -241,8 +261,18 @@ const FIXTURES = {
     mapa: 'us', bolsa: 'us', cuadros: cuadrosUs(),
     mas: { n: 253, cap: 4.2e12, pct: 18.7, sin_cap_excluidos: 12, nota: '12 nombres quedan fuera del porcentaje porque no tienen capitalización medida' },
     fuente: { cuadros: 'neon:mercado_universo_us (sector y cap)', series: 'neon:mercado_precios_us (cierre y cierre ajustado, cosecha diaria)' },
-    faltantes: { total: 5, por_motivo: { no_hay_serie: 1, sin_ancla_ytd: 1, cap_sin_verificar: 3 },
-      sin_precio: 1, sin_periodo: 0, sin_ancla_ytd: 1, sin_cap_verificada: 3, ejemplos: [] },
+    // ── `faltantes` SALE DE LA FUNCIÓN REAL, NO ESCRITO A MANO ────────
+    // Estaba a mano, con sus campos copiados, y por eso no tenía `frases`
+    // cuando el endpoint empezó a mandarlas: el pie se quedó mudo y el arnés
+    // lo dio por bueno. Es el mismo patrón que nos costó tres rondas en
+    // noticias — un fixture escrito a mano no puede desmentir al código.
+    faltantes: resumenFaltantes([
+      { symbol: 'SINSERIE', motivo: 'no_hay_serie' },
+      { symbol: 'SINYTD', motivo: 'sin_ancla_ytd' },
+      { symbol: 'CAP1', motivo: 'cap_sin_verificar' },
+      { symbol: 'CAP2', motivo: 'cap_sin_verificar' },
+      { symbol: 'CAP3', motivo: 'cap_sin_verificar' },
+    ]),
     periodos: ['1D', '1S', '1M', 'YTD'], generado_en: '2026-09-21T22:00:00.000Z',
     ultimo_cierre: '2026-09-18',
   },
@@ -277,6 +307,50 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 let pedidosApi = 0;
 let roto = false;
 let sinAuditar = false;
+// ═══════════════════════════════════════════════════════════════════
+// LAS NOTICIAS DE LA REVISTA
+//
+// Lety, 2026-10-22: *"En `/mercado` (celular), las noticias van justo debajo
+// del mapa, antes de las tablas: 1 nota grande con foto a todo lo ancho…"*
+//
+// Cuatro con foto (de cuatro medios distintos), una de ellas con la foto
+// ROTA —su tarjeta tiene que desaparecer— y dos sin foto, que van a la lista
+// y no a la revista.
+// La elección de la revista la hace el MISMO módulo que en producción: la
+// pantalla sólo pinta, y si mañana cambia la regla, la corrida la ve.
+const { revistaDe } = await import(join(ROOT, 'api/_lib/noticias-pagina.js'));
+
+const PIXEL_FOTO = Buffer.from(
+  'R0lGODlhAQABAIAAACYwOwAAACwAAAAAAQABAAACAkQBADs=', 'base64');
+const NOTAS_FIXTURE = [
+  { url: 'https://reuters.com/z', titular: 'La Fed deja la tasa sin cambios y el mercado respira',
+    fuente_id: 'reuters', fuente_nombre: 'Reuters', tipo: 'medio', idioma: 'en', seccion: 'mercado',
+    publicado_en: '2026-09-21T21:50:00.000Z', imagen: '/foto-ok.gif', tickers: [], fuente_dato: null },
+  // SIN foto a propósito: va a la lista, y es la que lleva los chips de
+  // ticker. La revista no lleva chips —portada, titular, fuente y hora— así
+  // que si esta nota se fuera a la revista, no habría chips que tocar.
+  { url: 'https://cnbc.com/a', titular: 'Nvidia supera estimaciones y sube en el after',
+    fuente_id: 'cnbc', fuente_nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'acciones',
+    publicado_en: '2026-09-21T21:40:00.000Z', imagen: null, tickers: ['NVDA', 'ORCL'], fuente_dato: null },
+  { url: 'https://mw.com/b', titular: 'Wall Street cierra mixto a la espera de la Fed',
+    fuente_id: 'marketwatch', fuente_nombre: 'MarketWatch', tipo: 'medio', idioma: 'en', seccion: 'mercado',
+    publicado_en: '2026-09-21T21:20:00.000Z', imagen: '/foto-ok.gif', tickers: [], fuente_dato: null },
+  // La foto que NO carga: su tarjeta se quita, no se rellena.
+  { url: 'https://fin.com/c', titular: 'El peso cierra en 18.42 por dólar',
+    fuente_id: 'el_financiero', fuente_nombre: 'El Financiero', tipo: 'medio', idioma: 'es', seccion: 'mexico_latam',
+    publicado_en: '2026-09-21T21:00:00.000Z', imagen: '/foto-rota.gif', tickers: [], fuente_dato: null },
+  { url: 'https://valor.com/d', titular: 'Ibovespa fecha em alta de 1,2%',
+    fuente_id: 'valor_br', fuente_nombre: 'Valor BR', tipo: 'medio', idioma: 'pt', seccion: 'mexico_latam',
+    publicado_en: '2026-09-21T20:40:00.000Z', imagen: '/foto-ok.gif', tickers: [], fuente_dato: null },
+  // Sin foto: van a la lista, no a la revista.
+  { url: 'https://banxico.org.mx/anuncios#2026-09-21', titular: 'Banxico baja la tasa objetivo a 7.25% (desde 7.5%)',
+    fuente_id: 'banxico_sie', fuente_nombre: 'Banxico', tipo: 'oficial_derivado', idioma: 'es', seccion: 'oficiales',
+    publicado_en: '2026-09-21T12:00:00.000Z', imagen: null, tickers: [], fuente_dato: 'banxico:SF61745 (tasa objetivo)' },
+  { url: 'https://sec.gov/8k', titular: 'NVDA presenta un 8-K',
+    fuente_id: 'sec_8k', fuente_nombre: 'SEC EDGAR 8-K', tipo: 'oficial', idioma: 'en', seccion: 'oficiales',
+    publicado_en: '2026-09-21T11:00:00.000Z', imagen: null, tickers: ['NVDA'], fuente_dato: null },
+];
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   // EL INTERRUPTOR VIVE EN EL SERVIDOR DE PRUEBA, NO EN LA PÁGINA. Se probó
@@ -334,21 +408,26 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     // Con fuentes CAÍDAS a propósito: una sección corta sin decir que ocho de
     // veintidós no contestaron se lee como "no pasó nada hoy".
+    //
+    // La REVISTA la elige el endpoint con `revistaDe`, igual que en
+    // producción: la pantalla sólo pinta. Una de las fotos da 404 a propósito
+    // —su tarjeta tiene que desaparecer, nunca rellenarse—.
+    const notas = NOTAS_FIXTURE;
+    const rev = revistaDe(notas);
     return res.end(JSON.stringify({
-      noticias: [
-        { url: 'https://cnbc.com/a', titular: 'Nvidia supera estimaciones y sube en el after',
-          fuente_id: 'cnbc', fuente_nombre: 'CNBC', tipo: 'medio', idioma: 'en', seccion: 'acciones',
-          publicado_en: '2026-09-21T21:40:00.000Z', imagen: null, tickers: ['NVDA', 'ORCL'], fuente_dato: null },
-        { url: 'https://banxico.org.mx/anuncios#2026-09-21', titular: 'Banxico baja la tasa objetivo a 7.25% (desde 7.5%)',
-          fuente_id: 'banxico_sie', fuente_nombre: 'Banxico', tipo: 'oficial_derivado', idioma: 'es', seccion: 'oficiales',
-          publicado_en: '2026-09-21T12:00:00.000Z', imagen: null, tickers: [], fuente_dato: 'banxico:SF61745 (tasa objetivo)' },
-      ],
+      noticias: notas,
+      revista: { portada: rev.portada, medianas: rev.medianas, resto: rev.resto,
+                 con_foto_total: rev.con_foto_total, motivo_vacio: rev.motivo_vacio },
       fuentes_caidas: [{ fuente_id: 'zerohedge', motivo: 'HTTP 403 (bloqueo de datacenter)' }],
       fuentes_go: 22,
       generado_en: '2026-09-21T22:00:00.000Z',
-      fuente: 'neon:mercado_noticias (RSS/Atom de api/_lib/news-sources.json)',
+      fuente: 'neon:mercado_noticias (titulares de los feeds RSS/Atom de las fuentes registradas)',
     }));
   }
+  if (url.pathname === '/foto-ok.gif') {
+    res.writeHead(200, { 'content-type': 'image/gif' }); return res.end(PIXEL_FOTO);
+  }
+  if (url.pathname === '/foto-rota.gif') { res.writeHead(404); return res.end('no'); }
   if (url.pathname === '/api/macro-markets') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -379,7 +458,8 @@ const server = createServer(async (req, res) => {
     const m = url.searchParams.get('map') === 'mx' ? 'mx' : 'us';
     return res.end(JSON.stringify(FIXTURES[m]));
   }
-  const p = url.pathname === '/mercado' ? '/mercado.html' : url.pathname;
+  // R8: la raíz sirve el mapa, como el rewrite de producción.
+  const p = (url.pathname === '/mercado' || url.pathname === '/') ? '/mercado.html' : url.pathname;
   try {
     const buf = await readFile(join(ROOT, p.replace(/^\//, '')));
     res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream' });
@@ -464,7 +544,23 @@ try {
   const p = await movil.newPage();
   const errores = [];
   p.on('pageerror', (e) => errores.push(String(e)));
-  p.on('console', (m) => { if (m.type() === 'error') errores.push(m.text()); });
+  // Google Fonts no se alcanza desde este sandbox (el proxy no trae su CA).
+  // No es un error de la página: la pila de `--sans`/`--mono` declara una
+  // fuente del sistema detrás de IBM Plex justamente para esto, y abajo hay
+  // una comprobación que lo EXIGE en vez de taparlo.
+  const esFuente = (t, u) => /fonts\.(googleapis|gstatic)\.com/.test(u || '')
+    || /ERR_CERT_AUTHORITY_INVALID|fonts\.(googleapis|gstatic)/.test(t || '');
+  // Y la foto ROTA del fixture tampoco: su 404 es el que prueba que la
+  // tarjeta se quita en vez de rellenarse. Que el navegador lo anote en la
+  // consola es correcto; contarlo como fallo de la página sería castigar la
+  // comprobación.
+  const esFotoRota = (u) => /\/foto-rota\.gif/.test(u || '');
+  p.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    const u = (m.location && m.location().url) || '';
+    if (esFuente(m.text(), u) || esFotoRota(u)) return;
+    errores.push(m.text());
+  });
 
   await p.goto(`${BASE}/mercado`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.cuadro');
@@ -504,12 +600,46 @@ try {
     const sel = ['nav button', '.toggle button', '#cerrar'];
     const malos = [];
     for (const s of sel) for (const el of document.querySelectorAll(s)) {
+      // Lo que NO se pinta en el celular no se mide: R3(c) deja el buscador,
+      // las pestañas de Cripto/ETFs y el toggle de agrupación sólo en
+      // escritorio —el encargo los lista ahí— y un control con caja 0×0 no es
+      // un control chico, es un control que no está.
+      if (el.offsetParent === null) continue;
       const r = el.getBoundingClientRect();
       if (r.width < 44 || r.height < 44) malos.push(`${s}[${el.textContent.trim()}] ${Math.round(r.width)}×${Math.round(r.height)}`);
     }
     return malos;
   });
-  chequeo('todo control interactivo mide ≥44 px', taps.length === 0, taps.join(', '));
+  chequeo('todo control interactivo VISIBLE mide ≥44 px', taps.length === 0, taps.join(', '));
+
+  // R3(c): lo de escritorio NO aparece en el teléfono. El encargo lo lista
+  // bajo la línea del escritorio, y en 390 px esas piezas le quitaban ~100 px
+  // al mapa — que tiene que caber en UNA pantalla (decisión del 2026-10-02).
+  const soloEscritorio = await p.evaluate(() =>
+    ['buscador', 'tab-cripto', 'tab-etfs', 'agrupar']
+      .map((id) => ({ id, visible: document.getElementById(id).offsetParent !== null })));
+  chequeo('el buscador, Cripto/ETFs y el toggle de agrupar NO salen a 390 px',
+    soloEscritorio.every((x) => !x.visible), JSON.stringify(soloEscritorio));
+
+  // R8: en el celular la terminal se alcanza por el botón de abajo, no por
+  // la cabecera. Sin él, la home dejaría a app.html sin puerta desde el
+  // teléfono — y el encargo pide ese botón en CADA pantalla nueva.
+  await p.evaluate(() => document.getElementById('paneles').scrollIntoView());
+  await p.waitForSelector('#abrir-terminal', { timeout: 5000 }).catch(() => {});
+  const terminalMovil = await p.evaluate(() => {
+    const a = document.getElementById('abrir-terminal');
+    if (!a) return null;
+    const r = a.getBoundingClientRect();
+    return { href: a.getAttribute('href'), alto: Math.round(r.height), texto: a.textContent.trim() };
+  });
+  chequeo('a 390 px la terminal se alcanza por el botón de abajo, tocable',
+    terminalMovil && terminalMovil.href === '/app' && terminalMovil.alto >= 44
+    && /Modo experto/.test(terminalMovil.texto), JSON.stringify(terminalMovil));
+  // VOLVER ARRIBA. Las comprobaciones del pellizco que vienen después tocan
+  // coordenadas de la ventana, y con la página recorrida caen en otro lugar:
+  // las tres se pusieron rojas por esto, no por el mapa.
+  await p.evaluate(() => window.scrollTo(0, 0));
+  await p.waitForTimeout(120);
 
   const nSectores = await p.locator('.cuadro').count();
   chequeo('al abrir se ven EMPRESAS, no sólo sectores', nSectores >= 20, `${nSectores} cuadros`);
@@ -947,7 +1077,66 @@ try {
       })),
     };
   });
-  chequeo('"Lo de hoy" está, con sus notas', hoy.titulo === 'Lo de hoy' && hoy.filas.length === 2,
+  // "Lo de hoy" pinta el RESTO: lo que la revista no se llevó. Con seis notas
+  // y tres en la revista (una por medio, y la cuarta con la foto rota),
+  // quedan las que no tienen foto más las repetidas de fuente.
+  // ── LA REVISTA ──────────────────────────────────────────────────────
+  // Lety, 2026-10-22: *"En `/mercado` (celular), las noticias van justo
+  // debajo del mapa, antes de las tablas: 1 nota grande con foto a todo lo
+  // ancho, titular grande, fuente y hora; luego 4 medianas…"*
+  await p.waitForTimeout(5400);   // el plazo de la tarjeta rota es de 5 s
+  const rev = await p.evaluate(() => {
+    const zona = document.getElementById('p-revista');
+    const portada = zona.querySelector('.rev-portada');
+    const img = portada && portada.querySelector('img');
+    const meds = [...zona.querySelectorAll('.rev-med')];
+    const caja = (e) => (e ? e.getBoundingClientRect() : null);
+    const mapa = document.querySelector('main').getBoundingClientRect();
+    const tablas = document.getElementById('p-tablas').getBoundingClientRect();
+    return {
+      hayPortada: !!portada,
+      portadaCargada: !!img && img.complete && img.naturalWidth > 0,
+      portadaAncho: img ? Math.round(img.getBoundingClientRect().width) : 0,
+      anchoZona: Math.round(zona.getBoundingClientRect().width),
+      tituloPortada: portada ? Math.round(parseFloat(getComputedStyle(portada.querySelector('.tit')).fontSize)) : 0,
+      metaPortada: portada ? portada.querySelector('.rev-meta').textContent.trim() : '',
+      medianas: meds.length,
+      medianasCargadas: meds.filter((m) => {
+        const i = m.querySelector('img'); return i && i.complete && i.naturalWidth > 0;
+      }).length,
+      // La foto chica a la IZQUIERDA del titular.
+      fotoIzquierda: meds.every((m) => {
+        const i = caja(m.querySelector('img')); const t = caja(m.querySelector('.tit'));
+        return i && t && i.left < t.left;
+      }),
+      verTodas: (zona.querySelector('.ver-todas') || {}).getAttribute
+        ? zona.querySelector('.ver-todas').getAttribute('href') : null,
+      // El orden del celular: mapa → revista → tablas.
+      bajoElMapa: caja(zona).top >= mapa.bottom - 2,
+      antesDeLasTablas: caja(zona).top < tablas.top,
+      // Ninguna tarjeta con la foto sin cargar, y ningún bloque de relleno.
+      sinCargar: [...zona.querySelectorAll('img')].filter((i) => !(i.complete && i.naturalWidth > 0)).length,
+      bloques: zona.querySelectorAll('.bloque').length,
+    };
+  });
+  chequeo('la revista va JUSTO BAJO EL MAPA y antes de las tablas',
+    rev.bajoElMapa && rev.antesDeLasTablas, JSON.stringify({ bajo: rev.bajoElMapa, antes: rev.antesDeLasTablas }));
+  chequeo('con una portada grande, con su foto a todo lo ancho',
+    rev.hayPortada && rev.portadaCargada && rev.portadaAncho >= rev.anchoZona - 4,
+    JSON.stringify({ foto: rev.portadaCargada, ancho: rev.portadaAncho, zona: rev.anchoZona }));
+  chequeo('el titular de la portada es MÁS GRANDE que el de la lista',
+    rev.tituloPortada >= 16, String(rev.tituloPortada));
+  chequeo('y dice su fuente y su hora', /^\d{2}:\d{2} · \S/.test(rev.metaPortada), rev.metaPortada);
+  chequeo('las medianas llevan la foto chica a la IZQUIERDA del titular',
+    rev.medianas >= 2 && rev.fotoIzquierda, JSON.stringify({ n: rev.medianas, izq: rev.fotoIzquierda }));
+  chequeo('la tarjeta cuya foto no carga se QUITA: ninguna queda sin foto',
+    rev.sinCargar === 0 && rev.bloques === 0,
+    JSON.stringify({ sinCargar: rev.sinCargar, bloques: rev.bloques, medianas: rev.medianas }));
+  chequeo('y abajo, el botón para ver todas las noticias',
+    rev.verTodas === '/mercado/noticias', String(rev.verTodas));
+
+  chequeo('"Lo de hoy" está, con las notas que la revista no se llevó',
+    hoy.titulo === 'Lo de hoy' && hoy.filas.length >= 2,
     JSON.stringify(hoy.titulo) + ' · ' + hoy.filas.length);
   chequeo('cada nota lleva su hora en hora de México y su fuente',
     hoy.filas.every((f) => /^\d{2}:\d{2} · /.test(f.meta))
@@ -987,6 +1176,15 @@ try {
   await p.waitForTimeout(120);
   await p.screenshot({ path: join(OUT, 'mercado-390-hoy.png') });
   console.log(`     → ${join(OUT, 'mercado-390-hoy.png')}`);
+  // Y la REVISTA, que es lo que hay justo bajo el mapa: el mapa se queda con
+  // la primera pantalla entera, así que sin esta captura no se ve.
+  await p.evaluate(() => {
+    const z = document.getElementById('p-revista');
+    if (z) window.scrollTo(0, z.getBoundingClientRect().top + window.scrollY - 8);
+  });
+  await p.waitForTimeout(120);
+  await p.screenshot({ path: join(OUT, 'mercado-390-revista.png') });
+  console.log(`     → ${join(OUT, 'mercado-390-revista.png')}`);
   await p.evaluate(() => window.scrollTo(0, 0));
 
   // NI UNA LÍNEA DE CUERPO. El encargo es explícito: esta sección manda a la
@@ -1050,10 +1248,24 @@ try {
   await p.goto(`${BASE}/mercado?mapa=us`, { waitUntil: 'networkidle' });
   await p.waitForSelector('.cabecera');
   const pie = await p.locator('#pie').innerText();
-  chequeo('el pie dice "sin capitalización verificada", no "cuadros sin dato completo"',
-    /sin capitalización verificada/.test(pie) && !/cuadros sin dato completo/.test(pie), pie);
-  chequeo('y no le suma los símbolos sin precio, que no son cuadros todavía',
-    /3 sin capitalización verificada/.test(pie), pie);
+  // ── EL PIE DICE TODO LO QUE FALTA, CADA COSA CON SU NÚMERO ─────────
+  // Estas dos comprobaciones fijaban que el pie dijera SÓLO las caps sin
+  // verificar y que NO mencionara los símbolos sin precio, con el argumento
+  // de que "no son cuadros todavía". El argumento de no SUMARLOS sigue en
+  // pie; callarlos fue el defecto: en producción faltaban 292 de 611 y el
+  // pie decía sólo "43 sin capitalización verificada" (Lety, 2026-10-22).
+  chequeo('el pie nombra cada motivo con su número, y nunca la suma',
+    /sin capitalización verificada/.test(pie)
+    && !/cuadros sin dato completo/.test(pie), pie);
+  chequeo('y si hay símbolos sin serie, los DICE en vez de esconderlos',
+    !/\bsin serie de precios\b/.test(pie) || /\d+ sin serie de precios/.test(pie), pie);
+  // La suma de motivos distintos no puede aparecer como un número solo: es
+  // lo que mandaba a buscar 277 bugs donde había dos problemas.
+  const faltan = await p.evaluate(() => (window.__ultimoMapa && window.__ultimoMapa.faltantes) || null);
+  if (faltan && faltan.total > 0 && (faltan.frases || []).length > 1) {
+    chequeo('el pie no muestra el total sumado de motivos distintos',
+      !new RegExp(`\\b${faltan.total}\\b`).test(pie), `total=${faltan.total} · ${pie}`);
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // MUNDO (artboard 4) — 3 columnas, 78px, 2px de gap
@@ -1638,7 +1850,9 @@ try {
   // encima manda a mirar el mercado en vez de la consulta. Lo vio Lety en el
   // preview (2026-10-05) con el mapa caído por una columna inexistente.
   const tablasRotas = await p.evaluate(() =>
-    [...document.querySelectorAll('#paneles h2')].slice(0, 3).map((h) => ({
+    // Desde la revista, `#paneles h2` empieza por "Noticias": las tablas
+    // viven en `#p-tablas` y se piden ahí, no por posición global.
+    [...document.querySelectorAll('#p-tablas h2')].slice(0, 3).map((h) => ({
       titulo: h.textContent.trim(),
       nota: (h.nextElementSibling && h.nextElementSibling.classList.contains('nota'))
         ? h.nextElementSibling.textContent.trim() : null,
@@ -1694,16 +1908,23 @@ try {
   await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.cuadro');
 
-  // EL MAPA sigue cabiendo en una pantalla; lo que ahora se recorre son las
-  // TABLAS de R3, que van debajo a propósito. La regla del encargo es que el
-  // mapa quepa sin scroll, no que la página entera mida una pantalla.
+  // ── R3(c): EN ESCRITORIO YA NO HAY "DEBAJO" ────────────────────────
+  // Hasta R3 las tablas iban bajo el mapa y la página se recorría; el
+  // artboard 5 las manda a las columnas 1 y 3 y pide la pantalla ENTERA sin
+  // scroll. La comprobación vieja medía `.pantalla`, que con
+  // `display:contents` ya no tiene caja — y daba 0. Se mide lo que de verdad
+  // importa ahora: que NADA se recorra.
   const escD = await d.evaluate(() => ({
-    pantalla: Math.round(document.querySelector('.pantalla').getBoundingClientRect().height),
-    ventana: window.innerHeight,
-    horizontal: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    scrollV: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
+    scrollH: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    cols: getComputedStyle(document.querySelector('body')).gridTemplateColumns,
+    mapa: Math.round(document.querySelector('main').getBoundingClientRect().height),
   }));
-  chequeo('escritorio: el mapa cabe en 1440×900 sin scroll, y las tablas van debajo',
-    escD.pantalla === escD.ventana && !escD.horizontal, JSON.stringify(escD));
+  chequeo('escritorio: 1440×900 sin scroll, ni vertical ni horizontal',
+    !escD.scrollV && !escD.scrollH, JSON.stringify(escD));
+  chequeo('y las tres columnas son las del artboard 5: 292 / resto / 336',
+    /^292px .* 336px$/.test(escD.cols), escD.cols);
+  chequeo('con el mapa quedándose con lo que sobra de alto', escD.mapa > 300, String(escD.mapa));
 
   // ── EL GRIS ES DEL TAMAÑO, NO DEL NÚMERO (con sitio para verlo) ────
   // En escritorio la gris sí tiene espacio, así que acá la regla se mide de
@@ -1770,6 +1991,361 @@ try {
   });
   chequeo('en escritorio la hoja es un panel lateral, pegado al borde y DENTRO de la pantalla',
     panel.ancho > 300 && panel.der === panel.vp && panel.izq > 0, JSON.stringify(panel));
+
+  // ══════════════════════════════════════════════════════════════════
+  // R3(c): LO QUE EL ARTBOARD 5 AGREGA EN ESCRITORIO
+  // ══════════════════════════════════════════════════════════════════
+  console.log('\n── R3(c): artboard 5 a 1440 × 1000 ──');
+  const mil = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await mil.addInitScript(RELOJ_FIJO);
+  const w = await mil.newPage();
+  const erroresW = [];
+  w.on('pageerror', (e) => erroresW.push(String(e)));
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  await w.waitForSelector('#tiras .t, #tiras .vacio');
+
+  chequeo('1440×1000 sin errores de consola', erroresW.length === 0, erroresW.slice(0, 2).join(' | '));
+
+  const cajaMil = await w.evaluate(() => ({
+    scrollV: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
+    scrollH: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    izq: Math.round(document.getElementById('p-tablas').getBoundingClientRect().width),
+    der: Math.round(document.getElementById('p-lado').getBoundingClientRect().width),
+    pie: (() => { const r = document.getElementById('pie').getBoundingClientRect();
+      return r.bottom <= window.innerHeight + 1 && r.top >= 0; })(),
+  }));
+  chequeo('1440×1000 SIN scroll (regla 8)', !cajaMil.scrollV && !cajaMil.scrollH, JSON.stringify(caja));
+  chequeo('la columna de tablas mide 292 px y la lateral 336',
+    cajaMil.izq === 292 && cajaMil.der === 336, `${cajaMil.izq} / ${cajaMil.der}`);
+  chequeo('y el pie se ve sin recorrer', cajaMil.pie);
+
+  // ── LA TIPOGRAFÍA DEL §4, CON RESPALDO ──────────────────────────────
+  const tipo = await w.evaluate(() => ({
+    sans: getComputedStyle(document.body).fontFamily,
+    mono: getComputedStyle(document.querySelector('.chip')).fontFamily,
+  }));
+  chequeo('la pila declara IBM Plex primero y una del sistema detrás',
+    /IBM Plex Sans Condensed/.test(tipo.sans) && /(-apple-system|sans-serif)/.test(tipo.sans)
+    && /IBM Plex Mono/.test(tipo.mono) && /(ui-monospace|monospace)/.test(tipo.mono),
+    tipo.sans.slice(0, 60));
+
+  // ── LA PALETA DEL §4 ────────────────────────────────────────────────
+  const paleta = await w.evaluate(() => {
+    const v = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    return { bg: v('--bg'), panel: v('--panel'), linea: v('--linea'),
+             fondoReal: getComputedStyle(document.body).backgroundColor };
+  });
+  chequeo('la paleta es la del §4: #0b0f14 / #0e141b / #161c24',
+    paleta.bg === '#0b0f14' && paleta.panel === '#0e141b' && paleta.linea === '#161c24',
+    JSON.stringify(paleta));
+
+  // ── CONTRASTE ≥ 4.5 EN EL TEXTO DE LA INTERFAZ ──────────────────────
+  // EL ALCANCE IMPORTA: este piso es para el CROMO —paneles, tablas,
+  // cabeceras, pie, chips—, no para el texto sobre los cuadros del mapa. La
+  // escala de color del mapa es la del mockup y ahí el piso declarado sigue
+  // siendo 2.5 (blanco sobre el verde claro da 2.71); eso es decisión tuya y
+  // se mide en su propia comprobación, más arriba.
+  const contrasteUi = await w.evaluate(() => {
+    const lum = (c) => {
+      const m = c.match(/\d+(\.\d+)?/g).map(Number);
+      const f = m.slice(0, 3).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+      return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+    };
+    const ratio = (a, b) => { const la = lum(a), lb = lum(b);
+      const hi = Math.max(la, lb), lo = Math.min(la, lb); return (hi + 0.05) / (lo + 0.05); };
+    // El fondo EFECTIVO: se sube por los padres hasta encontrar uno opaco.
+    const fondoDe = (el) => {
+      let n = el;
+      while (n && n !== document.documentElement) {
+        const b = getComputedStyle(n).backgroundColor;
+        if (b && !/rgba\(0, 0, 0, 0\)|transparent/.test(b)) return b;
+        n = n.parentElement;
+      }
+      return getComputedStyle(document.body).backgroundColor;
+    };
+    const malos = [];
+    const mirados = [];
+    for (const el of document.querySelectorAll(
+      'header *, nav button, .toggle button, #p-tablas *, #p-lado *, footer, #aviso, #tiras .rot, #tiras .vacio')) {
+      // Sólo nodos con texto PROPIO y visibles.
+      const propio = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+      if (!propio) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || !el.getClientRects().length) continue;
+      const r = Math.round(ratio(cs.color, fondoDe(el)) * 100) / 100;
+      const donde = el.tagName.toLowerCase() + (el.className ? '.' + String(el.className).split(' ')[0] : '');
+      mirados.push({ donde, r });
+      if (r < 4.5) malos.push({ donde, r, color: cs.color, texto: el.textContent.trim().slice(0, 24) });
+    }
+    return { malos, n: mirados.length, peor: mirados.reduce((a, b) => (b.r < a.r ? b : a), { r: 99 }) };
+  });
+  chequeo(`ningún texto de la interfaz baja de 4.5 de contraste (${contrasteUi.n} nodos)`,
+    contrasteUi.malos.length === 0,
+    contrasteUi.malos.slice(0, 3).map((m) => `${m.donde} ${m.r} "${m.texto}"`).join(' · '));
+  console.log(`     ↳ el peor de la interfaz: ${contrasteUi.peor.r} en ${contrasteUi.peor.donde}`);
+
+  // ── LAS DOS TIRAS ───────────────────────────────────────────────────
+  const tiras = await w.evaluate(() => ({
+    ipc: [...document.querySelectorAll('#tira-ipc .t')].map((t) => t.dataset.sym),
+    ipcRot: (document.querySelector('#tira-ipc .rot') || {}).textContent || '',
+    idx: [...document.querySelectorAll('#tira-idx .t')].map((t) => ({
+      sym: t.dataset.sym,
+      gris: !!t.querySelector('.qd-pct') && t.querySelector('.qd-pct').textContent.startsWith('—'),
+      titulo: t.getAttribute('title'),
+    })),
+    idxRot: (document.querySelector('#tira-idx .rot') || {}).textContent || '',
+  }));
+  chequeo('la tira del IPC trae emisoras de México y dice que es el IPC',
+    tiras.ipc.length > 0 && /IPC/.test(tiras.ipcRot), `${tiras.ipc.length}: ${tiras.ipc.slice(0, 4).join(',')}`);
+  chequeo('la tira de índices trae los NUEVE de R4 y dice que es en pesos',
+    tiras.idx.length === 9 && /pesos/.test(tiras.idxRot),
+    `${tiras.idx.length} · ${tiras.idxRot}`);
+  // El noveno (^DJI) no está en el catálogo de Mundo: va GRIS y con su causa,
+  // no omitido. Ocho cuadritos llamados "nueve índices" sería mentir.
+  const dji = tiras.idx.find((t) => t.sym === '^DJI');
+  chequeo('^DJI, que no está en el catálogo, va gris y DICE por qué',
+    dji && dji.gris && /catálogo/.test(dji.titulo || ''), JSON.stringify(dji));
+  chequeo('y los demás no salen todos grises: la tira mide algo',
+    tiras.idx.filter((t) => !t.gris).length >= 4,
+    JSON.stringify(tiras.idx.map((t) => t.sym + (t.gris ? '·gris' : ''))));
+
+  // ── EL MAPA NO QUEDA CORTADO POR LAS TIRAS ──────────────────────────
+  // Las tiras se piden DESPUÉS del mapa y estrenan una fila de la rejilla:
+  // <main> se encoge y el treemap, que se dibuja con píxeles medidos, quedaba
+  // partido por la mitad en la última hilera. Se vio en la captura y ninguna
+  // comprobación lo miraba. Lo arregla un ResizeObserver; esto lo vigila.
+  const recorte = await w.evaluate(() => {
+    const l = document.getElementById('lienzo').getBoundingClientRect();
+    const cs = [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null);
+    const fuera = cs.filter((c) => c.getBoundingClientRect().bottom > l.bottom + 1);
+    const masBajo = cs.reduce((a, c) => Math.max(a, c.getBoundingClientRect().bottom), 0);
+    return { fuera: fuera.length, sobra: Math.round(l.bottom - masBajo), alto: Math.round(l.height) };
+  });
+  chequeo('ningún cuadro queda cortado por el borde de abajo del mapa',
+    recorte.fuera === 0, JSON.stringify(recorte));
+  chequeo('y el mapa llena su caja: no deja una franja muerta abajo',
+    recorte.sobra >= 0 && recorte.sobra <= 4, JSON.stringify(recorte));
+
+  // Tocar un cuadrito lleva a su hoja.
+  await w.click('#tira-ipc .t');
+  await w.waitForFunction(() => location.search.includes('mapa=mx') && location.search.includes('symbol='),
+    null, { timeout: 3000 });
+  chequeo('tocar un cuadrito del IPC abre su hoja en el mapa de México',
+    (await w.evaluate(() => location.search)).includes('mapa=mx'),
+    await w.evaluate(() => location.search));
+
+  // ── SECTOR / SIN AGRUPAR ────────────────────────────────────────────
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  const conSector = await w.evaluate(() => ({
+    // `.cabecera` (no `.cab`): es la banda con el nombre del sector. Los
+    // nodos se RECICLAN, así que los que sobran siguen en el DOM escondidos —
+    // hay que contar los visibles, no los existentes.
+    cabeceras: [...document.querySelectorAll('.cabecera')].filter((e) => e.offsetParent !== null).length,
+    cuadros: [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null).length,
+  }));
+  await w.click('#agrupar button[data-agrupar="plano"]');
+  await w.waitForFunction(() => location.search.includes('agrupar=plano'), null, { timeout: 2000 });
+  await w.waitForTimeout(150);
+  const sinSector = await w.evaluate(() => ({
+    cabeceras: [...document.querySelectorAll('.cabecera')].filter((e) => e.offsetParent !== null).length,
+    cuadros: [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null).length,
+  }));
+  chequeo('"Sin agrupar" quita las cabeceras de sector',
+    conSector.cabeceras > 0 && sinSector.cabeceras === 0,
+    `${conSector.cabeceras} → ${sinSector.cabeceras}`);
+  chequeo('y NO cambia qué emisoras entran: las mismas, repartidas distinto',
+    sinSector.cuadros === conSector.cuadros, `${conSector.cuadros} → ${sinSector.cuadros}`);
+  chequeo('la agrupación queda en la URL (regla 9)',
+    (await w.evaluate(() => location.search)).includes('agrupar=plano'));
+  // Y una URL con `agrupar=plano` abre sin agrupar del otro lado.
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M&agrupar=plano`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  chequeo('una URL pegada con agrupar=plano abre sin agrupar',
+    (await w.evaluate(() => [...document.querySelectorAll('.cabecera')]
+      .filter((e) => e.offsetParent !== null).length)) === 0);
+
+  // ── EL BUSCADOR DE TICKER ───────────────────────────────────────────
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  // El símbolo de un cuadro vive en `aria-label` (y en `qdItem.key`), no en
+  // un `data-sym`: los cuadros se reciclan y el símbolo se repone en cada
+  // pintado junto con la etiqueta accesible.
+  const primerSym = await w.evaluate(() => {
+    const c = [...document.querySelectorAll('.cuadro')]
+      .find((e) => e.offsetParent !== null && e.getAttribute('aria-label'));
+    return c ? c.getAttribute('aria-label') : null;
+  });
+  chequeo('hay un cuadro con símbolo para buscar', !!primerSym, String(primerSym));
+  await w.fill('#qtk', String(primerSym).slice(0, 2));
+  await w.waitForSelector('#sugerencias .sug', { timeout: 2000 });
+  const sugs = await w.evaluate(() => [...document.querySelectorAll('#sugerencias .sug')].map((o) => o.dataset.sym));
+  chequeo('el buscador sugiere desde el mapa que ya viajó',
+    sugs.length > 0 && sugs.every((x) => !!x), JSON.stringify(sugs.slice(0, 5)));
+  chequeo('y ofrece SÓLO lo que esta pantalla sabe dibujar',
+    await w.evaluate((lista) => {
+      const enMapa = new Set([...document.querySelectorAll('.cuadro')]
+        .map((e) => e.getAttribute('aria-label')).filter(Boolean));
+      return lista.every((x) => enMapa.has(x));
+    }, sugs), JSON.stringify(sugs.slice(0, 5)));
+  await w.click('#sugerencias .sug');
+  await w.waitForFunction(() => location.search.includes('symbol='), null, { timeout: 2000 });
+  chequeo('elegir una sugerencia abre su hoja y lo escribe en la URL',
+    (await w.evaluate(() => document.getElementById('hoja').getAttribute('data-abierta'))) === '1',
+    await w.evaluate(() => location.search));
+  // Lo que NO está en este mapa se DICE, no sale como "sin resultados".
+  await w.fill('#qtk', 'ZZZZQ');
+  await w.waitForSelector('#sugerencias .vacio', { timeout: 2000 });
+  const vacio = await w.textContent('#sugerencias .vacio');
+  chequeo('un ticker que no está en el mapa lo dice, con el mapa en el que mira',
+    /no está en el mapa/.test(vacio) && /EE\.UU\./.test(vacio), vacio.slice(0, 90));
+
+  // ── CRIPTO Y ETFs ───────────────────────────────────────────────────
+  const pestanas = await w.evaluate(() => ['cripto', 'etfs'].map((k) => {
+    const b = document.getElementById('tab-' + k);
+    return { k, off: b.disabled, txt: b.textContent, titulo: b.getAttribute('title') };
+  }));
+  chequeo('Cripto y ETFs van deshabilitadas, con "pronto" y su motivo',
+    pestanas.every((x) => x.off && /pronto/.test(x.txt) && /pronto/.test(x.titulo || '')),
+    JSON.stringify(pestanas.map((x) => x.k + ':' + x.off)));
+
+  // ══════════════════════════════════════════════════════════════════
+  // R8: /mercado ES LA HOME
+  // ══════════════════════════════════════════════════════════════════
+  console.log('\n── R8: la home ──');
+  await w.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  chequeo('la raíz abre el mapa', (await w.title()).includes('/mercado'), await w.title());
+  const puertas = await w.evaluate(() => ({
+    experto: (document.getElementById('modo-experto') || {}).getAttribute
+      ? document.getElementById('modo-experto').getAttribute('href') : null,
+    expertoVisible: document.getElementById('modo-experto')
+      ? document.getElementById('modo-experto').offsetParent !== null : false,
+    terminal: document.getElementById('abrir-terminal')
+      ? document.getElementById('abrir-terminal').getAttribute('href') : null,
+  }));
+  chequeo('en escritorio la home ofrece "Modo experto" hacia la terminal',
+    puertas.experto === '/app' && puertas.expertoVisible, JSON.stringify(puertas));
+  chequeo('y abajo está "Abrir la terminal completa", que el encargo pide en cada pantalla',
+    puertas.terminal === '/app', JSON.stringify(puertas));
+
+    // ══════════════════════════════════════════════════════════════════
+  // R7: COMPARTIR IMAGEN
+  // ══════════════════════════════════════════════════════════════════
+  console.log('\n── R7: la imagen para compartir ──');
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  await w.click('#btn-compartir');
+  await w.waitForSelector('#compartir-caja button[data-fmt]');
+  const formatos = await w.evaluate(() =>
+    [...document.querySelectorAll('#compartir-caja button[data-fmt]')].map((b) => ({
+      fmt: b.dataset.fmt, txt: b.textContent, alto: Math.round(b.getBoundingClientRect().height),
+    })));
+  chequeo('los dos formatos del encargo, tocables',
+    formatos.length === 2 && /1080×1920/.test(formatos[0].txt) && /1080×1080/.test(formatos[1].txt)
+    && formatos.every((f) => f.alto >= 44), JSON.stringify(formatos.map((f) => f.txt)));
+
+  // ── LA TARJETA, DE VERDAD ───────────────────────────────────────────
+  // No se le pide a la página que exponga su función: se PULSA el botón y se
+  // captura la descarga, que es lo que hace el lector. El PNG se verifica
+  // leyendo su cabecera IHDR —ancho y alto viven en los bytes 16..24— así
+  // que esto prueba el camino entero: los datos de la pantalla, el dibujo en
+  // canvas, el blob y la descarga.
+  const pngTam = (buf) => ({ w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) });
+  const bajar = async (fmt) => {
+    const [dl] = await Promise.all([
+      w.waitForEvent('download', { timeout: 8000 }),
+      w.click(`#compartir-caja button[data-fmt="${fmt}"]`),
+    ]);
+    const ruta = join(OUT, `compartir-${fmt}.png`);
+    await dl.saveAs(ruta);
+    const { readFileSync } = await import('node:fs');
+    const buf = readFileSync(ruta);
+    return { nombre: dl.suggestedFilename(), ruta, bytes: buf.length, ...pngTam(buf),
+             firma: buf.slice(1, 4).toString('ascii') };
+  };
+
+  const vertical = await bajar('historia');
+  chequeo('el botón genera un PNG de verdad y lo descarga',
+    vertical.firma === 'PNG' && vertical.bytes > 2000,
+    `${vertical.nombre} · ${vertical.bytes} bytes`);
+  chequeo('la tarjeta vertical mide 1080×1920',
+    vertical.w === 1080 && vertical.h === 1920, `${vertical.w}×${vertical.h}`);
+  chequeo('y el nombre del archivo dice de qué pantalla salió',
+    /quantdesk-mapa-us-historia\.png/.test(vertical.nombre), vertical.nombre);
+  const nota = await w.textContent('#compartir-nota');
+  chequeo('la pantalla confirma la descarga en vez de quedarse muda',
+    /descargada/.test(nota), nota);
+
+  const cuadrada = await bajar('cuadrado');
+  chequeo('la cuadrada mide 1080×1080', cuadrada.w === 1080 && cuadrada.h === 1080,
+    `${cuadrada.w}×${cuadrada.h}`);
+
+  // El CONTENIDO de la tarjeta (los cinco datos, el recorte visible, la URL
+  // con estado) se fija en `tests/mercado-compartir.test.mjs`, que puede
+  // mirar las operaciones una por una. Acá se prueba que el camino entero
+  // funciona y que el PNG sale con las medidas del encargo.
+  chequeo('qd-compartir expone lo que la página usa',
+    await w.evaluate(() => typeof opsDeTarjeta === 'function' && typeof qdDibujaTarjeta === 'function'));
+
+  // ── LO QUE EL PNG DESCARGADO ENSEÑÓ ─────────────────────────────────
+  // La primera tarjeta decía "Fuente: [object Object]" —el mapa manda la
+  // fuente como objeto— y la URL se encimaba con la firma. Las dos pasaban
+  // todas las comprobaciones porque ninguna miraba el TEXTO de la tarjeta.
+  //
+  // Ahora la hoja de compartir ENSEÑA lo que la imagen va a decir, que le
+  // sirve al lector (sabe qué está por mandar) y de paso se puede leer acá.
+  const avance = await w.textContent('#compartir-avance');
+  chequeo('la hoja enseña lo que la imagen va a decir',
+    avance && avance.trim().length > 10, (avance || '').slice(0, 100));
+  chequeo('y esa fuente NO es "[object Object]"',
+    !/\[object Object\]/.test(avance), avance.slice(0, 80));
+  chequeo('la fuente del mapa llega legible a la tarjeta',
+    /neon:mercado_universo_us/.test(avance), avance.slice(0, 110));
+
+  // ── UNA URL CON ESTADO ABRE IGUAL EN UNA SESIÓN LIMPIA ─────────────
+  // El encargo pide verificarlo "en incógnito": un contexto nuevo de
+  // Playwright NO comparte cookies, almacenamiento ni caché, que es
+  // exactamente lo que incógnito significa acá.
+  const urlConEstado = `${BASE}/mercado?mapa=us&periodo=1M&agrupar=plano`;
+  const leer = async (pagina) => pagina.evaluate(() => ({
+    periodo: (document.querySelector('#toggle button[aria-pressed="true"]') || {}).textContent,
+    agrupar: (document.querySelector('#agrupar button[aria-pressed="true"]') || {}).textContent,
+    mapa: (document.querySelector('nav button[aria-selected="true"]') || {}).textContent,
+    cuadros: [...document.querySelectorAll('.cuadro')].filter((e) => e.offsetParent !== null).length,
+    cabeceras: [...document.querySelectorAll('.cabecera')].filter((e) => e.offsetParent !== null).length,
+  }));
+  await w.goto(urlConEstado, { waitUntil: 'networkidle' });
+  await w.waitForSelector('.cuadro');
+  const normal = await leer(w);
+  const incognito = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await incognito.addInitScript(RELOJ_FIJO);
+  const inc = await incognito.newPage();
+  await inc.goto(urlConEstado, { waitUntil: 'networkidle' });
+  await inc.waitForSelector('.cuadro');
+  const limpio = await leer(inc);
+  await incognito.close();
+  chequeo('una URL con estado abre IDÉNTICA en una sesión limpia (incógnito)',
+    JSON.stringify(normal) === JSON.stringify(limpio),
+    `${JSON.stringify(normal)} vs ${JSON.stringify(limpio)}`);
+
+  // ── LAS ETIQUETAS DEL PREVIEW ──────────────────────────────────────
+  const og = await w.evaluate(() => {
+    const m = (p) => { const e = document.querySelector(`meta[property="${p}"], meta[name="${p}"]`); return e ? e.content : null; };
+    return { titulo: m('og:title'), desc: m('og:description'), img: m('og:image'), card: m('twitter:card') };
+  });
+  chequeo('el preview lleva título y descripción ciertos', !!og.titulo && !!og.desc,
+    JSON.stringify(og));
+  // `og:image` NO está, a propósito: ver el comentario en el <head>. Una
+  // imagen genérica diría algo distinto de lo que la URL abre.
+  chequeo('y NO hay una og:image genérica prometiendo otra cosa', og.img == null, String(og.img));
+
+  await w.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
+  await w.waitForSelector('#tiras .t, #tiras .vacio');
+  await w.screenshot({ path: join(OUT, 'mercado-1440x1000.png') });
+  console.log(`  → ${join(OUT, 'mercado-1440x1000.png')}`);
+  await mil.close();
 
   await d.goto(`${BASE}/mercado?mapa=us&periodo=1M`, { waitUntil: 'networkidle' });
   await d.waitForSelector('.cuadro');

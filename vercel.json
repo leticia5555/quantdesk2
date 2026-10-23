@@ -57,6 +57,9 @@
     "api/earnings-beat-harvest.js": {
       "maxDuration": 300
     },
+    "api/earnings-beat-v2.js": {
+      "maxDuration": 300
+    },
     "api/earnings-beat-analyze.js": {
       "maxDuration": 300
     },
@@ -93,6 +96,18 @@
   },
   "rewrites": [
     {
+      "source": "/",
+      "destination": "/mercado.html"
+    },
+    {
+      "source": "/inicio",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/calcula",
+      "destination": "/index.html"
+    },
+    {
       "source": "/app",
       "destination": "/app.html"
     },
@@ -103,6 +118,22 @@
     {
       "source": "/mercado",
       "destination": "/mercado.html"
+    },
+    {
+      "source": "/mercado/noticias",
+      "destination": "/noticias.html"
+    },
+    {
+      "source": "/mercado/indice/:idx",
+      "destination": "/indice.html"
+    },
+    {
+      "source": "/mercado/insiders",
+      "destination": "/insiders.html"
+    },
+    {
+      "source": "/analiza/:ticker",
+      "destination": "/analiza.html"
     },
     {
       "source": "/hoy",
@@ -191,6 +222,18 @@
       "schedule": "40 23 * * *"
     },
     {
+      "path": "/api/earnings-beat-v2?job=mercados_v2",
+      "schedule": "20 22 * * *"
+    },
+    {
+      "path": "/api/earnings-beat-v2?job=hist",
+      "schedule": "50 22 * * *"
+    },
+    {
+      "path": "/api/earnings-beat-v2?job=diario",
+      "schedule": "55 23 * * *"
+    },
+    {
       "path": "/api/arena-universe",
       "schedule": "0 13 * * 1-5"
     },
@@ -225,6 +268,21 @@
     {
       "path": "/api/noticias?job=banxico",
       "schedule": "25 23 * * 1-5"
+    },
+    {
+      "path": "/api/stock-tracker?job=indice&dias=3",
+      "schedule": "10 4 * * *"
+    },
+    {
+      "path": "/api/stock-tracker?job=form4",
+      "schedule": "*/10 * * * *"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/hoy",
+      "destination": "/mercado",
+      "permanent": false
     }
   ]
 }

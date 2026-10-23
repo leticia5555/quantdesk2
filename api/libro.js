@@ -5,11 +5,12 @@
 // escribe en Alpaca es el smoke (orden límite imposible + cancel) y el kill
 // (cancelar órdenes abiertas).
 //
-//   GET /api/libro                  → salud: ¿hay keys? ¿live o sombra? ¿halt?
-//   GET /api/libro?smoke=1          → ADMIN. auth live · clock · calendar ·
+//   GET /api/libro                  → salud: cuenta (paper|live), ¿hay keys?,
+//                                     envío (sombra|encendido), ¿halt?
+//   GET /api/libro?smoke=1          → ADMIN. auth (paper|live) · clock · calendar ·
 //                                     orden límite IMPOSIBLE (AAPL @ $1) ·
 //                                     lookup · cancel. Verde = 6/6. Igual que
-//                                     el smoke del Arena, contra la cuenta LIVE.
+//                                     el smoke del Arena, contra la cuenta del Libro.
 //                                     Requiere LIBRO_LIVE_ENABLED=true para
 //                                     la pata de escritura: en sombra, ese
 //                                     paso reporta `sombra:true` (no es error).
@@ -26,12 +27,13 @@
 // `?secret=`. Fallback CRON_SECRET (el cron de Vercel manda ese Bearer). Sin
 // secret configurado → 401 siempre (fail closed), igual que bmv-harvest.
 //
-// ENV VARS: ALPACA_LIVE_KEY · ALPACA_LIVE_SECRET · LIBRO_LIVE_ENABLED ·
-//           DATABASE_URL · ADMIN_SECRET (o CRON_SECRET)
+// ENV VARS: LIBRO_MODO (paper|live) · ALPACA_LIBRO_PAPER_KEY/SECRET ·
+//           ALPACA_LIVE_KEY/SECRET · LIBRO_LIVE_ENABLED · DATABASE_URL ·
+//           ADMIN_SECRET (o CRON_SECRET)
 // ═══════════════════════════════════════════════════════════════════
 
 import {
-  libroBase, libroCreds, libroLiveEnabled, getAccount, getClock, getCalendar,
+  libroBase, libroCreds, libroCredsFaltantes, libroModo, libroLiveEnabled, getAccount, getClock, getCalendar,
   getPositions, getOrder, createLimitOrder, cancelOrder, cancelAllOrders, getSnapshot,
   LibroSombraError,
 } from './_lib/libro-alpaca.js';
@@ -68,8 +70,8 @@ async function step(name, fn) {
 export async function runSmoke(now = new Date()) {
   const results = [];
   if (!libroCreds()) {
-    return { smoke: true, base: libroBase(), ok: false, live: libroLiveEnabled(),
-      results: [{ name: 'env', ok: false, error: 'Faltan ALPACA_LIVE_KEY / ALPACA_LIVE_SECRET.' }], generated_at: now.toISOString() };
+    return { smoke: true, base: libroBase(), modo: libroModo(), ok: false, live: libroLiveEnabled(),
+      results: [{ name: 'env', ok: false, error: 'Faltan ' + libroCredsFaltantes() + '.' }], generated_at: now.toISOString() };
   }
   results.push(await step('account', async () => {
     const a = await getAccount();
@@ -100,7 +102,7 @@ export async function runSmoke(now = new Date()) {
     if (!(o.status === 'canceled' || o.status === 'pending_cancel')) throw new Error('status tras cancel: ' + o.status);
     return { status: o.status };
   }));
-  return { smoke: true, base: libroBase(), live: libroLiveEnabled(), ok: results.every((r) => r.ok), results, generated_at: now.toISOString() };
+  return { smoke: true, base: libroBase(), modo: libroModo(), live: libroLiveEnabled(), ok: results.every((r) => r.ok), results, generated_at: now.toISOString() };
 }
 
 // Foto diaria de equity. El cron la toma después del cierre (21:05 UTC).
@@ -127,7 +129,8 @@ export default async function handler(req, res) {
     let halt = null;
     try { halt = await estaEnHalt(); } catch (e) { halt = null; }
     return res.status(200).json({
-      libro: true, base: libroBase(), keys: !!libroCreds(), live: libroLiveEnabled(), modo: libroLiveEnabled() ? 'LIVE' : 'SOMBRA',
+      libro: true, base: libroBase(), cuenta: libroModo(), keys: !!libroCreds(), keys_esperadas: libroCredsFaltantes(),
+      envio: libroLiveEnabled() ? 'ENCENDIDO' : 'SOMBRA', live: libroLiveEnabled(),
       halt, rules: LIBRO_RULES, exit_rules: { catastrophic_stop_pct: LIBRO_EXIT_RULES.catastrophic_stop_pct, breaker_delever_dd: LIBRO_EXIT_RULES.breaker_delever_dd, breaker_broadcut_dd: LIBRO_EXIT_RULES.breaker_broadcut_dd },
       generated_at: now.toISOString(),
     });

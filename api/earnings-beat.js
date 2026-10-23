@@ -14,8 +14,9 @@
 //                                               símbolos (solo DB), con los
 //                                               3 trimestres más extremos
 //   GET /api/earnings-beat?vista=live&diag=escala
-//   GET /api/earnings-beat?vista=live&diag=desacuerdos   → la fila en la mano:
-//       pregunta literal del mercado, umbral declarado, nivel de EPS y dictamen
+//   GET /api/earnings-beat?vista=live&diag=instrumento&format=md
+//       → censo del instrumento: qué EPS pide cada mercado abierto (GAAP /
+//         ajustado / no se sabe) y la distribución de spreads del libro del Yes
 //                                             → cuántos de los 99 tienen
 //                                               estimados de escala chica
 //                                               (medición, no cambia la UI)
@@ -54,7 +55,8 @@
 // CRON_SECRET por header (Authorization: Bearer ...) o por query (?secret=...,
 // para abrir el markdown en el navegador). Mismo patrón que pead-analyze.
 //
-// ENV VARS: DATABASE_URL · CRON_SECRET (opc) · FINNHUB_API_KEY (opc, nombres
+// ENV VARS: DATABASE_URL · CRON_SECRET (opc) · FINNHUB_API_KEY (opc, consenso de
+//           analistas en la vista en vivo + nombres
 //           de empresa + sonda de revisiones) · ALPHAVANTAGE_API_KEY (opc,
 //           sonda de revisiones)
 // ═══════════════════════════════════════════════════════════════════
@@ -71,7 +73,8 @@ import {
   extraeConsensoEps, outcomeResuelto, tokenYes, precioEnT24h, cruzaConPead, evaluaFuentePIT,
   isoDia, ts, resumenMarkdown, extraeTags, extraeCluster, FRASES_BUSQUEDA, detectaTopeUniforme,
   analizaDesfases, clasificaT24h, clasificaParaV1, comparaEmparejamiento,
-  estadisticasHistoricas, evaluaDesacuerdo, CRITERIOS_DESACUERDO, indiceYes, num, escalaDelEstimado, PISO_ESCALA,
+  estadisticasHistoricas, indiceYes, num, escalaDelEstimado, PISO_ESCALA,
+  extraeMetricaMercado, comparaMetricas, libroDelYes, METRICA_HISTORICO, umbralDelSlug, traduceTituloMercado,
 } from './_lib/earnings-beat.js';
 import { V0_UNIVERSE } from './_lib/pead-universe.js';
 import { getSymbolMap } from './earnings.js';
@@ -170,69 +173,182 @@ async function censoDeEscala() {
   };
 }
 
-// ── Diag de DESACUERDOS (?vista=live&diag=desacuerdos) ────────────────────
-// "Quiero el diagnóstico con la fila en la mano, no con el código."
+// ── Diag del INSTRUMENTO (?vista=live&diag=instrumento) ───────────────────
+// Lo que la tarjeta pone lado a lado, mercado por mercado y contado:
 //
-// Un hueco de 70 puntos entre el precio y la tasa histórica tiene dos causas
-// posibles, y desde la tarjeta no se distinguen. Este diag imprime, por cada
-// mercado abierto, LA PREGUNTA LITERAL del mercado, el umbral que declara, el
-// nivel reciente de EPS y el dictamen — que es lo único con lo que se puede
-// decidir si el hueco es información o es que el mercado pregunta otra cosa.
+//   1. MÉTRICA — cuántos mercados piden GAAP, cuántos ajustado (non-GAAP) y
+//      cuántos no se puede determinar, con la fila en la mano (slug, qué leyó
+//      cada fuente, el fragmento) para auditar la lectura. Y el arreglo de las
+//      cláusulas condicionales: cuántos veredictos cambian contra el lector
+//      viejo, cuáles, y cuáles siguen sin determinarse.
+//   2. PROFUNDIDAD — bid, ask, spread, volumen y liquidez. DESCRIPTIVO: el
+//      spread ya no condiciona nada.
 //
-// Corre la vista completa y la aplana: mismo descubrimiento, mismos números
-// que la pantalla. Si dijera otra cosa que la tarjeta, no serviría de nada.
-async function diagDesacuerdos() {
-  const live = await vistaLive({});
+// Corre la vista completa: mismos mercados, mismos libros que la pantalla.
+function percentil(ordenados, q) {
+  if (!ordenados.length) return null;
+  return ordenados[Math.min(ordenados.length - 1, Math.floor(q * ordenados.length))];
+}
+
+async function diagInstrumento() {
+  const live = await vistaLive({ censo: true });
   const filas = [];
   for (const e of live.empresas || []) {
     for (const m of e.mercados || []) {
-      const d = m.desacuerdo || {};
+      const met = m.metrica || {};
+      const pf = met.por_fuente || {};
+      const lb = m.libro || {};
+      const viejo = m.metrica_lector_viejo || {};
+      const ca = m.consenso_analistas || {};
       filas.push({
         symbol: e.symbol,
-        // La pregunta LITERAL, sin recortar a 90 como en la tarjeta: acá es la
-        // evidencia, y recortada no se puede leer si pide un umbral distinto.
-        pregunta: m.titulo,
         slug: m.slug,
+        pregunta: m.titulo,
         url: m.url,
         fecha_resolucion: m.fecha_resolucion,
-        precio_yes_pct: m.polymarket_yes_pct,
-        umbral_declarado: m.consenso_eps,
-        nivel_eps_reciente: d.instrumento ? d.instrumento.nivel_eps_reciente : null,
-        desvio_umbral_pct: d.instrumento ? d.instrumento.desvio_umbral_pct : null,
-        umbral_lejos_del_nivel: d.instrumento ? d.instrumento.umbral_lejos_del_nivel : null,
-        tasa_historica_pct: d.tasa_historica_pct,
-        trimestres: d.trimestres ?? null,
-        gap_puntos: d.gap_puntos,
-        clasificacion: d.clasificacion,
-        motivo: d.motivo,
-        instrumento_primero: d.instrumento_primero ?? null,
-        mercados_de_la_empresa: (e.desacuerdos || {}).cuantos_mercados ?? null,
-        varios_umbrales: (e.desacuerdos || {}).varios_umbrales ?? null,
+        metrica: met.metrica || 'indeterminada',
+        metrica_motivo: met.motivo || null,
+        leida_de: met.leida_de || null,
+        slug_lee: pf.slug ? pf.slug.lee : null,
+        pregunta_lee: pf.pregunta ? pf.pregunta.lee : null,
+        descripcion_lee: pf.descripcion ? pf.descripcion.lee : null,
+        fragmento_descripcion: pf.descripcion ? pf.descripcion.fragmento : null,
+        clausulas_condicionales_ignoradas: pf.descripcion ? pf.descripcion.ignoradas || [] : [],
+        lector_viejo: viejo.metrica || null,
+        lector_viejo_motivo: viejo.motivo || null,
+        cambia_con_el_arreglo: !!viejo.metrica && viejo.metrica !== (met.metrica || 'indeterminada'),
+        empata_con_historico: comparaMetricas(m.metrica).empata,
+        umbral_descripcion: m.consenso_eps,
+        umbral_slug: m.umbral_slug,
+        consenso_analistas: ca.valor ?? null,
+        consenso_analistas_motivo: ca.motivo || null,
+        volumen: m.volumen,
+        liquidez: m.liquidez,
+        libro_estado: lb.estado || null,
+        bid: lb.bid ?? null, ask: lb.ask ?? null, mid: lb.mid ?? null,
+        spread_puntos: lb.spread_puntos ?? null,
+        outcome_prices_yes: m.outcome_prices_yes,
+        gamma_libro: m.gamma_libro || null,
       });
     }
   }
-  // Mayor hueco arriba: es lo que se viene a mirar. Los no comparables al final.
-  filas.sort((a, b) => Math.abs(b.gap_puntos || 0) - Math.abs(a.gap_puntos || 0));
-  const porMotivo = {};
-  for (const f of filas) {
-    const k = f.clasificacion === 'desacuerdo' || f.clasificacion === 'coincide' ? f.clasificacion : (f.motivo || 'no_comparable');
-    porMotivo[k] = (porMotivo[k] || 0) + 1;
-  }
+
+  const cuenta = (lista, k) => {
+    const out = { eps_gaap: 0, eps_ajustado: 0, indeterminada: 0 };
+    for (const f of lista) out[f[k] || 'indeterminada'] = (out[f[k] || 'indeterminada'] || 0) + 1;
+    return out;
+  };
+  const indeterminadas = { sin_mencion: 0, conflicto: 0 };
+  for (const f of filas) if (f.metrica === 'indeterminada') indeterminadas[f.metrica_motivo || 'sin_mencion']++;
+  const eranConflicto = filas.filter((f) => f.lector_viejo === 'indeterminada' && f.lector_viejo_motivo === 'conflicto');
+  const porEstadoLibro = {};
+  for (const f of filas) porEstadoLibro[f.libro_estado || 'sin_dato'] = (porEstadoLibro[f.libro_estado || 'sin_dato'] || 0) + 1;
+  const spreads = filas.map((f) => f.spread_puntos).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+
+  filas.sort((a, b) => (a.metrica === b.metrica ? String(a.symbol).localeCompare(String(b.symbol)) : a.metrica.localeCompare(b.metrica)));
+
   return {
-    diag: 'desacuerdos',
-    pregunta: '¿Qué mercados abiertos están lejos de la tasa histórica, y el hueco es información o es que el mercado pregunta otra cosa?',
+    diag: 'instrumento',
+    pregunta: 'De los mercados abiertos: ¿qué EPS pide cada uno (GAAP, ajustado, no se sabe), y qué tan profundo es su libro?',
     generado_en: live.generado_en,
     mercados: filas.length,
-    por_clasificacion: porMotivo,
-    criterios: CRITERIOS_DESACUERDO,
+    cobertura: live.cobertura,
+    metrica_historico: METRICA_HISTORICO,
+    metrica: {
+      por_metrica: cuenta(filas, 'metrica'),
+      indeterminadas_por_motivo: indeterminadas,
+      empatan_con_historico: filas.filter((f) => f.empata_con_historico).length,
+    },
+    arreglo_condicionales: {
+      que_hace: 'Ignora las cláusulas condicionales de respaldo ("If X releases earnings without a non-GAAP EPS, then … GAAP EPS…"). La oración principal ("… will resolve to Yes if …") nunca se descarta.',
+      lector_viejo: cuenta(filas, 'lector_viejo'),
+      lector_nuevo: cuenta(filas, 'metrica'),
+      cambian: filas.filter((f) => f.cambia_con_el_arreglo).length,
+      eran_conflicto: eranConflicto.length,
+      de_esas_cambian: eranConflicto.filter((f) => f.metrica !== 'indeterminada').length,
+      de_esas_a: cuenta(eranConflicto.filter((f) => f.metrica !== 'indeterminada'), 'metrica'),
+      de_esas_siguen_indeterminadas: eranConflicto.filter((f) => f.metrica === 'indeterminada').map((f) => f.slug),
+    },
+    consenso_analistas: live.consenso_analistas,
+    libro: {
+      pedidos: live.libros ? live.libros.pedidos : null,
+      por_estado: porEstadoLibro,
+      con_spread: spreads.length,
+      spread_puntos: {
+        min: spreads.length ? spreads[0] : null, mediana: percentil(spreads, 0.50),
+        p90: percentil(spreads, 0.90), max: spreads.length ? spreads[spreads.length - 1] : null,
+      },
+    },
     filas,
     como_leerlo: [
-      'Un `umbral_declarado` lejos de `nivel_eps_reciente` (mirá `desvio_umbral_pct`) quiere decir que el mercado NO pregunta "¿superó el consenso?" — ahí el hueco no significa nada.',
-      '`varios_umbrales: true` quiere decir que la empresa tiene varios mercados abiertos sobre el mismo reporte: solo uno es comparable con la tasa histórica.',
-      'La tasa histórica es un CONTEO de trimestres pasados. No es predicción, y la Fase 2 dio NO-GO: QuantDesk todavía no emite probabilidad propia.',
-      'Nada de esto es señal de compra ni de venta. Es dónde mirar.',
+      '`metrica` sale de leer el slug, la pregunta y la descripción por separado (`slug_lee`, `pregunta_lee`, `descripcion_lee`). Si ninguna dice nada → no determinada (sin_mencion). Si se contradicen → no determinada (conflicto). No se adivina.',
+      '`lector_viejo` es la lectura SIN ignorar las cláusulas condicionales; `clausulas_condicionales_ignoradas` dice qué texto se dejó de leer.',
+      'Ni la métrica ni el spread condicionan nada: la tarjeta muestra los números lado a lado, cada uno con lo que mide, y no dictamina desacuerdo.',
+      'El histórico cuenta EPS AJUSTADO de Alpha Vantage. El consenso de analistas es de Finnhub, que no declara si es GAAP o ajustado.',
+      'Nada de esto es señal de compra ni de venta, y la Fase 2 sigue en NO-GO: QuantDesk no emite probabilidad propia.',
     ],
   };
+}
+
+// Markdown del censo del instrumento: para pegarlo y leerlo sin abrir un JSON.
+function instrumentoMd(d) {
+  const L = [];
+  const fmt = (x, dec = 1) => (x === null || x === undefined ? '—' : Number(x).toFixed(dec));
+  const tres = (c) => `GAAP ${c.eps_gaap} · ajustado ${c.eps_ajustado} · no determinada ${c.indeterminada}`;
+  L.push('# earnings-beat · censo del instrumento (métrica + profundidad)');
+  L.push('');
+  L.push(`Generado: ${d.generado_en} · mercados abiertos: **${d.mercados}**${d.cobertura && d.cobertura.parcial ? ' · ⚠ cobertura parcial: ' + d.cobertura.nota : ''}`);
+  L.push('');
+  L.push(`Histórico: **${d.metrica_historico.etiqueta}** — ${d.metrica_historico.fuente}.`);
+  L.push('');
+  L.push('## 1. Métrica que pide el mercado');
+  L.push('');
+  const pm = d.metrica.por_metrica;
+  L.push('| GAAP EPS | EPS ajustado (non-GAAP) | no determinada | de ellas: sin mención | de ellas: conflicto |');
+  L.push('|---|---|---|---|---|');
+  L.push(`| ${pm.eps_gaap} | ${pm.eps_ajustado} | ${pm.indeterminada} | ${d.metrica.indeterminadas_por_motivo.sin_mencion} | ${d.metrica.indeterminadas_por_motivo.conflicto} |`);
+  L.push('');
+  L.push(`Misma métrica que el histórico: **${d.metrica.empatan_con_historico}**.`);
+  L.push('');
+  const ac = d.arreglo_condicionales;
+  L.push('### Arreglo de las cláusulas condicionales');
+  L.push('');
+  L.push(`- Lector viejo: ${tres(ac.lector_viejo)}`);
+  L.push(`- Lector nuevo: ${tres(ac.lector_nuevo)}`);
+  L.push(`- Cambian de veredicto: **${ac.cambian}**`);
+  L.push(`- Eran "no determinada por conflicto": **${ac.eran_conflicto}** → cambian **${ac.de_esas_cambian}** (${tres(ac.de_esas_a)}) · siguen no determinadas: **${ac.de_esas_siguen_indeterminadas.length}**`);
+  for (const slug of ac.de_esas_siguen_indeterminadas) L.push(`  - \`${slug}\``);
+  L.push('');
+  const cs = d.consenso_analistas || {};
+  L.push('## 2. Consenso de analistas (Finnhub)');
+  L.push('');
+  L.push(`Estado: ${cs.estado || '—'}${cs.estado === 'ok' ? ` · ${cs.mercados_con_consenso} de ${cs.de} mercados con consenso (${cs.desde} → ${cs.hasta})` : cs.nota ? ' · ' + cs.nota : cs.http ? ' · HTTP ' + cs.http : ''}. Finnhub no declara si el estimado es GAAP o ajustado.`);
+  L.push('');
+  L.push('## 3. Libro del Yes (CLOB) — descriptivo, no condiciona nada');
+  L.push('');
+  L.push(`Libros pedidos: ${d.libro.pedidos ?? '—'} · por estado: ${Object.entries(d.libro.por_estado).map(([k, v]) => `${k}=${v}`).join(' · ') || '—'}`);
+  const sp = d.libro.spread_puntos;
+  L.push(`Spread (¢), ${d.libro.con_spread} con libro: min ${fmt(sp.min)} · mediana ${fmt(sp.mediana)} · p90 ${fmt(sp.p90)} · max ${fmt(sp.max)}`);
+  L.push('');
+  L.push('## 4. Fila por fila');
+  L.push('');
+  L.push('| símbolo | resuelve | métrica | motivo | lector viejo | slug / pregunta / descripción | umbral desc · slug | consenso | vol | liq | bid | ask | spread |');
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const f of d.filas) {
+    L.push(`| ${f.symbol} | ${f.fecha_resolucion || '—'} | ${f.metrica} | ${f.metrica_motivo || ''} | ${f.lector_viejo || '—'}${f.cambia_con_el_arreglo ? ' → cambia' : ''} | ${f.slug_lee || '·'} / ${f.pregunta_lee || '·'} / ${f.descripcion_lee || '·'} | ${fmt(f.umbral_descripcion, 2)} · ${fmt(f.umbral_slug, 2)} | ${f.consenso_analistas === null ? (f.consenso_analistas_motivo || '—') : fmt(f.consenso_analistas, 2)} | ${fmt(f.volumen, 0)} | ${fmt(f.liquidez, 0)} | ${fmt(f.bid, 3)} | ${fmt(f.ask, 3)} | ${fmt(f.spread_puntos)} |`);
+  }
+  L.push('');
+  L.push('### Slugs y fragmentos (para auditar la lectura de la métrica)');
+  L.push('');
+  for (const f of d.filas) {
+    L.push(`- **${f.symbol}** \`${f.slug}\` → ${f.metrica}${f.fragmento_descripcion ? ' · descripción: «' + f.fragmento_descripcion + '»' : ''}`);
+    for (const c of f.clausulas_condicionales_ignoradas) L.push(`  - ignorada (condicional): «${c.slice(0, 220)}»`);
+  }
+  L.push('');
+  for (const c of d.como_leerlo) L.push(`- ${c}`);
+  L.push('');
+  L.push('**El censo reporta; no se auto-aprueba.**');
+  return L.join('\n');
 }
 
 // ── Diagnóstico por símbolo (?vista=live&diag=MU,COST) ────────────────────
@@ -297,6 +413,59 @@ async function diagnosticoSimbolos(simbolos) {
 // vista completa que llega tarde.
 const PRESUPUESTO_LIVE_MS = 90000;
 
+// ── Consenso de analistas: Finnhub /calendar/earnings ──
+// UN request para todo el rango de fechas de los mercados abiertos. Cada
+// mercado toma la fila de su símbolo con la fecha más cercana a la de
+// resolución (±5 días). Finnhub NO declara si el `epsEstimate` es GAAP o
+// ajustado, y eso se dice tal cual: no se le pone una etiqueta que la fuente
+// no da. Sin key, con la fuente caída o sin fila: se dice cuál de las tres.
+const TOLERANCIA_CONSENSO_DIAS = 5;
+
+async function consensoDeAnalistas(abiertos, restante) {
+  const fuente = 'Finnhub /calendar/earnings (epsEstimate)';
+  const metrica = 'no declarada por la fuente';
+  const porMercado = new Map();
+  const ausente = (motivo) => ({ valor: null, motivo, fuente, metrica });
+  const key = process.env.FINNHUB_API_KEY || null;
+  const fechas = abiertos.map((m) => m.fecha_resolucion).filter(Boolean).sort();
+  if (!abiertos.length) return { porMercado, ausente: ausente('sin_mercados'), resumen: { estado: 'sin_mercados' } };
+  if (!key) return { porMercado, ausente: ausente('sin_key'), resumen: { estado: 'sin_key', nota: 'FINNHUB_API_KEY no está en el entorno' } };
+  if (!fechas.length) return { porMercado, ausente: ausente('sin_fechas'), resumen: { estado: 'sin_fechas' } };
+  if (restante() < 6000) return { porMercado, ausente: ausente('sin_presupuesto'), resumen: { estado: 'sin_presupuesto' } };
+
+  const corre = (dia, dias) => new Date(Date.parse(dia + 'T00:00:00Z') + dias * 86400000).toISOString().slice(0, 10);
+  const desde = corre(fechas[0], -TOLERANCIA_CONSENSO_DIAS);
+  const hasta = corre(fechas[fechas.length - 1], TOLERANCIA_CONSENSO_DIAS);
+  let filas;
+  try {
+    const r = await fetch(`https://finnhub.io/api/v1/calendar/earnings?from=${desde}&to=${hasta}&token=${key}`,
+      { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return { porMercado, ausente: ausente('finnhub_http_' + r.status), resumen: { estado: 'http_error', http: r.status } };
+    const j = await r.json();
+    filas = Array.isArray(j && j.earningsCalendar) ? j.earningsCalendar : null;
+    if (!filas) return { porMercado, ausente: ausente('finnhub_sin_calendario'), resumen: { estado: 'sin_calendario' } };
+  } catch (e) {
+    return { porMercado, ausente: ausente('finnhub_caido'), resumen: { estado: 'caido', mensaje: String((e && e.message) || e).slice(0, 120) } };
+  }
+  let conValor = 0;
+  for (const m of abiertos) {
+    const objetivo = Date.parse((m.fecha_resolucion || '') + 'T00:00:00Z');
+    const candidatas = filas
+      .filter((f) => f && f.symbol === m.symbol && f.date)
+      .map((f) => ({ f, dist: Math.abs(Date.parse(f.date + 'T00:00:00Z') - objetivo) / 86400000 }))
+      .filter((x) => Number.isFinite(x.dist) && x.dist <= TOLERANCIA_CONSENSO_DIAS)
+      .sort((a, b) => a.dist - b.dist);
+    if (!candidatas.length) { porMercado.set(m, ausente('sin_fila_en_el_calendario')); continue; }
+    const f = candidatas[0].f;
+    const valor = num(f.epsEstimate);
+    if (valor === null) { porMercado.set(m, { ...ausente('sin_estimado'), fecha_reporte: f.date }); continue; }
+    conValor++;
+    porMercado.set(m, { valor, motivo: null, fecha_reporte: f.date, trimestre: f.quarter ?? null, anio: f.year ?? null, fuente, metrica });
+  }
+  return { porMercado, ausente: ausente('sin_fila_en_el_calendario'),
+    resumen: { estado: 'ok', desde, hasta, filas: filas.length, mercados_con_consenso: conValor, de: abiertos.length } };
+}
+
 async function vistaLive(ctx) {
   const t0 = Date.now();
   const restante = () => PRESUPUESTO_LIVE_MS - (Date.now() - t0);
@@ -345,18 +514,68 @@ async function vistaLive(ctx) {
       market_id: m.id,
       slug: m.slug,
       titulo: m.pregunta,
+      // El título va en inglés (es una cita); esto es su traducción, solo
+      // para las formas conocidas. null = no se traduce.
+      titulo_es: traduceTituloMercado(m.pregunta),
       url: m.slug ? `https://polymarket.com/market/${m.slug}` : null,
       symbol: simbolo.symbol,
       fecha_resolucion: isoDia(m.fin),
       consenso_eps: consenso ? consenso.valor : null,
-      // Precio ACTUAL del Yes, tal como lo publica Gamma en `outcomePrices`.
-      // La fuente se cita en la respuesta y en la tarjeta: es el precio de
-      // Polymarket, no una opinión nuestra.
-      polymarket_yes: precioYes,
-      polymarket_yes_pct: precioYes === null ? null : Math.round(precioYes * 100),
-      fuente_precio: 'Polymarket · Gamma outcomePrices',
+      // El umbral que trae el slug ("…-6pt31" → 6.31), aparte: sirve para
+      // cotejar el que se leyó de la descripción, no lo reemplaza.
+      umbral_slug: umbralDelSlug(m.slug),
+      // QUÉ EPS pide el mercado (GAAP, ajustado o no se sabe), leído del slug
+      // y del texto. Es la mitad de la pregunta "¿esto se puede comparar?".
+      metrica: extraeMetricaMercado(m),
+      // Solo para el censo: la lectura SIN ignorar cláusulas condicionales,
+      // para contar cuántos veredictos cambia ese arreglo.
+      ...(ctx && ctx.censo ? { metrica_lector_viejo: (({ metrica, motivo }) => ({ metrica, motivo }))(extraeMetricaMercado(m, { ignorarCondicionales: false })) } : {}),
+      // `outcomePrices` de Gamma, crudo. Gamma no documenta si es el último
+      // trade o el mid — en META dio 7% con el mid en ~16% — así que NO es el
+      // precio que se compara: queda para cotejar.
+      outcome_prices_yes: precioYes,
+      token_yes: tokenYes(m),
+      // Lo que Gamma trae del libro, CRUDO y sin interpretar: Gamma no declara
+      // a qué outcome se refieren. El libro que cuenta es el del CLOB, abajo.
+      gamma_libro: {
+        best_bid: num(raw.bestBid), best_ask: num(raw.bestAsk),
+        spread: num(raw.spread), last_trade: num(raw.lastTradePrice),
+      },
       volumen: m.volumen,
+      liquidez: m.liquidez,
     });
+  }
+
+  // ── El libro del Yes, del CLOB ──
+  // Es el único lugar que dice bid y ask SIN ambigüedad de outcome: se pide
+  // por el token del Yes. Si el CLOB no contesta, se dice.
+  let librosPedidos = 0;
+  const fallosLibro = {};
+  for (let i = 0; i < abiertos.length; i += CONCURRENCIA_CLOB) {
+    const tanda = abiertos.slice(i, i + CONCURRENCIA_CLOB);
+    await Promise.all(tanda.map(async (a) => {
+      if (!a.token_yes) { a.libro = { estado: 'sin_token_yes' }; return; }
+      if (restante() < 8000) { a.libro = { estado: 'sin_presupuesto' }; return; }
+      librosPedidos++;
+      const r = await clob('/book', { token_id: a.token_yes });
+      if (r.status !== 'ok') {
+        a.libro = { estado: 'clob_' + r.status, http: r.http ?? null };
+        fallosLibro[r.status] = (fallosLibro[r.status] || 0) + 1;
+        return;
+      }
+      a.libro = { ...libroDelYes(r.body), fuente: 'Polymarket · CLOB /book (token del Yes)' };
+    }));
+  }
+  // EL precio que se muestra, con su TIPO dicho: el mid del libro cuando hay
+  // libro; si no, outcomePrices declarado como tal.
+  for (const a of abiertos) {
+    const conLibro = a.libro && a.libro.estado === 'ok';
+    a.polymarket_yes = conLibro ? a.libro.mid : a.outcome_prices_yes;
+    a.polymarket_yes_pct = a.polymarket_yes === null || a.polymarket_yes === undefined ? null : Math.round(a.polymarket_yes * 100);
+    a.precio_tipo = conLibro ? 'mid' : a.outcome_prices_yes !== null ? 'outcome_prices' : null;
+    a.fuente_precio = conLibro
+      ? 'Polymarket · mid del libro del Yes (CLOB)'
+      : 'Polymarket · Gamma outcomePrices (Gamma no dice si es último o mid)';
   }
 
   // Más próximo a reportar primero: es el orden en que la información caduca.
@@ -398,53 +617,30 @@ async function vistaLive(ctx) {
     if (!porEmpresa.has(m.symbol)) porEmpresa.set(m.symbol, []);
     porEmpresa.get(m.symbol).push(m);
   }
-  // El día de hoy se calcula UNA vez y viaja por parámetro: `evaluaDesacuerdo`
-  // no lee el reloj, así el test puede fijar el día.
-  const hoy = new Date().toISOString().slice(0, 10);
+  // ── Consenso de analistas (calendario de Finnhub) ──
+  // Va al lado del precio y del histórico, como un número más con su fuente.
+  const consensos = await consensoDeAnalistas(abiertos, restante);
 
+  // NO HAY DICTAMEN DE DESACUERDO. La tarjeta pone los números lado a lado,
+  // cada uno con lo que mide (precio del mercado + su métrica, consenso,
+  // histórico de EPS ajustado), y el que compara es el usuario. Decisión de
+  // Lety tras la alerta falsa de META; tests/earnings-beat-instrumento.test.mjs
+  // vigila que no vuelva.
   const empresas = [...porEmpresa.entries()].map(([symbol, lista]) => {
     const hist = historico[symbol] || null;
-    // El desacuerdo se mide POR MERCADO, no por empresa: cada mercado tiene su
-    // propio umbral de EPS, y la tasa de beats solo es comparable con el que
-    // pregunta por el consenso. Restarle la tasa al precio del mercado
-    // equivocado es el error que esta estructura hace imposible.
     const mercados = lista.map((m) => ({
       ...m,
-      desacuerdo: evaluaDesacuerdo({
-        historico: hist,
-        precio_mercado: m.polymarket_yes,
-        consenso_declarado: m.consenso_eps,
-        fecha_reporte: m.fecha_resolucion,
-        hoy,
-      }),
+      // Informativo: qué mide el mercado contra qué cuenta el histórico.
+      metrica_vs_historico: comparaMetricas(m.metrica),
+      consenso_analistas: consensos.porMercado.get(m) || consensos.ausente,
     }));
-    // Varios mercados abiertos de la misma empresa = varios umbrales sobre el
-    // mismo reporte. Ahí el instrumento NO es opcional: antes de leer un hueco
-    // hay que saber cuál de los umbrales se está mirando.
-    const variosUmbrales = mercados.length > 1;
-    const comparables = mercados.filter((m) => m.desacuerdo && m.desacuerdo.clasificacion === 'desacuerdo');
-    const destacado = comparables.length
-      ? comparables.slice().sort((a, b) => Math.abs(b.desacuerdo.gap_puntos) - Math.abs(a.desacuerdo.gap_puntos))[0]
-      : null;
     return {
       symbol,
       // La fecha que manda es la del mercado que resuelve primero.
       fecha_resolucion: lista[0].fecha_resolucion,
       mercados,
       historico: hist,
-      desacuerdos: {
-        cuantos_mercados: mercados.length,
-        varios_umbrales: variosUmbrales,
-        instrumento_obligatorio: variosUmbrales,
-        aviso_varios_umbrales: variosUmbrales
-          ? `${mercados.length} mercados abiertos de ${symbol} sobre el mismo reporte, con umbrales distintos. La tasa histórica solo es comparable con el que pregunta por el consenso — el hueco de los otros no significa nada.`
-          : null,
-        destacado: destacado
-          ? { market_id: destacado.market_id, titulo: destacado.titulo, url: destacado.url,
-              gap_puntos: destacado.desacuerdo.gap_puntos,
-              instrumento_primero: destacado.desacuerdo.instrumento_primero || variosUmbrales }
-          : null,
-      },
+      historico_metrica: METRICA_HISTORICO,
       // EXPLÍCITO Y NULO. Ver el comentario de arriba: la ausencia es la
       // decisión, no un campo que falta.
       probabilidad_quantdesk: null,
@@ -485,9 +681,14 @@ async function vistaLive(ctx) {
       descartes,
     },
     historico_error: errorHistorico,
+    libros: { pedidos: librosPedidos, fallos: fallosLibro },
+    consenso_analistas: consensos.resumen,
     fuentes: {
-      mercados_y_precio: 'Polymarket (Gamma API, pública)',
+      mercados_y_precio: 'Polymarket (Gamma API, pública) · libro del Yes del CLOB',
+      precio_mostrado: 'mid del libro del Yes (CLOB /book). Sin libro: outcomePrices de Gamma, declarado como tal.',
+      consenso_analistas: 'Finnhub /calendar/earnings (epsEstimate). Finnhub no declara si es GAAP o ajustado.',
       historico_eps: 'Alpha Vantage EARNINGS vía pead_earnings',
+      metrica_historico: METRICA_HISTORICO,
     },
     aviso: {
       es: 'El histórico es un conteo de trimestres pasados, NO una predicción. QuantDesk todavía no emite probabilidad propia: está en validación.',
@@ -954,8 +1155,19 @@ export default async function handler(req, res) {
       // ?diag=MU,COST → base histórica de esos símbolos, sin pasar por Gamma.
       if (q.diag) {
         const cual = String(q.diag).toLowerCase();
+        if (cual === 'instrumento') {
+          const d = await diagInstrumento();
+          res.setHeader('Cache-Control', 'no-store');
+          if (['md', 'markdown'].includes(String(q.format || '').toLowerCase())) {
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            return res.status(200).send(instrumentoMd(d));
+          }
+          return res.status(200).json(d);
+        }
         const out = cual === 'escala' ? await censoDeEscala()
-          : cual === 'desacuerdos' ? await diagDesacuerdos()
+          // Retirado junto con la alerta: se dice, no cae al diag por símbolo.
+          : cual === 'desacuerdos' ? { diag: 'desacuerdos', retirado: true,
+            motivo: 'La alerta de desacuerdo se retiró: la tarjeta muestra los números lado a lado y no dictamina. Para la métrica y la profundidad: ?vista=live&diag=instrumento.' }
           : await diagnosticoSimbolos(String(q.diag).split(','));
         res.setHeader('Cache-Control', 'public, s-maxage=60');
         return res.status(200).json(out);
@@ -1036,5 +1248,5 @@ export default async function handler(req, res) {
   }
 }
 
-export { corre, ESTRATEGIAS };
+export { corre, ESTRATEGIAS, diagInstrumento, instrumentoMd, vistaLive };
 export { filasDe, aplanaMercados, cosechaDeBusqueda, formaDe } from './_lib/earnings-beat-descubrir.js';

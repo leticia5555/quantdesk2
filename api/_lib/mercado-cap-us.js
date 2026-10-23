@@ -33,7 +33,7 @@
 // cuál fue: ~32× huele a tipo de cambio, ~5× a ratio de ADR, ~1e6 a unidades.
 // ═══════════════════════════════════════════════════════════════════════
 import { CRITERIOS, errorPct } from './mercado-fase0.js';
-import { veredictoCapEdgar, estadoEdgar } from './mercado-edgar.js';
+import { veredictoCapEdgar, estadoEdgar, UMBRAL_EDGAR_PCT } from './mercado-edgar.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
@@ -192,6 +192,97 @@ export function candidatasCapUs({ declarada, moneda, acciones, precio_usd }) {
  * mismo concepto es cómo se terminan teniendo dos opiniones sobre qué está
  * verificado — el bug que #241 y #245 ya costaron.
  */
+// ═══════════════════════════════════════════════════════════════════════
+// VARIAS CLASES DE ACCIONES: LA CAP ES LA SUMA, CLASE POR CLASE
+//
+// BRK.B salía con un múltiplo de 1,482× (148,156% de error) por mezclar
+// clases: acciones de una clase por el precio de la otra (Lety, 2026-10-22).
+// 1,482 es casi exactamente la razón de conversión A→B, que es la huella del
+// defecto.
+//
+// Y NO SE PUEDE RESOLVER CON `companyconcept`: esa API devuelve los conteos
+// de portada SIN ETIQUETAR LA CLASE —la clase vive en el contexto XBRL, que
+// no viaja—, así que tenemos "540 mil y 1,290 millones" sin saber cuál es A y
+// cuál es B. Hay un comentario de eso desde el caso de BX.
+//
+// Lety eligió la captura manual (2026-10-22), igual que los cuatro ADR. Y
+// encaja con el mismo razonamiento: lo que se captura es ESTRUCTURAL.
+//
+//   · La EQUIVALENCIA entre clases está en el estatuto —1 BRK.A son 1,500
+//     BRK.B— y no cambia porque pase un trimestre.
+//   · Los CONTEOS por clase se leen de la portada del 10-Q, que los nombra
+//     ("Class A Common Stock… shares", "Class B Common Stock… shares"): ahí
+//     la atribución es explícita y no hay que adivinarla por magnitud.
+//
+// Lo que se pinta es `(Σ acciones_clase × equivalencia_clase) × NUESTRO
+// cierre de la clase cotizada`. Así el cuadro sigue al mercado todos los
+// días en vez de quedarse clavado en la captura — el mismo principio que la
+// razón del ADR.
+//
+// LOS CONTEOS SÍ ENVEJECEN (Berkshire recompra), a diferencia de la razón de
+// un ADR. Un trimestre de recompra mueve ~1%, muy dentro del 5% de
+// tolerancia, así que vencer es una TAREA y no apaga el cuadro: aparece en
+// `referencias_a_recapturar` como las demás.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * La cap de una emisora de varias clases, con su procedencia.
+ *
+ * `entrada.clases` es un arreglo de `{ nombre, acciones, equivalencia_en_cotizada }`.
+ * `cierre` es NUESTRO cierre de la clase cotizada.
+ *
+ * Devuelve `{ cap_usd, acciones_equivalentes, via, detalle }` o
+ * `{ cap_usd: null, motivo }`. Nunca un número sin poder decir de dónde sale.
+ */
+export function capPorClases(entrada, cierre) {
+  const clases = entrada && Array.isArray(entrada.clases) ? entrada.clases : null;
+  const px = Number(cierre);
+  if (!clases || !clases.length) {
+    return { cap_usd: null, motivo: 'la referencia no declara clases' };
+  }
+  if (!Number.isFinite(px) || px <= 0) {
+    return { cap_usd: null, motivo: 'sin cierre nuestro de la clase cotizada, no hay con qué multiplicar' };
+  }
+  let equivalentes = 0;
+  const detalle = [];
+  for (const c of clases) {
+    const n = Number(c && c.acciones);
+    const eq = Number(c && c.equivalencia_en_cotizada);
+    // Una clase sin conteo o sin equivalencia INVALIDA la suma entera: con
+    // una clase de menos el tamaño sale corto y nadie lo nota. Es la misma
+    // razón por la que la suma de `companyconcept` no se pinta sola.
+    if (!Number.isFinite(n) || n <= 0) {
+      return { cap_usd: null,
+        motivo: `la clase "${(c && c.nombre) || '?'}" no declara un conteo de acciones utilizable: con una clase incompleta la suma sale corta` };
+    }
+    if (!Number.isFinite(eq) || eq <= 0) {
+      return { cap_usd: null,
+        motivo: `la clase "${(c && c.nombre) || '?'}" no declara su equivalencia en la clase cotizada` };
+    }
+    equivalentes += n * eq;
+    detalle.push({ nombre: c.nombre || null, acciones: n, equivalencia_en_cotizada: eq, equivalentes: n * eq });
+  }
+  return {
+    cap_usd: equivalentes * px,
+    acciones_equivalentes: equivalentes,
+    via: 'clases_declaradas',
+    // La cuenta entera, para que el número se pueda rehacer a mano.
+    detalle,
+    cotizada: entrada.cotizada || entrada.clave || null,
+    precio_usado: px,
+  };
+}
+
+/**
+ * ¿Esta referencia es de varias clases, o de un ADR?
+ *
+ * Las dos viven en el mismo registro y se usan distinto, así que la pregunta
+ * tiene que tener UNA respuesta y no depender de qué campo mire quien lea.
+ */
+export function esReferenciaDeClases(ref) {
+  return !!(ref && Array.isArray(ref.clases) && ref.clases.length);
+}
+
 export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   const { symbol, moneda, referencia, edgar, hoy } = entrada || {};
   const cand = candidatasCapUs(entrada || {});
@@ -212,6 +303,38 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
   // no puede decir nada útil. La referencia de Yahoo despeja la razón y el
   // tamaño vuelve a ser NUESTRO cálculo con NUESTRO cierre.
   if (referencia) {
+    // ── VARIAS CLASES: LA SUMA DECLARADA MANDA ────────────────────────
+    // Es el caso de BRK.B. La equivalencia entre clases es estructural y los
+    // conteos se leyeron de la portada del 10-Q, donde SÍ están nombrados por
+    // clase. Lo que se pinta es la suma llevada a la clase cotizada por
+    // NUESTRO cierre, así que sigue al mercado todos los días.
+    if (esReferenciaDeClases(referencia)) {
+      const c = capPorClases(referencia, num(entrada.precio_usd));
+      if (c.cap_usd == null) {
+        return { ...base, estado: 'gris_punteado', auditable: false, cap_usd: null,
+          error_pct: null, multiplo: null, via: 'clases_declaradas', motivo: c.motivo };
+      }
+      const vig = referenciaVigente(referencia, hoy || new Date());
+      return {
+        ...base, estado: 'verificada', auditable: true,
+        cap_usd: c.cap_usd, error_pct: null, multiplo: null,
+        via: 'clases_declaradas',
+        fuente: `calc: clases declaradas × neon (${c.detalle.map((d) => `${d.nombre}×${d.equivalencia_en_cotizada}`).join(' + ')})`,
+        acciones_equivalentes: c.acciones_equivalentes,
+        clases_detalle: c.detalle,
+        // Vencer es una TAREA y no apaga el cuadro: los conteos derivan ~1%
+        // por trimestre de recompra, muy dentro de la tolerancia.
+        referencia_vigente_hasta: referencia.vigente_hasta || null,
+        // `a_recapturar`, NO `vencida`: ese campo no existe en lo que devuelve
+        // `referenciaVigente`, así que `vig.vencida === true` era SIEMPRE
+        // false y una captura de clases vencida no se marcaba nunca. Entró
+        // con BRK.B y lo encontró la prueba de vigencia de SPCX. Los ADR
+        // usaban el nombre correcto, así que el defecto era sólo de esta
+        // rama — una copia a ojo del campo de al lado (2026-10-23).
+        referencia_a_recapturar: !!(vig && vig.a_recapturar),
+        motivo: null,
+      };
+    }
     // ── UNA REFERENCIA DESCARTADA NO SE USA, Y NO SE BORRA ───────────────
     // La captura de VALE resultó vieja: Yahoo la mostraba fechada el 18-sep y
     // el número no corresponde al precio con el que se leyó. Descartarla NO es
@@ -374,6 +497,52 @@ export function veredictoCapUs(entrada, umbral = CRITERIOS.g2_max_error_pct) {
 
   const ok = Math.abs(e) <= umbral;
   if (ok) {
+    // ── EL PAR DE FINNHUB CONCUERDA CONSIGO MISMO, NO CON LA REALIDAD ──
+    //
+    // Acá había un `return 'verificada'` directo, con este comentario más
+    // abajo: *"si el par de Finnhub ya concordaba, no se toca nada"*. El
+    // problema es que las dos cifras que concuerdan son
+    // `marketCapitalization` y `shareOutstanding × precio`, y Finnhub calcula
+    // su cap A PARTIR de su propio conteo: concuerdan por construcción.
+    //
+    // O sea que "verificada" quería decir, en la mayoría de los casos, que
+    // Finnhub concuerda consigo mismo — y EDGAR, que es la medición
+    // INDEPENDIENTE, nunca llegaba a discrepar.
+    //
+    // SPCX lo puso en evidencia: Finnhub daba ~14,200 M de acciones y $2,101
+    // mil M de cap —coherentes entre sí— mientras el 8-K de EDGAR daba
+    // 1,812.5 M. Ocho veces de diferencia, y el cuadro salía `verificada`
+    // (Lety, 2026-10-22).
+    //
+    // Dos mediciones independientes que difieren más de la tolerancia es
+    // exactamente la condición que este diseño dice que debe dar gris. No se
+    // elige cuál está bien: no se pinta, y se dicen las dos.
+    const edgarAcc = edgar && num(edgar.acciones) > 0 ? num(edgar.acciones) : null;
+    const px = num(entrada.precio_usd);
+    if (edgarAcc && px > 0) {
+      const capEdgar = edgarAcc * px;
+      const eEdgar = ((decl.cap - capEdgar) / capEdgar) * 100;
+      if (Math.abs(eEdgar) > UMBRAL_EDGAR_PCT) {
+        const mEdgar = decl.cap / capEdgar;
+        return {
+          ...base, estado: 'gris_punteado', auditable: true,
+          cap_usd: null, error_pct: eEdgar, multiplo: mEdgar,
+          via: 'finnhub_vs_edgar',
+          acciones_edgar_millones: edgarAcc / MILLON,
+          fecha_portada: (edgar && edgar.fecha_portada) || null,
+          motivo: `dos conteos de acciones independientes no cuadran: Finnhub da `
+            + `${(num(entrada.acciones) || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })} millones `
+            + `y la portada de EDGAR${edgar.fecha_portada ? ` del ${edgar.fecha_portada}` : ''} da `
+            + `${(edgarAcc / MILLON).toLocaleString('es-MX', { maximumFractionDigits: 0 })} millones `
+            + `(${mEdgar.toFixed(mEdgar > 10 ? 0 : 2)}× de diferencia). `
+            + 'El par de Finnhub concuerda consigo mismo porque su cap sale de su propio conteo, '
+            + 'así que esa concordancia no verifica nada. '
+            + 'Causa frecuente: la emisora tiene VARIAS CLASES de acciones — EDGAR separa la portada '
+            + 'por clase y `companyconcept` no trae los hechos con dimensión, así que de EDGAR llega '
+            + 'una sola clase. Se resuelve con una captura manual de las clases.',
+        };
+      }
+    }
     return {
       ...base, estado: 'verificada', auditable: true,
       // La cap que viaja es la DECLARADA, no un promedio: promediar dos fuentes

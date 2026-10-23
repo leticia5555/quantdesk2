@@ -69,6 +69,7 @@ import {
 import REFERENCIAS_CAP_US from './_lib/mercado-cap-us-referencia.json' with { type: 'json' };
 import {
   accionesDeCompanyConcept, mapaCik, rutaCompanyConcept, UMBRAL_EDGAR_PCT, candidatosParaEdgar,
+  cikDe, REGLA_EDGAR_VERSION,
   formaDeUnits, muestraCruda, UMBRAL_ACUERDO_ACCIONES_PCT, MAX_MESES_PORTADA,
 } from './_lib/mercado-edgar.js';
 
@@ -121,6 +122,10 @@ export const SCHEMA_UNIVERSO_US = [
   // preguntó y no había", y el mapa acaba inventando la causa (#260).
   `alter table mercado_universo_us add column if not exists edgar_consultada_en timestamptz`,
   `alter table mercado_universo_us add column if not exists edgar_consulta_motivo text`,
+  // Con qué versión de la regla de extracción se decidió lo de EDGAR. Una
+  // fila decidida con una versión anterior vuelve a ser candidata una vez:
+  // ver `REGLA_EDGAR_VERSION` en `_lib/mercado-edgar.js`.
+  `alter table mercado_universo_us add column if not exists edgar_regla int not null default 0`,
   `create index if not exists mercado_universo_us_cap_idx
      on mercado_universo_us (market_cap desc nulls last)`,
   `create index if not exists mercado_universo_us_sector_idx
@@ -201,6 +206,12 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
       .map((r) => [String(r.symbol).toUpperCase(), r]));
 
   // ── QUÉ FALTA, que es lo único que se pide ──────────────────────────
+  // ── CUÁNTO VALE UNA CAP ANTES DE VOLVER A PEDIRLA ─────────────────
+  // 36 horas. Lety pidió recapturar "si tiene más de 7 días" y esto es más
+  // estricto, así que lo cubre con margen. Lo que faltaba no era el número:
+  // era que el relevo de Arena no tenía ninguno.
+  const TTL_CAP_MS = 36 * 3600e3;
+
   // El TTL de la cap se mide contra `cap_actualizado` —cuándo se MIDIÓ— y no
   // contra `actualizado` —cuándo se tocó la fila—. Ver el comentario del
   // schema: confundirlos congelaba la cap para siempre.
@@ -216,8 +227,22 @@ async function refrescarSimbolos(simbolos, { finnhubKey, ahora, deadline }) {
     const capArena = capsArena.get(sym);
     const medida = p && p.cap_actualizado ? new Date(p.cap_actualizado) : null;
     const capFresca = p && num(p.market_cap) != null && medida
-      && (ahora - medida) < 36 * 3600e3;
-    if (!capFresca && !(capArena && num(capArena.market_cap) != null)) necesitaCap.push(sym);
+      && (ahora - medida) < TTL_CAP_MS;
+    // ── LA CAP DE ARENA TAMBIÉN CADUCA ────────────────────────────────
+    // Esta línea decía `!(capArena && market_cap != null)`: con una cap de
+    // Arena presente, la recaptura se saltaba SIN MIRARLE LA EDAD. SPCX tenía
+    // una del día de su IPO (2026-09-18) y por eso seguía ahí un mes después,
+    // difiriendo 8% de acciones×precio, con el cuadro en gris punteado
+    // (Lety, 2026-10-22).
+    //
+    // `fetched_at` ya venía en la consulta de `arena_market_cap` y no se
+    // usaba. Ahora un relevo vale sólo mientras esté fresco, con el MISMO TTL
+    // que el principal: un relevo que no caduca no es un relevo, es un dato
+    // congelado con otro nombre.
+    const traidaArena = capArena && capArena.fetched_at ? new Date(capArena.fetched_at) : null;
+    const arenaFresca = capArena && num(capArena.market_cap) != null
+      && traidaArena && (ahora - traidaArena) < TTL_CAP_MS;
+    if (!capFresca && !arenaFresca) necesitaCap.push(sym);
   }
 
   // ── LA COLA, espaciada de verdad ────────────────────────────────────
@@ -764,6 +789,10 @@ export const SQL_CAP_US = {
         set acciones_edgar_millones = $2, acciones_edgar_portada = $3::date,
             acciones_edgar_presentada = $4::date, acciones_edgar_form = $5, edgar_cik = $6,
             edgar_consultada_en = now(), edgar_consulta_motivo = null,
+            -- La versión de la regla con la que se extrajo este conteo. Sin
+            -- esto, el día que la regla cambie no se sabría qué filas se
+            -- decidieron con la vieja.
+            edgar_regla = $7,
             -- Un conteo limpio BORRA la suma de clases de una corrida anterior:
             -- si la emisora dejó de reportar varias, la suma vieja seguiría ahí
             -- contestando una pregunta que ya no existe.
@@ -788,7 +817,7 @@ export const SQL_CAP_US = {
        select u.symbol, u.nombre, u.industria, u.sector_etf, u.market_cap, u.cap_fuente, u.cap_moneda,
               u.acciones_millones, u.acciones_edgar_millones, u.acciones_edgar_portada::text as acciones_edgar_portada,
               u.acciones_edgar_clases, u.acciones_edgar_suma_millones,
-              u.edgar_consultada_en::text as edgar_consultada_en, u.edgar_consulta_motivo,
+              u.edgar_consultada_en::text as edgar_consultada_en, u.edgar_consulta_motivo, u.edgar_regla,
               p.cierre as precio_usd, p.fecha::text as fecha_precio
          from mercado_universo_us u
          left join ultimo p using (symbol)
@@ -927,7 +956,7 @@ async function jobAuditoriaCap({ ahora } = {}) {
 const EDGAR_POR_MINUTO = 300;        // 5/s, la mitad del techo que publica la SEC.
 let CIKS = null;                     // el mapa ticker→CIK, una vez por proceso.
 
-async function jobAccionesEdgar({ ahora, t0, limite }) {
+async function jobAccionesEdgar({ ahora, t0, limite, traza = null, forzar = null }) {
   await ensureSchema();
   const ua = process.env.SEC_USER_AGENT;
   if (!ua) {
@@ -949,8 +978,8 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
   // POR QUÉ NO HAY CANDIDATOS, cuando no hay. El filtro vive en la librería para
   // poder probarlo: acá fue donde `num(null) === 0` descartó a los 21 en
   // silencio.
-  const { candidatos, diagnostico: diag } = candidatosParaEdgar({
-    entradas, veredictos, universoPorSymbol: porSymbol,
+  const { candidatos, diagnostico: diag, traza: rastro } = candidatosParaEdgar({
+    entradas, veredictos, universoPorSymbol: porSymbol, traza, forzar,
   });
 
   const tope = Number.isFinite(limite) && limite > 0 ? limite : candidatos.length;
@@ -993,13 +1022,20 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
   const registroConsulta = (sym, motivo, cik = null) => [
     `update mercado_universo_us
         set edgar_consultada_en = now(), edgar_consulta_motivo = $2,
-            edgar_cik = coalesce($3, edgar_cik)
+            edgar_cik = coalesce($3, edgar_cik),
+            edgar_regla = $4
       where symbol = $1`,
-    [sym, motivo, cik],
+    // La versión queda SELLADA en la fila: es lo que permite saber, el día
+    // que la regla vuelva a cambiar, qué respuestas se decidieron con la
+    // regla vieja y hay que volver a preguntar.
+    [sym, motivo, cik, REGLA_EDGAR_VERSION],
   ];
 
   for (const sym of pendientes) {
-    const cik = CIKS.get(sym);
+    // Las DOS ortografías: la SEC usa guion (`BRK-B`) y nuestro universo
+    // punto (`BRK.B`). La búsqueda directa dejaba a BRK.B en `sin_cik`.
+    const { cik, como } = cikDe(CIKS, sym);
+    if (como && como !== sym) cuenta.cik_por_otra_ortografia = (cuenta.cik_por_otra_ortografia || 0) + 1;
     if (!cik) {
       cuenta.sin_cik++; sinCik.push(sym);
       // No tener CIK ES una respuesta: se buscó en el índice de la SEC y no
@@ -1015,9 +1051,14 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
       if (!r.ok) {
         if (r.red) { cuenta.red++; continue; }
         cuenta.sin_dato++;
+        // EL CIK VA EN EL MOTIVO. "EDGAR no reporta el concepto para este CIK"
+        // sin decir cuál es un callejón sin salida: Accenture Ltd (Bermudas) y
+        // Accenture plc (Irlanda) son entidades distintas con CIKs distintos,
+        // y pegarle a la vieja da exactamente esta respuesta (Lety, ACN,
+        // 2026-10-22). Con el número se puede abrir EDGAR y ver cuál es.
         const motivo = r.status === 404
-          ? 'EDGAR no reporta dei:EntityCommonStockSharesOutstanding para este CIK (404)'
-          : `EDGAR contestó HTTP ${r.status}${r.noJson ? ' y el cuerpo no era JSON' : ''}`;
+          ? `EDGAR no reporta dei:EntityCommonStockSharesOutstanding para el CIK ${cik} (404)`
+          : `EDGAR contestó HTTP ${r.status} para el CIK ${cik}${r.noJson ? ' y el cuerpo no era JSON' : ''}`;
         resultados.push({ symbol: sym, motivo });
         // Un 404 es una respuesta —EDGAR no tiene el concepto— y se registra.
         // Un 5xx o un cuerpo raro NO lo es: se vuelve a intentar la próxima.
@@ -1057,7 +1098,8 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
         presentada: acc.presentado_en, form: acc.form, unidad: acc.unidad || null,
       });
       escrituras.push([SQL_CAP_US.edgar_conteo,
-        [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik]]);
+        [sym, acc.acciones / 1e6, acc.fecha_portada, acc.presentado_en, acc.form, cik,
+          REGLA_EDGAR_VERSION]]);
     } catch (e) {
       // UN SÍMBOLO NO SE LLEVA EL JOB. El 2026-09-26 el primero de los 21 tiró
       // `TypeError: unidades.filter is not a function` y los otros 20 nunca se
@@ -1076,6 +1118,10 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
 
   return {
     job: 'acciones-edgar',
+    // `?symbol=SPCX` sigue a UN símbolo por todas las compuertas y dice en
+    // cuál se cayó. Existe porque `excluidos` se recorta a 40 y, con 500
+    // filas, "¿por qué no está SPCX?" no tenía respuesta en ningún lado.
+    ...(rastro ? { traza: rastro } : {}),
     umbral_pct: UMBRAL_EDGAR_PCT,
     nota: `el contraste con EDGAR usa su propio techo de ${UMBRAL_EDGAR_PCT}%, separado del ${CRITERIOS.g2_max_error_pct}% de G2: las acciones son de la portada del trimestre y el precio es el de hoy, así que algo de deriva es lo esperado y no un error de nadie`,
     umbral_acuerdo_acciones_pct: UMBRAL_ACUERDO_ACCIONES_PCT,
@@ -1087,6 +1133,18 @@ async function jobAccionesEdgar({ ahora, t0, limite }) {
     // debería ser 25 también hay que poder explicarlo.
     diagnostico: diag,
     simbolos_candidatos: candidatos.slice(0, 30),
+    // ── QUIÉNES TIENEN VARIAS CLASES, SEGÚN LOS DATOS ─────────────────
+    // Lety pidió incluir "las otras de dos clases que estén en el universo".
+    // Mi memoria no es una fuente: la lista sale de las filas que EDGAR
+    // reportó con más de un conteo de portada, que es exactamente la
+    // condición. Con esto se sabe a quién hay que capturar a mano en vez de
+    // adivinar nombres.
+    varias_clases: await sql(
+      `select symbol, acciones_edgar_clases as clases,
+              acciones_edgar_suma_millones as suma_millones
+         from mercado_universo_us
+        where acciones_edgar_clases > 1
+        order by market_cap desc nulls last`).catch(() => []),
     intentados: pendientes.length,
     escritos: escrituras.length,
     cuenta,
@@ -1286,7 +1344,11 @@ export default async function handler(req, res) {
   try {
     let out;
     if (job === 'auditoria-cap') out = await jobAuditoriaCap({ ahora });
-    else if (job === 'acciones-edgar') out = await jobAccionesEdgar({ ahora, t0, limite: Number(q.limite) || null });
+    else if (job === 'acciones-edgar') out = await jobAccionesEdgar({ ahora, t0, limite: Number(q.limite) || null,
+      traza: q.symbol || null,
+      // `&forzar=1` sólo tiene sentido junto con `?symbol=`: reabre ESA fila,
+      // no las 500. Sin `symbol`, se ignora.
+      forzar: (q.forzar === '1' || q.forzar === 'true') && q.symbol ? q.symbol : null });
     else if (job === 'razon-adr') out = await jobRazonAdr({ ahora, manual });
     else if (job === 'universo') out = await jobUniverso({ ahora, dry, finnhubKey: process.env.FINNHUB_API_KEY, t0 });
     else if (job === 'unidades') out = await jobUnidades({ ahora, manual });

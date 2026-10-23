@@ -204,10 +204,9 @@ const iCard = app.indexOf('function ebLiveCard(');
 ok(iCard > 0, 'la tarjeta existe en app.html');
 const card = app.slice(iCard, app.indexOf('\nfunction ebDiasHasta', iCard));
 
-ok(card.includes("'Histórico: superó '"), 'la etiqueta es EXACTAMENTE "Histórico: superó N de M (P%)"');
-ok(card.includes("'Track record: beat '"), 'y su par en inglés');
-ok(card.includes("'Polymarket hoy: '") || card.includes("'Polymarket hoy: '+"), 'la etiqueta del mercado es "Polymarket hoy: N%"');
-ok(/fuente/.test(card) && /source/.test(card), 'la fuente se cita en las dos lenguas');
+ok(card.includes("'Historial: superó '"), 'la etiqueta es EXACTAMENTE "Historial: superó N de M (P%)"');
+ok(card.includes("'Polymarket hoy: '"), 'la etiqueta del mercado es "Polymarket hoy: N%"');
+ok(/fuente: /.test(card), 'la fuente se cita');
 
 // LA REGLA: el histórico no se pinta como probabilidad. Se prohíben las formas
 // que lo dirían, no una cadena puntual — para que renombrar no la esquive.
@@ -232,8 +231,7 @@ ok(!/probabilidad_quantdesk\s*\|\||probabilidad_quantdesk\s*\?/.test(card),
   'la tarjeta no intenta pintar una probabilidad de QuantDesk (todavía no existe)');
 
 // CICATRIZ MU, pineada: el titular de sorpresa NO puede volver a ser el promedio.
-ok(/Sorpresa mediana: /.test(card) && /Median surprise: /.test(card),
-  'la sorpresa se titula como MEDIANA en las dos lenguas');
+ok(/Sorpresa mediana: /.test(card), 'la sorpresa se titula como MEDIANA');
 ok(!/'Sorpresa promedio: '|'Average surprise: '/.test(card),
   'y NADIE volvió a poner el promedio de titular (fue el "-26.06%" de MU)');
 ok(/sp\.distorsionado/.test(card), 'cuando promedio y mediana divergen, la tarjeta lo dice');
@@ -249,15 +247,15 @@ ok(lineasCausa.every((l) => /artefacto_denominador|denominador_chico/.test(l)),
   'toda mención a estimados de centavos vive dentro de la rama del artefacto', lineasCausa.length);
 ok(/v\.beats\+' de '\+v\.total|v\.beats\+' of '\+v\.total/.test(card),
   'el titular sale de la VENTANA (v), no del historial completo');
-ok(/completo/.test(card) && /full history/.test(card),
-  'y el historial completo aparece como secundario, en las dos lenguas');
+ok(/'historial completo: '/.test(card), 'y el historial completo aparece como secundario');
 
-// El disclaimer bilingüe, obligatorio y con las dos lenguas.
+// El disclaimer, obligatorio. Desde el lote de traducción va SOLO en español,
+// como el resto de la tarjeta.
 const iDisc = app.indexOf('function ebLiveDisclaimer(');
 const disc = app.slice(iDisc, app.indexOf('\nfunction ebLiveAviso', iDisc));
-ok(/no una predicción/.test(disc) && /not a forecast/.test(disc), 'el disclaimer va en español Y en inglés');
-ok(/en validación/.test(disc) && /being validated/.test(disc), 'y dice que QuantDesk está en validación, en las dos');
-ok(/const primero=smL\(es,en\), segundo=smL\(en,es\)/.test(disc), 'se pintan las DOS lenguas, no solo la activa');
+ok(/El historial es un CONTEO de trimestres pasados, no una predicción/.test(disc), 'el disclaimer dice que el conteo no es una predicción, con "historial" como el resto de la tarjeta');
+ok(/en validación/.test(disc), 'y que QuantDesk está en validación');
+ok(!/smL\(/.test(disc) && !/not a forecast|being validated/.test(disc), 'y va solo en español: sin la copia en inglés');
 
 // El endpoint: la ausencia de probabilidad propia es explícita, no un olvido.
 ok(/probabilidad_quantdesk: null/.test(api), 'el endpoint devuelve probabilidad_quantdesk: null, explícito');
@@ -271,82 +269,139 @@ ok(/vacio\.motivo/.test(app), 'el estado vacío muestra el MOTIVO que dio el end
 
 
 // ═══════════════════════════════════════════════════════════════
-// LINT del BLOQUE DE DESACUERDO
+// LA ALERTA DE DESACUERDO NO EXISTE — y no vuelve por la puerta de atrás
 //
-// El riesgo de este bloque no es un bug de render: es que afirme que el
-// mercado sabe algo. Un hueco de 70 puntos es más fácil de producir con un
-// mercado mal emparejado que con información real — la Fase 0 se corrigió
-// cuatro veces por eso. Y es que la brecha convierta la tasa histórica en el
-// pronóstico de QuantDesk por la puerta de atrás: restarle un precio a un
-// conteo solo se puede escribir nombrando a cada uno por lo que es.
+// Decisión de Lety tras la alerta falsa de META (GAAP contra ajustado, en un
+// libro vacío): QuantDesk NO juzga el desacuerdo. La tarjeta pone los números
+// lado a lado, cada uno con lo que mide, y el usuario compara. Este lint falla
+// si alguien vuelve a escribir la alerta, la brecha o "dónde mirar", en la
+// pantalla o en el endpoint. Volver a tenerla es una decisión, no un descuido:
+// se borra este bloque a propósito, en el mismo commit.
 // ═══════════════════════════════════════════════════════════════
 
-const iDes = app.indexOf('const EB_DONDE_MIRAR_EN');
-const des = app.slice(iDes, app.indexOf('// Días hasta la fecha', iDes));
-ok(iDes > 0, 'el bloque de desacuerdo existe en la pantalla');
+const vistaEb = app.slice(app.indexOf('function renderEbLive('), app.indexOf('\nfunction ebDiasHasta'));
+ok(vistaEb.length > 1000, 'se recortó la vista EARNINGS en vivo de app.html', vistaEb.length);
+const SIN_ALERTA = [
+  { nombre: 'el título de la alerta', re: /DESACUERDO ·|DISAGREEMENT ·|⚠ DESACUERDO|⚠ DISAGREEMENT/ },
+  { nombre: 'la brecha en puntos', re: /brecha de|-point gap|gap_puntos/ },
+  { nombre: '"dónde mirar"', re: /Dónde mirar|Where to look|donde_mirar/ },
+  { nombre: 'el dictamen del endpoint', re: /clasificacion\s*===|\.desacuerdo\b|desacuerdos\b/ },
+];
+for (const p of SIN_ALERTA) {
+  ok(!p.re.test(vistaEb), `la tarjeta NO tiene ${p.nombre}`, (p.re.exec(vistaEb) || [])[0]);
+}
+ok(!/ebDesacuerdoBloque|EB_DONDE_MIRAR_EN|EB_LECTURA_EN/.test(app), 'ni el bloque ni sus traducciones quedan en app.html');
 
-// 1. NO puede afirmar que el mercado esté informado.
-ok(!/Algo que el historial no contiene está moviendo el precio/i.test(des),
-  'el bloque NO afirma "algo que el historial no contiene está moviendo el precio"');
-ok(!/el mercado sabe|the market knows/i.test(des), 'ni "el mercado sabe"');
-ok(/EB_LECTURA_EN\[d\.lectura_codigo\]/.test(des),
-  'la lectura se TRADUCE por código del endpoint, no se arma acá');
-ok(/instrumento_primero/.test(des) && /ambas_causas/.test(des),
-  'y las dos lecturas posibles están escritas, las dos');
-ok(/asking something ELSE/.test(des),
-  'la versión en inglés también nombra la causa que hay que descartar primero');
+const lib = readFileSync(new URL('../api/_lib/earnings-beat.js', import.meta.url), 'utf8');
+for (const [nombre, src] of [['api/earnings-beat.js', api], ['api/_lib/earnings-beat.js', lib]]) {
+  ok(!/evaluaDesacuerdo|CRITERIOS_DESACUERDO|gap_puntos|donde_mirar|spread_max_puntos|instrumento_primero/.test(src),
+    `${nombre}: sin cálculo de brecha, sin dictamen, sin umbral de spread que condicione`,
+    (/evaluaDesacuerdo|CRITERIOS_DESACUERDO|gap_puntos|donde_mirar|spread_max_puntos|instrumento_primero/.exec(src) || [])[0]);
+}
+const libMod = await import('../api/_lib/earnings-beat.js');
+ok(libMod.evaluaDesacuerdo === undefined && libMod.CRITERIOS_DESACUERDO === undefined,
+  'y el lib ya no exporta evaluaDesacuerdo ni CRITERIOS_DESACUERDO');
 
-// 2. La brecha nombra a cada número por lo que es.
-ok(/tasa histórica/.test(des) && /historical rate/.test(des), 'la tasa histórica se llama tasa histórica');
-ok(/trimestres\)/.test(des) && /quarters\)/.test(des),
-  'y va con el CONTEO al lado ("15 de 20 trimestres"), no sola');
-ok(/CONTEO de trimestres pasados: no es predicción/.test(des)
-  && /COUNT of past quarters: it is not a forecast/.test(des),
-  'la frase de que el conteo no es predicción va en las DOS lenguas, dentro del bloque');
-// Y usa LA frase sancionada del proyecto ("no es predicción"), que es la que el
-// lint de arriba aparta. Una variante nueva obligaría a ensanchar el lint.
-ok(/no es predicci/.test(des), 'con la redacción que el lint de honestidad ya reconoce');
-ok(!/probabilidad de|probability of/i.test(des), 'en ninguna parte se dice "probabilidad de"');
-ok(!/QuantDesk dice|QuantDesk says/i.test(des), 'y la tasa nunca se atribuye a QuantDesk como opinión');
+// Lo que SÍ está: cada número con lo que mide.
+ok(/'Resuelve sobre '/.test(card), 'el mercado con su métrica y su umbral ("Resuelve sobre EPS GAAP de $6.31")');
+ok(/'Métrica del mercado: no determinada'/.test(card), 'y si no se pudo leer, lo dice así');
+ok(/'Consenso de analistas: /.test(card) && /Finnhub no declara si es EPS GAAP o ajustado/.test(card), 'el consenso de analistas, con la nota de que Finnhub no declara la métrica');
+ok(/contando EPS ajustado \(Alpha Vantage\)/.test(card), 'el historial etiquetado "contando EPS ajustado (Alpha Vantage)"');
+ok(/mv\.estado==='distinta'/.test(card) && /; el historial cuenta EPS ajustado\./.test(card),
+  'la línea neutral cuando el mercado mide otra cosa');
 
-// 3. No es señal.
-ok(/No es señal de compra ni de venta/.test(des) && /Not a buy or sell signal/.test(des),
-  '"no es señal de compra ni de venta", en las dos lenguas');
+// ═══════════════════════════════════════════════════════════════
+// LA TARJETA DE POLYMARKET VA EN ESPAÑOL — lint sobre el texto RENDERIZADO
+//
+// Se recortan las funciones reales de app.html, se pinta la tarjeta con
+// fixtures que recorren cada rama (mid / outcomePrices, libro sí / no, GAAP /
+// ajustado / no determinada, consenso sí / no, rachas de los dos signos,
+// sorpresa distorsionada por las dos causas, estado vacío, error) y se busca
+// inglés en lo que el usuario LEE. Única excepción: el título del mercado, que
+// es cita de Polymarket. Los códigos internos (sin_ask, sin_fila_en_el_calendario)
+// sí aparecen: son datos, no pantalla, y no están en la lista.
+// ═══════════════════════════════════════════════════════════════
+console.log('la tarjeta de Polymarket, en español (texto renderizado)');
+{
+  const recorta = (nombre) => {
+    const i = app.indexOf('function ' + nombre + '(');
+    let d = 0;
+    for (let k = app.indexOf('{', i); k < app.length; k++) {
+      if (app[k] === '{') d++;
+      else if (app[k] === '}' && --d === 0) return app.slice(i, k + 1);
+    }
+    throw new Error('no se pudo recortar ' + nombre);
+  };
+  const iMet = app.indexOf('const EB_METRICA_ES');
+  const metEs = app.slice(iMet, app.indexOf('};', iMet) + 2);
+  ok(iMet > 0, 'EB_METRICA_ES existe');
+  // Un DOM mínimo: solo lo que tocan estas funciones.
+  const nodos = { ebLivePanel: { innerHTML: '' }, ebLiveMeta: { textContent: '' }, ebLiveDisclaimer: { innerHTML: '' } };
+  const documento = { getElementById: (id) => nodos[id] || null };
+  // smL NO debería hacer falta: si la tarjeta lo vuelve a usar, en inglés pinta inglés.
+  const smLIngles = (es, en) => en;
+  const fabrica = new Function('document', 'smL',
+    metEs + '\n' + ['ebUsdCorto', 'ebDiasHasta', 'ebLiveAviso', 'ebLiveDisclaimer', 'ebLiveCard', 'renderEbLive'].map(recorta).join('\n')
+    + '\nreturn { ebLiveCard, renderEbLive, ebLiveDisclaimer };');
+  const f = fabrica(documento, smLIngles);
 
-// 4. Solo se dibuja si el ENDPOINT lo dictaminó.
-ok(/d\.clasificacion===.desacuerdo./.test(des),
-  'el bloque se pinta solo cuando el endpoint clasificó "desacuerdo"');
-ok(/if\(!en\) return ''/.test(des),
-  'un código que la pantalla no conoce NO se escribe: mejor una pista menos que una frase inventada');
-ok(/varios_umbrales/.test(des) && /different thresholds/.test(des),
-  'varios umbrales sobre el mismo reporte se avisan, en las dos lenguas');
+  const TITULOS = ['Will Meta (META) beat quarterly earnings?', 'Will Apple (AAPL) beat quarterly earnings?'];
+  const hist = (o) => ({ ventana: { beats: 15, total: 20, pct: 75, anios: 5 }, completo: { beats: 48, total: 57, pct: 84 },
+    racha: { largo: 1, tipo: 'misses' }, sorpresa: { mediana_pct: 3.2, promedio_pct: -40, distorsionado: true, causa: 'colas_reales', estimado_no_positivo: 1 },
+    ultimos: [{ fecha: '2026-07-30', estimado: 6.71, reportado: 7.25, beat: true, frontera: true }, { fecha: '2026-04-30', estimado: 5.2, reportado: 5.1, beat: false }], ...o });
+  const empresas = [
+    { symbol: 'META', fecha_resolucion: '2099-10-29', historico: hist({}),
+      mercados: [{ titulo: TITULOS[0], titulo_es: '¿Meta superará sus resultados trimestrales?', url: 'https://x', precio_tipo: 'mid', polymarket_yes_pct: 16,
+        libro: { estado: 'ok', bid: 0.037, ask: 0.28, spread_puntos: 24.3 }, volumen: 4200, liquidez: 1300,
+        metrica: { metrica: 'eps_gaap', etiqueta: 'GAAP EPS' }, consenso_eps: 6.31,
+        consenso_analistas: { valor: 6.71, fuente: 'Finnhub /calendar/earnings (epsEstimate)' },
+        metrica_vs_historico: { estado: 'distinta', mercado: 'eps_gaap', nota: 'El mercado mide GAAP EPS, el histórico cuenta EPS ajustado.' } }, { titulo: 'otro' }] },
+    { symbol: 'AAPL', fecha_resolucion: '2000-01-01', historico: hist({ racha: { largo: 3, tipo: 'beats', tope: true }, sorpresa: { mediana_pct: -1, promedio_pct: -900, distorsionado: true, causa: 'artefacto_denominador', denominador_chico: 2 } }),
+      mercados: [{ titulo: TITULOS[1], precio_tipo: 'outcome_prices', polymarket_yes_pct: 56, libro: { estado: 'sin_ask' },
+        volumen: 900, liquidez: null, metrica: { metrica: 'indeterminada' }, umbral_slug: 0.43,
+        consenso_analistas: { valor: null, motivo: 'sin_fila_en_el_calendario' }, metrica_vs_historico: { estado: 'indeterminada', mercado: 'indeterminada' } }] },
+    { symbol: 'NVDA', fecha_resolucion: null, historico: { sin_datos: true },
+      mercados: [{ titulo: 'Will NVIDIA (NVDA) beat quarterly earnings?', polymarket_yes_pct: null, libro: {}, metrica: { metrica: 'eps_ajustado' },
+        consenso_analistas: {}, metrica_vs_historico: { estado: 'empata' } }] },
+  ];
+  TITULOS.push('Will NVIDIA (NVDA) beat quarterly earnings?');
+  const html = [];
+  f.ebLiveDisclaimer(); html.push(nodos.ebLiveDisclaimer.innerHTML);
+  f.renderEbLive({ empresas, mercados_abiertos: 4, cobertura: { parcial: true, simbolos_probados: 97, de: 99 } });
+  html.push(nodos.ebLivePanel.innerHTML, nodos.ebLiveMeta.textContent);
+  f.renderEbLive({ empresas: [], vacio: { motivo: 'no hay', revisados: 3 } }); html.push(nodos.ebLivePanel.innerHTML);
+  f.renderEbLive({ error: 'boom' }); html.push(nodos.ebLivePanel.innerHTML);
+  // El encabezado estático del panel también es pantalla.
+  const iHead = app.indexOf('POLYMARKET · MERCADOS DE EARNINGS ABIERTOS');
+  ok(iHead > 0, 'el encabezado dice "POLYMARKET · MERCADOS DE EARNINGS ABIERTOS"');
+  html.push(app.slice(iHead - 200, app.indexOf('id="ebLiveDisclaimer"', iHead)));
 
-// 5. El endpoint decide el ORDEN de dónde mirar, no la pantalla.
-ok(!/sort\(|reverse\(/.test(des), 'la pantalla no reordena las pistas: el orden lo manda el endpoint');
-ok(/\(d\.donde_mirar\|\|\[\]\)\.map/.test(des), 'las recorre tal como vinieron');
+  // Texto que se LEE: sin etiquetas, pero con los `title` (también se leen).
+  let texto = html.join('\n')
+    .replace(/title="([^"]*)"/g, ' $1 ')
+    .replace(/<[^>]+>/g, '\n');
+  for (const t of TITULOS) texto = texto.split(t).join(' ');   // la cita de Polymarket, exenta
+  ok(/Historial: superó 15 de 20 \(75%\)/.test(texto) && /historial completo: 48 de 57 \(84%\)/.test(texto), 'se pintó el historial');
+  ok(/27 empresas|3 empresas · 4 mercado\(s\) abierto\(s\) · cobertura parcial \(97\/99 símbolos\)/.test(texto), 'y el encabezado con su conteo', (texto.match(/\d+ empresas?[^\n]*/) || [])[0]);
+  ok(/compra 3\.7¢ · venta 28\.0¢ · diferencia 24\.3¢/.test(texto) && /sin libro de órdenes del Sí \(sin_ask\)/.test(texto), 'compra / venta / diferencia, y sin libro');
+  ok(/Resuelve sobre EPS GAAP de \$6\.31/.test(texto) && /Métrica del mercado: no determinada · umbral \$0\.43/.test(texto), 'qué pide el mercado, en las dos ramas');
+  ok(/El mercado mide EPS GAAP; el historial cuenta EPS ajustado\./.test(texto), 'la línea neutral, con la redacción pedida');
+  ok(/ÚLTIMOS TRIMESTRES\s*· titular sobre 20 trimestres \(5a\)/.test(texto), 'últimos trimestres, con "(5a)"');
+  ok(/El historial no es predicción\./.test(texto) && !/Track record is not a forecast/.test(texto), 'el pie: solo "El historial no es predicción."');
+  ok(/¿Meta superará sus resultados trimestrales\?/.test(texto), 'la traducción del título sigue debajo');
+  ok(/↻ actualizar/.test(texto), 'el botón dice "actualizar"');
 
-// 6. En el endpoint: el desacuerdo se mide POR MERCADO.
-ok(/desacuerdo: evaluaDesacuerdo\(\{/.test(api), 'el endpoint calcula el desacuerdo por mercado');
-ok(/consenso_declarado: m\.consenso_eps/.test(api),
-  'y le pasa el umbral DE ESE MERCADO, no uno de la empresa');
-ok(/instrumento_obligatorio/.test(api),
-  'con varios mercados abiertos el instrumento queda marcado como obligatorio');
-ok(/const hoy = new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/.test(api),
-  'el día se calcula una vez en el endpoint y entra por parámetro');
-
-// 7. El diag de desacuerdos: la fila en la mano, y la MISMA fuente que la tarjeta.
-const iDiag = api.indexOf('async function diagDesacuerdos');
-const diag = api.slice(iDiag, api.indexOf('// ── Diagnóstico por símbolo', iDiag));
-ok(iDiag > 0, 'el diag de desacuerdos existe');
-ok(/const live = await vistaLive\(/.test(diag),
-  'corre la MISMA vista que la pantalla: si dijera otros números, no serviría de evidencia');
-ok(/pregunta: m\.titulo/.test(diag) && !/slice\(0, ?90\)/.test(diag),
-  'imprime la pregunta LITERAL, sin recortar: recortada no se ve si pide otro umbral');
-ok(/umbral_declarado/.test(diag) && /nivel_eps_reciente/.test(diag) && /desvio_umbral_pct/.test(diag),
-  'y los tres números con los que se decide si el hueco significa algo');
-ok(/No es predicción|no es predicción|No es señal de compra ni de venta/.test(diag),
-  'el diag también lleva las advertencias: se lee suelto, fuera de la pantalla');
-ok(/criterios: CRITERIOS_DESACUERDO/.test(diag), 'y publica los umbrales congelados con los que dictaminó');
+  const INGLES = ['beat', 'track record', 'streak', 'spread', 'bid', 'ask', 'volume', 'liquidity', 'threshold',
+    'not available', 'not determined', 'forecast', 'full history', 'last quarters', 'median surprise'];
+  for (const w of INGLES) {
+    const re = new RegExp('\\b' + w.replace(' ', '\\s+') + '\\b', 'i');
+    const m = re.exec(texto);
+    ok(!m, `la tarjeta no dice "${w}"`, m ? texto.slice(Math.max(0, m.index - 40), m.index + 40).replace(/\s+/g, ' ') : '');
+  }
+  // Y sin smL en el panel: un smL pinta inglés con la app en inglés.
+  const iPanel = app.indexOf('let _ebLiveAt=0');
+  ok(!/smL\(/.test(app.slice(iPanel, app.indexOf('\nfunction ebDiasHasta', iPanel))), 'el panel no usa smL: va solo en español');
+}
 
 console.log(failures ? `\n${failures} FALLAS` : '\nTodo en verde');
 process.exit(failures ? 1 : 0);

@@ -487,6 +487,10 @@ function cardHtml(l,i){
           (l.rebalanceo?' · turnover <b>'+(l.rebalanceo.turnover!=null?pp(l.rebalanceo.turnover):'—')+'</b>':'')+
           (l.posiciones_iniciales?'<br/>arrancó con <b>'+(l.posiciones_iniciales.length?esc(l.posiciones_iniciales.join(', ')):'nada')+'</b>':'')+
           (inv&&inv.presupuesto!=null?'<br/>herramientas <b>'+esc(inv.usadas)+'/'+esc(inv.presupuesto)+'</b> en <b>'+esc(inv.vueltas)+'</b> vuelta(s)':'')+
+          // Los criterios físicos de la puerta, por corrida. Rojo si se pasa.
+          (l.puerta?'<br/>reloj <b'+(l.puerta.puertas.reloj===false?' style="color:var(--red)"':'')+'>'+(l.puerta.reloj_pct!=null?esc(l.puerta.reloj_pct)+'%':'—')+'</b>'+
+            ' · lectura máx <b'+(l.puerta.puertas.lectura===false?' style="color:var(--red)"':'')+'>'+(l.puerta.lectura_max_ms!=null?(l.puerta.lectura_max_ms/1000).toFixed(1)+' s':'—')+'</b>'+
+            (l.puerta.cortes_nuestros?' · <b style="color:var(--red)">'+l.puerta.cortes_nuestros+' corte(s) de nuestro reloj'+(l.puerta.cortes?' (loop '+l.puerta.cortes.loop+' · cierre '+(l.puerta.cortes.cierre&&l.puerta.cortes.cierre.cortado?1:0)+')':'')+'</b>':''):'')+
         '</div>'+
         (l.enfoque_nota?'<div class="nota">'+esc(l.enfoque_nota)+'</div>':'')+
         (l.error&&!l.fallo?'<div class="nota bad">'+esc(l.error)+'</div>':'')+

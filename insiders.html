@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quién compra, quién vende — /mercado — QuantDesk</title>
+<meta name="description" content="Todas las transacciones de los insiders (Form 4 de la SEC), con lo que les queda después de cada operación.">
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  /mercado/insiders — R5, artboard 7. Título: "Quién compra, quién vende".
+
+  LO QUE ESTA PANTALLA PROMETE:
+
+  1. TODAS LAS TRANSACCIONES POR DEFAULT. No sólo las compras: A, S, M, F, P
+     y lo que venga, con su código y su nombre en español. El filtro de
+     "compras destacadas" sigue existiendo, pero como UNA vista, no como la
+     única realidad.
+  2. "LE QUEDAN" NUNCA SE INVENTA. Sale de `sharesOwnedFollowingTransaction`
+     del filing. Cuando no viene, es "—" con su causa — jamás un cero, que
+     sería acusar a alguien de salirse de su empresa por un campo ausente.
+  3. EL TAMAÑO ES LO QUE SE MUEVE, no la tenencia. Es la cicatriz de TSLA:
+     un renglón leído al revés valía $287 mil millones.
+  4. EL ORDEN ES POR HORA DE FILING, no por fecha de operación. Entre una y
+     otra hay hasta dos días hábiles.
+  5. CERO IA. Todo sale del XML de la SEC y de aritmética.
+  ═══════════════════════════════════════════════════════════════════
+-->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Quién compra, quién vende — /mercado — QuantDesk">
+<meta property="og:description" content="Todas las transacciones de los insiders (Form 4 de la SEC), con lo que les queda después de cada operación.">
+<meta name="twitter:card" content="summary_large_image">
+<!-- ── R7: LA IMAGEN DEL PREVIEW ───────────────────────────────────────
+     `og:image` NO está puesta a propósito, y es una decisión, no un olvido.
+     El encargo pide que el preview de WhatsApp sea EL MISMO PNG que genera
+     el botón de compartir; ese PNG se dibuja en el navegador del lector, así
+     que para servirlo como `og:image` haría falta renderizarlo en el
+     servidor — otra dependencia (un renderizador tipo Satori) que no se
+     puede instalar ni probar desde este entorno sin red.
+     Poner una imagen genérica mientras tanto sería peor: el preview diría
+     algo distinto de lo que la URL abre. Sin `og:image`, WhatsApp enseña
+     título y descripción, que SÍ son ciertos. Queda anotado en el PR. -->
+<meta name="theme-color" content="#0b0f14">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#0e141b; --linea:#161c24;
+    --texto:#e6edf3; --tenue:#8b98a5; --apagado:#7d8793;
+    --verde:#00c97d; --rojo:#E24B4A; --ambar:#d4af37;
+    --sans:"IBM Plex Sans Condensed","IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tap:44px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
+    font-family:var(--sans);-webkit-text-size-adjust:100%}
+  a{color:inherit;text-decoration:none}
+
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 16px 8px;
+    padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
+  .marca{font-family:var(--mono);font-size:15px;letter-spacing:.5px;white-space:nowrap}
+  .marca b{color:var(--verde);font-weight:600}
+  h1{margin:0;font-size:16px;font-weight:600;letter-spacing:-.2px}
+  .chip{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
+  .chip.abierto{color:var(--verde)}
+  .volver{font-family:var(--mono);font-size:11px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:6px;padding:7px 9px}
+
+  nav,.barra{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea);
+    overflow-x:auto;scrollbar-width:none;align-items:center}
+  nav::-webkit-scrollbar,.barra::-webkit-scrollbar{display:none}
+  nav button,.barra button{flex:0 0 auto;min-height:var(--tap);min-width:var(--tap);padding:0 13px;
+    background:transparent;border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
+    font-family:var(--mono);font-size:13px;cursor:pointer;white-space:nowrap;
+    -webkit-tap-highlight-color:transparent}
+  nav button[aria-selected="true"],.barra button[aria-pressed="true"]{
+    background:#18212b;border-color:#2b3845;color:var(--texto)}
+  nav button[disabled],.barra button[disabled]{opacity:.45;cursor:default;border-style:dashed}
+  .barra .et{font-family:var(--mono);font-size:10px;color:var(--apagado);flex:0 0 auto}
+  .barra input{flex:1 1 140px;min-width:120px;min-height:36px;background:#0b1118;
+    border:1px solid var(--linea);border-radius:6px;color:var(--texto);
+    font-family:var(--mono);font-size:12px;padding:0 10px}
+  .barra input::placeholder{color:var(--apagado)}
+  .chip-f{min-height:34px !important;border-radius:17px !important;font-size:12px !important}
+
+  main{padding:10px 16px 0}
+  h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
+    letter-spacing:.6px;text-transform:uppercase;margin:14px 0 7px}
+  h2 span{color:var(--apagado);font-weight:400;text-transform:none;letter-spacing:0}
+  .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
+    border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
+  .panel{border:1px solid var(--linea);border-radius:8px;background:var(--panel);overflow:hidden}
+  /* La cobertura completa NO es un aviso: es una afirmación medida. Verde,
+     sin borde punteado y sin disculpa. */
+  .cobertura-ok{font-family:var(--mono);font-size:11px;color:var(--verde);line-height:1.5;
+    border:1px solid #14362a;border-radius:8px;padding:8px 11px;margin:0 0 10px}
+  .aviso{font-family:var(--mono);font-size:11px;color:var(--ambar);line-height:1.5;
+    border:1px dashed #3a3222;border-radius:8px;padding:9px 11px;margin:10px 0}
+
+  .tabla{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+  th,td{padding:6px 8px;text-align:right;white-space:nowrap;border-top:1px solid var(--linea)}
+  th:first-child,td:first-child,th.izq,td.izq{text-align:left}
+  thead th{border-top:0;position:sticky;top:0;background:var(--panel);z-index:1;
+    color:var(--tenue);font-weight:600;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase}
+  /* Las filas se tiñen por TIPO, como pide el artboard. Tenue: el color es
+     una pista, no el dato — el dato es la columna "tipo". */
+  tr.compra td{background:rgba(0,201,125,.07)}
+  tr.venta td{background:rgba(226,75,74,.08)}
+  tr.opcion td{background:transparent}
+  tr.otorgado td,tr.regalo td{background:rgba(139,152,165,.06)}
+  tr.impuesto td{background:rgba(212,175,55,.06)}
+  td.falta{color:var(--apagado)}
+  td.todo{color:var(--rojo);font-weight:600}
+  .tk{font-weight:600}
+  .lupa{font-size:9px;color:var(--apagado)}
+
+  .lado{display:flex;flex-direction:column;gap:0}
+  .fila-lado{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;
+    padding:8px 10px;border-top:1px solid var(--linea);align-items:baseline}
+  .fila-lado:first-child{border-top:0}
+  .fila-lado .k{font-family:var(--mono);font-size:11px;min-width:0}
+  .fila-lado .v{font-family:var(--mono);font-size:12px;text-align:right;white-space:nowrap}
+  .fila-lado .f{grid-column:1/-1;font-family:var(--mono);font-size:9px;color:var(--apagado);line-height:1.4}
+  .fila-lado .f:empty{display:none}
+  .pos{color:var(--verde)} .neg{color:var(--rojo)}
+
+  footer{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.6;
+    padding:16px 16px calc(18px + env(safe-area-inset-bottom));
+    border-top:1px solid var(--linea);margin-top:18px}
+
+  @media (min-width:1100px){
+    main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start;
+      padding:12px 24px 0;max-width:1440px;margin:0 auto}
+    header,nav,.barra{padding-left:24px;padding-right:24px}
+    .col-tabla{min-width:0}
+    .col-lado{min-width:0}
+    footer{grid-column:1/-1}
+    table{font-size:12px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="marca">/<b>mercado</b></div>
+  <h1>Quién compra, quién vende</h1>
+  <div class="chip" id="chip">—</div>
+  <a class="volver" href="/mercado">← al mapa</a>
+</header>
+
+<nav id="pestanas" role="tablist" aria-label="Fuentes">
+  <button role="tab" data-tab="form4" aria-selected="true">Insiders · Form 4</button>
+  <button role="tab" data-tab="13f" aria-selected="false">Gestores · 13F</button>
+  <button role="tab" data-tab="fondos" aria-selected="false">Fondos</button>
+  <button role="tab" data-tab="congreso" disabled aria-selected="false"
+          title="pronto: el registro de operaciones del Congreso de EE.UU. todavía no se cosecha">Congreso · pronto</button>
+</nav>
+
+<div class="barra" id="barra-vistas" role="group" aria-label="Vistas">
+  <span class="et">VISTA</span>
+  <button type="button" data-vista="ultimas" aria-pressed="true">Últimas</button>
+  <button type="button" data-vista="semana" aria-pressed="false">Top de la semana</button>
+  <button type="button" data-vista="destacadas" aria-pressed="false">Compras destacadas</button>
+</div>
+
+<div class="barra" id="barra-chips" role="group" aria-label="Filtros">
+  <span class="et">FILTRO</span>
+  <span id="chips"></span>
+  <input id="q" type="search" inputmode="search" autocomplete="off"
+         placeholder="ticker, nombre o cargo" aria-label="Buscar">
+</div>
+
+<main>
+  <div class="col-tabla">
+    <h2 id="titulo-tabla">Todas las transacciones <span id="nota-tabla"></span></h2>
+    <div id="contenido"></div>
+  </div>
+  <div class="col-lado">
+    <h2>Top de la semana <span id="nota-top"></span></h2>
+    <div class="panel lado" id="top-semana"></div>
+    <h2>Compras destacadas <span id="nota-dest"></span></h2>
+    <div class="panel lado" id="destacadas"></div>
+    <h2>Fondos · 13F <span id="nota-fondos"></span></h2>
+    <div class="panel lado" id="fondos"></div>
+  </div>
+  <footer id="pie">cargando…</footer>
+</main>
+
+<script src="/qd-periods.js"></script>
+<script src="/qd-mercados.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // ── LOS CHIPS, espejo de api/_lib/form4.js ────────────────────────
+  var CHIPS = [
+    { id:'compra', nombre:'Compras', tipos:['compra'] },
+    { id:'venta', nombre:'Ventas', tipos:['venta'] },
+    { id:'opcion', nombre:'Opciones', tipos:['opcion'] },
+    { id:'venta_propuesta', nombre:'Venta propuesta', tipos:[], sin_fuente:true,
+      motivo:'la venta propuesta se reporta en el Form 144, que todavía no cosechamos' },
+    { id:'duenio_10', nombre:'Dueño 10%', por_duenio:true }
+  ];
+  var VISTAS = ['ultimas','semana','destacadas'];
+  var TABS = ['form4','13f','fondos','congreso'];
+
+  var estado = (function(){
+    var p = new URLSearchParams(location.search);
+    var tab = TABS.indexOf(p.get('tab')) >= 0 && p.get('tab') !== 'congreso' ? p.get('tab') : 'form4';
+    var vista = VISTAS.indexOf(p.get('vista')) >= 0 ? p.get('vista') : 'ultimas';
+    var chips = (p.get('chips') || '').split(',').filter(function(c){
+      return CHIPS.some(function(x){ return x.id === c; });
+    });
+    return { tab: tab, vista: vista, chips: chips, q: (p.get('q') || '').slice(0,40) };
+  })();
+
+  var datos = null, datos13f = null, pidiendo = false;
+
+  function escribirUrl(){
+    var p = new URLSearchParams();
+    if(estado.tab !== 'form4') p.set('tab', estado.tab);
+    if(estado.vista !== 'ultimas') p.set('vista', estado.vista);
+    if(estado.chips.length) p.set('chips', estado.chips.join(','));
+    if(estado.q) p.set('q', estado.q);
+    var qs = p.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+  }
+
+  /**
+   * EL ORDEN ES DE LA PANTALLA, no sólo del endpoint.
+   *
+   * El endpoint ya ordena por hora de filing, y aun así la pantalla vuelve a
+   * ordenar: el día que alguien agregue una fuente, mezcle dos páginas o
+   * cachee a medias, el orden dejaría de cumplirse sin que nada avise. "Lo
+   * último" es la promesa de esta vista; no se delega.
+   *
+   * Por HORA DE ACEPTACIÓN del filing, no por fecha de operación: entre una y
+   * otra hay hasta dos días hábiles.
+   */
+  function porHoraDeFiling(filas){
+    return (filas || []).slice().sort(function(a, b){
+      return String(b.filing_en || '').localeCompare(String(a.filing_en || ''));
+    });
+  }
+
+  // ── FILTRO (espejo de filtraFilas) ────────────────────────────────
+  function filtra(filas){
+    var activos = CHIPS.filter(function(c){ return estado.chips.indexOf(c.id) >= 0 && !c.sin_fuente; });
+    var aguja = String(estado.q || '').trim().toUpperCase();
+    return (filas || []).filter(function(f){
+      if(activos.length){
+        var porTipo = activos.some(function(c){ return c.tipos && c.tipos.indexOf(f.tipo) >= 0; });
+        var porDuenio = activos.some(function(c){ return c.por_duenio; }) && f.es_duenio_10;
+        if(!porTipo && !porDuenio) return false;
+      }
+      if(aguja){
+        var heno = [f.ticker, f.emisora, f.quien, f.cargo].filter(Boolean).join(' ').toUpperCase();
+        if(heno.indexOf(aguja) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  function fmtUsd(v){
+    if(!Number.isFinite(v)) return '—';
+    var a = Math.abs(v);
+    if(a >= 1e9) return (v/1e9).toFixed(2) + ' mil M';
+    if(a >= 1e6) return (v/1e6).toFixed(2) + ' M';
+    if(a >= 1e3) return Math.round(v/1e3) + ' mil';
+    return String(Math.round(v));
+  }
+  function fmtNum(v){
+    return Number.isFinite(v) ? v.toLocaleString('es-MX', { maximumFractionDigits:0 }) : '—';
+  }
+  function hora(iso){
+    if(!iso) return '—';
+    try{
+      return new Date(iso).toLocaleString('es-MX',
+        { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false });
+    }catch(e){ return String(iso).slice(0,16).replace('T',' '); }
+  }
+
+  // ── LA TABLA DE TODAS LAS TRANSACCIONES ───────────────────────────
+  function tablaDeFilas(filas){
+    if(!filas.length) return '<div class="vacio">' + esc(motivoVacio()) + '</div>';
+    var html = '<div class="panel tabla"><table><thead><tr>'
+      + '<th class="izq">Ticker</th><th class="izq">Quién</th><th class="izq">Cargo</th>'
+      + '<th>Fecha op.</th><th class="izq">Tipo</th><th>Precio</th><th>Acciones</th>'
+      + '<th>Valor</th><th>Le quedan</th><th>Filing</th></tr></thead><tbody>';
+    html += filas.map(function(f){
+      // "Le quedan" en CERO es la afirmación más fuerte de la pantalla: se
+      // marca. En null es "—" con su causa en el title, nunca un cero.
+      var quedan = f.le_quedan == null
+        ? '<td class="falta" title="' + esc(f.le_quedan_motivo || '') + '">—</td>'
+        : (f.le_quedan === 0
+          ? '<td class="todo" title="vendió o entregó todo lo que tenía de esta clase">0 · todo</td>'
+          : '<td>' + fmtNum(f.le_quedan) + '</td>');
+      var valor = Number.isFinite(f.valor)
+        ? '<td>' + fmtUsd(f.valor) + '</td>'
+        : '<td class="falta" title="' + esc(f.valor_motivo || '') + '">—</td>';
+      return '<tr class="' + esc(f.tipo) + '">'
+        + '<td class="izq tk">' + esc(f.ticker || f.emisora || '—') + '</td>'
+        + '<td class="izq">' + esc(f.quien || '—')
+          + (f.firmantes > 1 ? ' <span class="lupa">+' + (f.firmantes - 1) + '</span>' : '') + '</td>'
+        + '<td class="izq">' + esc(f.cargo || '—')
+          + (f.cargo ? '' : '<span class="lupa" title="' + esc(f.cargo_motivo || '') + '"> ?</span>') + '</td>'
+        + '<td>' + esc(f.fecha || '—') + '</td>'
+        + '<td class="izq" title="' + esc(f.nombre || '') + '">' + esc(f.codigo || '—')
+          + ' · ' + esc(f.tipo) + (f.derivada ? ' <span class="lupa">deriv.</span>' : '')
+          + (f.plan_10b5 ? ' <span class="lupa" title="venta programada por un plan 10b5-1">10b5-1</span>' : '')
+          + (f.indirecta ? ' <span class="lupa" title="' + esc(f.naturaleza || 'tenencia indirecta') + '">indir.</span>' : '')
+          + '</td>'
+        + '<td>' + (Number.isFinite(f.precio) ? f.precio.toFixed(2) : '—') + '</td>'
+        + '<td>' + fmtNum(f.acciones) + '</td>'
+        + valor + quedan
+        // La celda muestra la hora corta y GUARDA la marca completa: el
+        // lector la ve al pasar el cursor (la corta no trae año ni zona) y la
+        // comprobación de Chromium puede leer el orden sin que la pantalla
+        // tenga que publicar nada sólo para la prueba.
+        + '<td data-filing="' + esc(f.filing_en || '') + '" title="' + esc(f.filing_en || 'sin hora de filing') + '">'
+          + (f.link ? '<a href="' + esc(f.link) + '" target="_blank" rel="noopener noreferrer">'
+            + esc(hora(f.filing_en)) + '</a>' : esc(hora(f.filing_en))) + '</td>'
+        + '</tr>';
+    }).join('');
+    return html + '</tbody></table></div>';
+  }
+
+  function motivoVacio(){
+    if(!datos) return 'cargando…';
+    if(datos.error) return 'no se pudo leer: ' + datos.error;
+    var caidas = Object.keys(datos.sources || {}).filter(function(k){ return !datos.sources[k].ok; });
+    if(caidas.length) return 'la SEC no contestó: ' + caidas.map(function(k){
+      return k + ' (' + (datos.sources[k].error || 'sin motivo') + ')'; }).join(', ');
+    if(estado.chips.length || estado.q) return 'ninguna transacción de la ventana pasa este filtro';
+    return 'la ventana del feed de EDGAR no trajo transacciones';
+  }
+
+  // ── TOP DE LA SEMANA (espejo de topDeLaSemana) ────────────────────
+  function topDeLaSemana(filas, tope){
+    var porTicker = {};
+    (filas || []).forEach(function(f){
+      var k = f.ticker || f.emisora || '—';
+      if(!porTicker[k]) porTicker[k] = { ticker:f.ticker, emisora:f.emisora, neto:0, compras:0,
+        ventas:0, personas:{}, vendio_todo:[], con_valor:0 };
+      var g = porTicker[k];
+      g.personas[f.quien || '?'] = 1;
+      if(f.tipo === 'compra') g.compras++;
+      if(f.tipo === 'venta') g.ventas++;
+      if(Number.isFinite(f.valor) && (f.tipo === 'compra' || f.tipo === 'venta')){
+        g.neto += f.tipo === 'compra' ? f.valor : -f.valor;
+        g.con_valor++;
+      }
+      if(f.salio_del_todo && f.quien && g.vendio_todo.indexOf(f.quien) < 0) g.vendio_todo.push(f.quien);
+    });
+    return Object.keys(porTicker).map(function(k){
+      var g = porTicker[k];
+      return { ticker:g.ticker || k, emisora:g.emisora, compras:g.compras, ventas:g.ventas,
+        personas:Object.keys(g.personas).length, vendio_todo:g.vendio_todo,
+        neto: g.con_valor ? g.neto : null,
+        neto_motivo: g.con_valor ? null : 'ninguna compra ni venta del periodo declaró precio' };
+    }).sort(function(a,b){ return Math.abs(b.neto||0) - Math.abs(a.neto||0); }).slice(0, tope || 8);
+  }
+
+  function pintarTop(filas){
+    var el = document.getElementById('top-semana');
+    var gs = topDeLaSemana(filas);
+    document.getElementById('nota-top').textContent = gs.length ? '· ' + gs.length + ' emisoras' : '';
+    if(!gs.length){ el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>'; return; }
+    el.innerHTML = gs.map(function(g){
+      var neto = g.neto == null
+        ? '<span class="v falta" title="' + esc(g.neto_motivo) + '">—</span>'
+        : '<span class="v ' + (g.neto >= 0 ? 'pos' : 'neg') + '">'
+          + (g.neto >= 0 ? '+' : '−') + fmtUsd(Math.abs(g.neto)) + '</span>';
+      return '<div class="fila-lado"><span class="k tk">' + esc(g.ticker) + '</span>' + neto
+        + '<span class="f">' + g.compras + ' compra(s) · ' + g.ventas + ' venta(s) · '
+        + g.personas + ' persona(s)'
+        + (g.vendio_todo.length ? ' · vendió todo: ' + esc(g.vendio_todo.join(', ')) : '')
+        + '</span></div>';
+    }).join('');
+  }
+
+  // ── COMPRAS DESTACADAS: el filtro que ya existía ──────────────────
+  // Oficiales o directores, compra de mercado abierto, ≥ $100k. Es el MISMO
+  // criterio de la tarjeta de TRACKER, dicho en pantalla para que se sepa
+  // qué se está viendo.
+  var MIN_DESTACADA = 100000;
+  function destacadasDe(filas){
+    return (filas || []).filter(function(f){
+      return f.tipo === 'compra' && Number.isFinite(f.valor) && f.valor >= MIN_DESTACADA;
+    }).sort(function(a,b){ return b.valor - a.valor; });
+  }
+
+  function pintarDestacadas(filas){
+    var el = document.getElementById('destacadas');
+    var ds = destacadasDe(filas).slice(0, 8);
+    document.getElementById('nota-dest').textContent = '· compras ≥ $' + (MIN_DESTACADA/1000) + ' mil';
+    if(!ds.length){
+      el.innerHTML = '<div class="vacio">' + esc(
+        filas.length ? 'ninguna compra de la ventana llega a $100 mil' : motivoVacio()) + '</div>';
+      return;
+    }
+    el.innerHTML = ds.map(function(f){
+      return '<div class="fila-lado"><span class="k tk">' + esc(f.ticker || f.emisora) + '</span>'
+        + '<span class="v pos">+' + fmtUsd(f.valor) + '</span>'
+        + '<span class="f">' + esc(f.quien || '—') + ' · ' + esc(f.cargo || 'sin cargo declarado')
+        + ' · ' + esc(f.fecha || '') + '</span></div>';
+    }).join('');
+  }
+
+  function pintarFondos(){
+    var el = document.getElementById('fondos');
+    if(!datos13f){
+      el.innerHTML = '<div class="vacio">cargando…</div>';
+      document.getElementById('nota-fondos').textContent = '';
+      return;
+    }
+    var fs = datos13f.funds || [];
+    document.getElementById('nota-fondos').textContent = fs.length ? '· ' + fs.length : '';
+    if(!fs.length){
+      el.innerHTML = '<div class="vacio">' + esc(datos13f.error
+        || 'la SEC no devolvió 13F en esta corrida') + '</div>';
+      return;
+    }
+    el.innerHTML = fs.map(function(f){
+      return '<div class="fila-lado"><span class="k">' + esc(nombreDeFondo(f)) + '</span>'
+        + '<span class="v">' + fmtUsd(f.totalValue) + '</span>'
+        + '<span class="f">cierre del ' + esc(f.quarterEnd || f.reportDate || '—')
+        + (f.counts ? ' · ' + (f.counts.added || 0) + ' nuevas, ' + (f.counts.closed || 0) + ' cerradas' : '')
+        + '</span></div>';
+    }).join('');
+  }
+
+  function pintarChips(){
+    document.getElementById('chips').innerHTML = CHIPS.map(function(c){
+      return '<button type="button" class="chip-f" data-chip="' + esc(c.id) + '"'
+        + (c.sin_fuente ? ' disabled title="' + esc(c.motivo) + '"' : '')
+        + ' aria-pressed="' + (estado.chips.indexOf(c.id) >= 0) + '">'
+        + esc(c.nombre) + (c.sin_fuente ? ' · pronto' : '') + '</button>';
+    }).join('');
+  }
+
+  function pintarChip(){
+    // La misma función que el mapa. Sin `muestra`: esta pantalla enseña
+    // filings, no cierres, así que no nombra ninguna fecha de cierre ni se
+    // excusa por no tenerla.
+    var el = document.getElementById('chip');
+    var c = chipDeMercado('nyse', { ahora: new Date() });
+    el.textContent = c.chip;
+    el.title = c.motivo;
+    el.className = 'chip' + (c.abierto ? ' abierto' : '');
+  }
+
+  function pintarPie(){
+    var el = document.getElementById('pie');
+    if(!datos){ el.textContent = 'cargando…'; return; }
+    var n = (datos.items || []).length;
+    el.textContent = 'Fuente: SEC EDGAR · formulario 4 (' + n + ' transacciones en la ventana)'
+      + (datos.scan ? ' · ' + datos.scan.atom_entries + ' filings en el feed, '
+          + datos.scan.xml_fetched + ' documentos leídos esta corrida' : '')
+      + ' · ' + (datos.lag_note || '')
+      // El nombre del campo en el XML del Form 4 es
+      // `sharesOwnedFollowingTransaction`, y decirlo así en pantalla no
+      // informa a nadie: lo que importa es que el número sale del propio
+      // documento y no de una resta nuestra.
+      + ' · "le quedan" es la tenencia que el propio formulario 4 declara después de la operación'
+      + ' · actualizado ' + hora(datos.generado_en || datos.generated_at)
+      + ' · Información, no asesoría.';
+  }
+
+  /**
+   * LA COBERTURA, CON SUS DOS NÚMEROS.
+   *
+   * Antes decía que lo que no aparece "puede no haberse cosechado todavía":
+   * cierto cuando la fuente era la ventana de lo recién presentado, y una
+   * disculpa permanente que entrena a no creerle a los avisos.
+   *
+   * Ahora el índice diario de EDGAR da el DENOMINADOR, así que se puede
+   * afirmar en vez de pedir disculpas: "100% de los Form 4 del día (1.842 de
+   * 1.842)". Y cuando NO está completa, el aviso dice cuántos faltan — con el
+   * número, que es lo que se puede auditar.
+   */
+  function pintarAviso(){
+    var viejo = document.getElementById('aviso-cobertura');
+    if(viejo) viejo.remove();
+    if(!datos || !datos.cobertura) return;
+    var completa = !!datos.cobertura_completa;
+    var d = document.createElement('div');
+    d.id = 'aviso-cobertura';
+    // Completa no es un aviso: es un dato. Va en verde y sin la coletilla.
+    d.className = completa ? 'cobertura-ok' : 'aviso';
+    d.textContent = completa
+      ? datos.cobertura
+      : datos.cobertura + '. Lo que no aparece puede no haberse cosechado todavía, no que no haya pasado.';
+    if(completa && datos.cobertura_ultimo && datos.cobertura_ultimo.fecha){
+      d.title = 'medido contra el índice diario de EDGAR del ' + datos.cobertura_ultimo.fecha;
+    }
+    var c = document.querySelector('.col-tabla');
+    c.insertBefore(d, c.firstChild);
+  }
+
+  function pintar(){
+    pintarChip();
+    pintarChips();
+    [].forEach.call(document.querySelectorAll('#barra-vistas button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.vista === estado.vista));
+    });
+    [].forEach.call(document.querySelectorAll('#pestanas button'), function(b){
+      b.setAttribute('aria-selected', String(b.dataset.tab === estado.tab));
+    });
+
+    var cont = document.getElementById('contenido');
+    var todas = porHoraDeFiling((datos && datos.items) || []);
+    var filas = filtra(todas);
+
+    if(estado.tab === '13f' || estado.tab === 'fondos'){
+      document.getElementById('titulo-tabla').firstChild.textContent =
+        estado.tab === '13f' ? 'Gestores · 13F ' : 'Fondos ';
+      document.getElementById('nota-tabla').textContent = datos13f && datos13f.lag_note
+        ? '· ' + datos13f.lag_note : '';
+      cont.innerHTML = pintar13f();
+    } else {
+      var titulo = estado.vista === 'semana' ? 'Top de la semana por emisora '
+        : (estado.vista === 'destacadas' ? 'Compras destacadas ' : 'Todas las transacciones ');
+      document.getElementById('titulo-tabla').firstChild.textContent = titulo;
+      if(estado.vista === 'semana'){
+        document.getElementById('nota-tabla').textContent = '· neto en dólares de la ventana';
+        cont.innerHTML = tablaTop(topDeLaSemana(filas, 40));
+      } else if(estado.vista === 'destacadas'){
+        document.getElementById('nota-tabla').textContent = '· oficiales y directores, compra ≥ $100 mil';
+        cont.innerHTML = tablaDeFilas(destacadasDe(filas));
+      } else {
+        document.getElementById('nota-tabla').textContent = '· ' + filas.length
+          + (filas.length !== todas.length ? ' de ' + todas.length : '') + ' · por hora de filing';
+        cont.innerHTML = tablaDeFilas(filas);
+      }
+    }
+    pintarAviso();
+    pintarTop(filas);
+    pintarDestacadas(filas);
+    pintarFondos();
+    pintarPie();
+  }
+
+  function tablaTop(gs){
+    if(!gs.length) return '<div class="vacio">' + esc(motivoVacio()) + '</div>';
+    return '<div class="panel tabla"><table><thead><tr>'
+      + '<th class="izq">Ticker</th><th class="izq">Emisora</th><th>Neto USD</th>'
+      + '<th>Compras</th><th>Ventas</th><th>Personas</th><th class="izq">Vendió todo</th>'
+      + '</tr></thead><tbody>'
+      + gs.map(function(g){
+        return '<tr class="' + (g.neto == null ? '' : (g.neto >= 0 ? 'compra' : 'venta')) + '">'
+          + '<td class="izq tk">' + esc(g.ticker) + '</td>'
+          + '<td class="izq">' + esc(g.emisora || '—') + '</td>'
+          + (g.neto == null
+            ? '<td class="falta" title="' + esc(g.neto_motivo) + '">—</td>'
+            : '<td class="' + (g.neto >= 0 ? 'pos' : 'neg') + '">'
+              + (g.neto >= 0 ? '+' : '−') + fmtUsd(Math.abs(g.neto)) + '</td>')
+          + '<td>' + g.compras + '</td><td>' + g.ventas + '</td><td>' + g.personas + '</td>'
+          + '<td class="izq">' + (g.vendio_todo.length ? esc(g.vendio_todo.join(', ')) : '—') + '</td>'
+          + '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  /**
+   * EL NOMBRE DEL FONDO. La llave es `fund`, no `name`.
+   *
+   * Esta página leía `f.name`, y el endpoint manda `fund` desde que existe.
+   * En pantalla salía el CIK —1067983— donde debía decir Berkshire Hathaway
+   * (Lety, 2026-10-20). Un CIK es correcto y es ilegible: identifica al fondo
+   * para la SEC, no para quien lee.
+   *
+   * La persona también viaja (`persona`: Warren Buffett) y es la mitad de lo
+   * que hace reconocible al fondo, así que se dice.
+   */
+  function nombreDeFondo(f){
+    var nom = f.fund || f.name || null;
+    if(!nom) return 'CIK ' + (f.cik || '—');
+    return f.persona ? nom + ' · ' + f.persona : nom;
+  }
+
+  function pintar13f(){
+    if(!datos13f) return '<div class="vacio">cargando los 13F…</div>';
+    var fs = datos13f.funds || [];
+    if(!fs.length) return '<div class="vacio">' + esc(datos13f.error
+      || 'la SEC no devolvió 13F en esta corrida') + '</div>';
+    return fs.map(function(f){
+      var bloques = ['added','closed','increased','reduced'];
+      var nombres = { added:'Nuevas', closed:'Cerradas', increased:'Aumentadas', reduced:'Reducidas' };
+      return '<h2 style="margin-top:14px">' + esc(nombreDeFondo(f))
+        + ' <span>· cierre del ' + esc(f.quarterEnd || f.reportDate || '—')
+        + ' · ' + fmtUsd(f.totalValue) + '</span></h2>'
+        + '<div class="panel lado">' + bloques.map(function(b){
+          var ps = (f.top && f.top[b]) || [];
+          if(!ps.length) return '';
+          return '<div class="fila-lado"><span class="k">' + nombres[b] + '</span>'
+            + '<span class="v">' + ps.length + '</span>'
+            + '<span class="f">' + ps.slice(0,6).map(function(p){
+                return esc(p.ticker || p.cusip); }).join(' · ') + '</span></div>';
+        }).join('') + '</div>';
+    }).join('');
+  }
+
+  // ── CARGA ──────────────────────────────────────────────────────────
+  function cargar(){
+    if(pidiendo) return;
+    pidiendo = true;
+    fetch('/api/stock-tracker?cat=form4')
+      .then(function(r){ return r.json(); })
+      .then(function(j){ datos = j; })
+      .catch(function(e){ datos = { error: String((e && e.message) || e), items: [], sources: {} }; })
+      .then(function(){ pidiendo = false; pintar(); });
+    fetch('/api/stock-tracker?cat=13f')
+      .then(function(r){ return r.json(); })
+      .then(function(j){ datos13f = j; })
+      .catch(function(e){ datos13f = { error: String((e && e.message) || e), funds: [] }; })
+      .then(function(){ pintar(); });
+  }
+
+  document.getElementById('pestanas').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-tab]'); if(!b || b.disabled) return;
+    estado.tab = b.dataset.tab; escribirUrl(); pintar();
+  });
+  document.getElementById('barra-vistas').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-vista]'); if(!b) return;
+    estado.vista = b.dataset.vista; escribirUrl(); pintar();
+  });
+  document.getElementById('chips').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-chip]'); if(!b || b.disabled) return;
+    var id = b.dataset.chip, i = estado.chips.indexOf(id);
+    if(i >= 0) estado.chips.splice(i,1); else estado.chips.push(id);
+    escribirUrl(); pintar();
+  });
+  var tq = null, campo = document.getElementById('q');
+  campo.value = estado.q;
+  campo.addEventListener('input', function(){
+    clearTimeout(tq);
+    tq = setTimeout(function(){ estado.q = campo.value.slice(0,40); escribirUrl(); pintar(); }, 250);
+  });
+
+  escribirUrl();
+  pintar();
+  cargar();
+})();
+</script>
+</body>
+</html>

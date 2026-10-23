@@ -201,6 +201,9 @@ footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);}
        `margen_de_la_tabla` de /api/leaderboard; si el dato no viene, el bloque
        no se pinta (y el ranking no finge tener un margen que nadie calculó). -->
   <div id="margen"></div>
+  <!-- El saldo de OpenRouter, solo cuando está bajo el piso o no se pudo leer.
+       Lo escribe el vigilante en cada ciclo (ver _lib/openrouter-saldo.js). -->
+  <div id="saldo"></div>
 
   <section>
     <div class="sec-head"><span class="bar"></span><h2>Ranking</h2><span class="sub" id="rankSub">por retorno</span></div>
@@ -586,6 +589,10 @@ async function load(){
     return;
   }
   const live=data.agents.filter(a=>a.account).length;
+  const so=data.saldo_openrouter;
+  $('saldo').innerHTML = so&&so.aviso&&(so.bajo||so.usd==null)
+    ? '<div class="margen"><h3>'+(so.bajo?'Saldo de OpenRouter bajo':'Saldo de OpenRouter')+'</h3><p>'+esc(so.aviso)+(so.at?' <span style="color:var(--text3)">(leído '+esc(String(so.at).slice(11,16))+' UTC)</span>':'')+'</p></div>'
+    : '';
   const bench=data.benchmark||null;
   $('rankSub').textContent = data.agents.length+' modelos'+(bench&&bench.abierto?' + índice':'');
   const benchChip = bench&&bench.abierto&&bench.return_pct!=null

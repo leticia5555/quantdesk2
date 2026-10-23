@@ -115,10 +115,21 @@ export function etiquetaDePaso(tool, args) {
 const RECHAZO = { budget_exhausted: 'presupuesto', unknown_tool: 'herramienta inexistente' };
 export function resultadoDePaso(s) {
   if (s.refused) return `rechazada: ${RECHAZO[s.refused] || s.refused}`;
-  if (s.error && !s.sin_resultado) return 'falló';
+  if (s.error && !s.sin_resultado) return s.fallo ? `falló: ${s.fallo}` : 'falló';
   // Corrió bien y no tenía el dato: no es falla de la herramienta ni un cero.
   if (Array.isArray(s.datos_faltantes) && s.datos_faltantes.length) return `sin dato: ${s.datos_faltantes.join(', ')}`;
   if (s.sin_resultado || s.rows == null) return 'sin resultado';
+  // noticias: el cero dice CUÁL cero es, y lo que trajo dice de qué fuente.
+  if (s.tool === 'noticias' && Array.isArray(s.fuentes)) {
+    const caidas = s.fuentes.filter((f) => f.error).map((f) => f.id);
+    if (s.rows === 0) {
+      return s.cobertura === 'parcial'
+        ? `0 titulares (fuentes con falla: ${caidas.join(', ')})`
+        : '0 titulares (sin cobertura en nuestras fuentes)';
+    }
+    const con = s.fuentes.filter((f) => !f.error && f.n > 0).map((f) => f.id);
+    return plural(s.rows, s.tool) + (con.length ? ` · ${con.join('+')}` : '') + (s.truncated ? ' (truncado)' : '');
+  }
   return plural(s.rows, s.tool) + (s.truncated ? ' (truncado)' : '');
 }
 
@@ -139,8 +150,14 @@ export function secuenciaPublicable(ctx) {
     // de cada tarjeta no dice nada y paga bytes en un feed de 200 filas.
     ...(s.truncated ? { truncado: true } : {}),
     ms: s.ms ?? null,
+    // Tokens que la llamada agregó a la conversación (corridas nuevas).
+    ...(s.tokens != null ? { tokens: s.tokens } : {}),
     ...(s.refused ? { rechazada: s.refused } : {}),
     ...(Array.isArray(s.datos_faltantes) && s.datos_faltantes.length ? { datos_faltantes: s.datos_faltantes } : {}),
+    ...(Array.isArray(s.fuentes) ? { fuentes: s.fuentes } : {}),
+    ...(s.cobertura ? { cobertura: s.cobertura } : {}),
+    ...(Array.isArray(s.mapeo) && s.mapeo.length ? { mapeo: s.mapeo } : {}),
+    ...(s.fallo ? { fallo: s.fallo } : {}),
     // Antes el `error` del ejecutor se quedaba en el journal y acá salía como
     // "0 filas": una herramienta caída se leía igual que un filtro vacío. Un
     // paso ejecutado sin conteo (`rows: null`) también es una falla.
@@ -201,6 +218,102 @@ export function avisosDeHerramientas(libros = []) {
     por.set(id, a);
   }
   return [...por.values()].map((a) => `${a.nombre}: ${a.n} llamada${a.n === 1 ? '' : 's'} a herramientas fallaron en ${a.corridas} corrida${a.corridas === 1 ? '' : 's'} (${a.cuales.join(', ')}${a.n > a.cuales.length ? ', …' : ''}). No es "0 filas": la herramienta no devolvió resultado, y el agente decidió sin ese dato.`);
+}
+
+// ── LA PUERTA, LEÍBLE DESDE AFUERA (2026-10-20) ──────────────────────
+// Dos de los tres criterios físicos de la puerta de apertura son
+// `reloj_pct < 90` y `lectura < 90.000 ms` (docs/arena-t3-apertura.md,
+// scripts/arena-humo.sh). Los dos estaban journaleados —`tools.limites` y
+// `tools.vueltas_medidas`— y solo salían en la respuesta HTTP de la corrida
+// misma: pasada esa respuesta, para leerlos había que ir a la base.
+//
+// Se calculan IGUAL que `resumenDelLoop` de arena-shadow.js (la prueba lo
+// compara), con una diferencia declarada: una vuelta sin `ms` medido no
+// cuenta como 0 ms. Si NINGUNA vuelta trae tiempo, la lectura máxima es null —
+// "no medido" y "cero" mandan a lugares opuestos.
+//
+// Este archivo NO importa arena-shadow (regla del encabezado: el camino de
+// decisión no se toca ni de lectura), por eso la cuenta vive acá también.
+export const PUERTA_RELOJ_PCT = 90;
+export const PUERTA_LECTURA_MS = 90000;
+
+// ── UN CORTE NUESTRO ES UN CORTE NUESTRO, CAIGA DONDE CAIGA (2026-10-21) ──
+// La fila 13 del 20-oct (deepseek, 255 s) salía con `cortes_nuestros: 0`: el
+// corte fue en el CIERRE, que no es una vuelta y no está en `vueltas_medidas`.
+// El cierre cortado por nuestro reloj queda journaleado en otro lado —
+// `context.llm_error.cuerpos_vacios`, con `vuelta: 'cierre'` y
+// `timeout_nuestro` (arena-shadow / arena-tool-loop)—, y se cuenta desde ahí.
+// La salida dice DÓNDE cayó (`cortes: {loop, cierre: {cortado,
+// intentos_cortados}}`) y la puerta juzga la SUMA: loop + (cierre ? 1 : 0).
+//
+// Lo que no se puede ver desde acá: un cierre cortado por nuestro reloj que
+// después se RESCATÓ con el reintento y la corrida terminó bien. Ese corte no
+// se journalea en ninguna parte (solo el camino de aborto escribe
+// `llm_error`), así que no hay de dónde contarlo.
+// Una corrida tiene UN cierre: o lo cortamos o no. `cortado` es lo que suma a
+// la puerta (0 o 1, nunca 2); `intentos_cortados` es el detalle (el cierre se
+// reintenta una vez, y los dos intentos pueden morir por nuestro reloj).
+export function cortesDelCierre(ctx) {
+  const le = ctx && ctx.llm_error;
+  if (!le) return { cortado: false, intentos_cortados: 0 };
+  const murioEnLoop = !!(ctx.murio_en || le.murio_en);
+  // Un corte NUESTRO ANTES DE LAS CABECERAS (2026-10-23) no deja cuerpo vacío
+  // —no hubo respuesta— así que no está en `cuerpos_vacios`: se ve en
+  // `timed_out` + `timeout_nuestro`. Si el loop no murió antes, fue el cierre.
+  const antesDeCabeceras = !!(le.timed_out && le.timeout_nuestro && !murioEnLoop) ? 1 : 0;
+  // Con `cuerpos_vacios` journaleado, manda la lista: cada vacío del cierre
+  // queda ahí con su intento (arena-tool-loop los empuja todos; un intento
+  // OMITIDO —sin reloj, sin proveedor— no trae `timeout_nuestro` y no cuenta).
+  if (Array.isArray(le.cuerpos_vacios)) {
+    const n = le.cuerpos_vacios.filter((x) => x && x.vuelta === 'cierre' && x.timeout_nuestro).length + antesDeCabeceras;
+    return { cortado: n > 0, intentos_cortados: n };
+  }
+  if (antesDeCabeceras) return { cortado: true, intentos_cortados: 1 };
+  // Filas sin `cuerpos_vacios`: si el error final fue nuestro reloj y el loop
+  // NO murió antes (si murió, esa vuelta ya está en `vueltas_medidas`), el
+  // corte fue el cierre.
+  const cortado = !!(le.timeout_nuestro && le.motivo === 'cuerpo_vacio_reloj_nuestro' && !murioEnLoop);
+  return { cortado, intentos_cortados: cortado ? 1 : 0 };
+}
+
+export function puertaDeCorrida(t, ctx = null) {
+  if (!t || (!t.limites && !Array.isArray(t.vueltas_medidas))) return null;
+  const v = Array.isArray(t.vueltas_medidas) ? t.vueltas_medidas : [];
+  const lim = t.limites || {};
+  const ms = v.map((x) => (x && x.ms != null ? Number(x.ms) : NaN)).filter(Number.isFinite);
+  const reloj = (lim.reloj_ms && lim.reloj_ms.pct) ?? null;
+  const lectura = ms.length ? Math.max(...ms) : null;
+  const cortes = { loop: v.filter((x) => x && x.reloj_nuestro).length, cierre: cortesDelCierre(ctx) };
+  const total = cortes.loop + (cortes.cierre.cortado ? 1 : 0);
+  return {
+    vueltas: t.turns ?? (v.length || null),
+    cortó_por: t.stopped_by || null,
+    reloj_pct: reloj,
+    lectura_max_ms: lectura,
+    vacias: v.filter((x) => x && x.vacio).length,
+    // La suma (lo que juzga la puerta) y el desglose (dónde cayó).
+    cortes_nuestros: total,
+    cortes,
+    // El veredicto de ESTA corrida contra cada criterio físico. null = no se
+    // puede juzgar (dato no journaleado), que NO es lo mismo que verde. Un
+    // corte del cierre ya es rojo aunque no haya vueltas medidas.
+    puertas: {
+      reloj: reloj == null ? null : reloj < PUERTA_RELOJ_PCT,
+      lectura: lectura == null ? null : lectura < PUERTA_LECTURA_MS,
+      cortes_nuestros: total ? false : (v.length ? true : null),
+    },
+  };
+}
+
+export function puertaPorCorrida(libros = []) {
+  return (Array.isArray(libros) ? libros : []).filter((l) => l && l.puerta).map((l) => ({
+    corrida_id: l.corrida_id || null,
+    agente: (l.agente && l.agente.id) || null,
+    fecha: l.fecha || null,
+    fuente: l.fuente || null,
+    estado: l.estado || null,
+    ...l.puerta,
+  }));
 }
 
 // ── LA COHERENCIA ENTRE LAS DOS ETAPAS ───────────────────────────────
@@ -378,6 +491,9 @@ export function libroDeFila(row, fuente) {
   const reb = row.rebalance || null;
   return {
     fuente,                                   // 'en_vivo' | 'prueba' — NUNCA se infiere
+    // El id de la fila en el journal: con él, `puerta_por_corrida` nombra la
+    // corrida exacta que se pasó del reloj.
+    corrida_id: row.id || null,
     // La etiqueta ya armada, con las dos cosas que tiene que decir.
     sello: selloDe(fuente, ctx.ejecucion),
     fecha: row.created_at || row.run_date,
@@ -397,6 +513,9 @@ export function libroDeFila(row, fuente) {
     enfoque_nota: ctx.lens ? 'El enfoque rota por agente y por día (momentum/catalizador/valor/reversión). Es un confound DELIBERADO: dos agentes con enfoques distintos el mismo día no son comparables ese día.' : null,
     // CÓMO INVESTIGÓ.
     investigacion: secuenciaPublicable(ctx),
+    // reloj_pct, lectura máxima por vuelta y cortes nuestros: los criterios
+    // físicos de la puerta, por corrida. null si la corrida no los journaleó.
+    puerta: puertaDeCorrida(ctx.tools, ctx),
     // null cuando no hubo reintento, que es el caso normal: cuatro campos en
     // null se leerían como "hubo y no sabemos".
     reintento: reintentoPublicable(ctx),
@@ -566,7 +685,7 @@ export function ordenesSueltas(actions = [], account = null, estado = null) {
 //   · `abortadas` — una corrida que murió antes de investigar no cuenta como
 //     "decidió no usarla". Mezclarlas haría parecer desuso lo que es una falla
 //     del proveedor.
-export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector'];
+export const HERRAMIENTAS = ['screener', 'noticias', 'ficha', 'sector', 'eventos', 'historia'];
 
 export function resumenDeHerramientas(libros = []) {
   const porAgente = new Map();
@@ -867,7 +986,7 @@ export default async function handler(req, res) {
       // dibujado siete tarjetas vacías el día del encendido. La sombra se veía
       // bien porque allá sí son columnas.
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error,
+        `select id, run_date, created_at, agent_id, status, plan, error,
                 -- actions es la UNICA columna que el reconcile re-escribe:
                 -- sin ella no hay precio de ejecucion ni hora. account es el
                 -- libro de ANTES de operar, que es contra lo que se mide una
@@ -935,7 +1054,7 @@ export default async function handler(req, res) {
   if (fuente === FUENTE_PRUEBA || fuente === 'ambas') {
     try {
       const rows = await sql(
-        `select run_date, created_at, agent_id, status, plan, error, target, rebalance,
+        `select id, run_date, created_at, agent_id, status, plan, error, target, rebalance,
                 jsonb_build_object(
                   'lens', context->>'lens',
                   'tools', context->'tools',
@@ -1036,6 +1155,10 @@ export default async function handler(req, res) {
     // Sale de las mismas órdenes que ya se publican, así que no cuesta una
     // consulta más.
     deslizamiento: deslizamientoPorAgente(libros),
+    // ── LA PUERTA, CORRIDA POR CORRIDA ───────────────────────────────
+    // Lo mismo que `libros[].puerta`, aplanado: se lee con un solo `jq`
+    // (`.puerta_por_corrida[] | select(.puertas.reloj == false)`).
+    puerta_por_corrida: puertaPorCorrida(libros),
     avisos: avisos.length ? avisos : null,
     libros,
   });

@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Noticias — /mercado — QuantDesk</title>
+<meta name="description" content="Titulares de mercado de medios, newsletters y fuentes oficiales, con hora y fuente. Sin resúmenes y sin IA.">
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  /mercado/noticias — R3b, artboard 9.
+
+  LO QUE ESTA PÁGINA PROMETE, Y DÓNDE SE VE:
+
+  1. TITULAR + FOTO + FUENTE + HORA + LINK. Nada más. No se descarga ni se
+     muestra el cuerpo de la nota, no se reescribe y no se resume: el click
+     va al sitio de la fuente. Por eso no hay un solo `snippet` acá.
+  2. CERO IA (regla 6). Las secciones salen del registro de fuentes y los
+     chips de ticker de cruzar el titular contra el catálogo del mapa. No
+     hay una llamada a un modelo en todo el archivo.
+  3. UNA DESTACADA ES UNA NOTA CON FOTO. La foto la lee la cosecha de la
+     propia nota (su `og:image`, el mismo que el medio publica para que su
+     enlace se vea bien al compartirlo) y viaja con la fecha en que se leyó.
+     Hasta cuatro, de fuentes distintas; si hay menos, se muestran las que
+     haya; si no hay ninguna, la sección no aparece. NO hay bloque de
+     relleno: si la foto no carga, la tarjeta se quita.
+  4. UNA SOLA PETICIÓN para abrir (regla 7). El filtrado por sección, idioma,
+     fuente y búsqueda lo hace el servidor, así que la URL es el estado
+     (regla 9) y lo que se pega en WhatsApp abre igual del otro lado.
+  5. UNA FUENTE CAÍDA SE DICE. El chip de cada fuente tiene tres estados —ok,
+     `source_down` con su motivo, y "sin cosechar"—, porque "no contestó" y
+     "no publicó" se arreglan distinto.
+
+  POR QUÉ LAS DESTACADAS SE REPITEN EN LA COLUMNA. Son la misma nota mostrada
+  dos veces, como en el artboard. Sacarlas de la lista haría que "cargar más"
+  devolviera huecos y que el conteo de la sección no cuadrara con lo que se ve.
+  ═══════════════════════════════════════════════════════════════════
+-->
+<!-- ── IBM PLEX (§4 del encargo) ────────────────────────────────────────
+     `display=swap` y la pila del sistema como respaldo en `--sans`/`--mono`:
+     el texto se pinta de inmediato con la fuente del aparato y cambia cuando
+     Plex llega. La meta de la regla 7 es /mercado interactivo en menos de
+     1.5 s en 4G, y una pantalla en blanco esperando una tipografía es
+     exactamente lo que eso prohíbe. Si Google Fonts no responde, la página se
+     ve con la fuente del sistema y no se rompe nada. -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Noticias — /mercado — QuantDesk">
+<meta property="og:description" content="Titulares de mercado de medios, newsletters y fuentes oficiales, con hora y fuente. Sin resúmenes y sin IA.">
+<meta name="twitter:card" content="summary_large_image">
+<!-- ── R7: LA IMAGEN DEL PREVIEW ───────────────────────────────────────
+     `og:image` NO está puesta a propósito, y es una decisión, no un olvido.
+     El encargo pide que el preview de WhatsApp sea EL MISMO PNG que genera
+     el botón de compartir; ese PNG se dibuja en el navegador del lector, así
+     que para servirlo como `og:image` haría falta renderizarlo en el
+     servidor — otra dependencia (un renderizador tipo Satori) que no se
+     puede instalar ni probar desde este entorno sin red.
+     Poner una imagen genérica mientras tanto sería peor: el preview diría
+     algo distinto de lo que la URL abre. Sin `og:image`, WhatsApp enseña
+     título y descripción, que SÍ son ciertos. Queda anotado en el PR. -->
+<meta name="theme-color" content="#0b0f14">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
+<style>
+  /* La paleta del §4, los MISMOS tokens que `mercado.html`: las dos pantallas
+     son la misma capa y dos grises distintos se ven como un error. */
+  :root{
+    --bg:#0b0f14; --panel:#0e141b; --linea:#161c24;
+    --texto:#e6edf3; --tenue:#8b98a5; --apagado:#7d8793;
+    --es:#00c97d;              /* las fuentes en español, en verde (artboard 9) */
+    --sans:"IBM Plex Sans Condensed","IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tap:44px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
+    font-family:var(--sans);
+    -webkit-text-size-adjust:100%}
+  a{color:inherit;text-decoration:none}
+
+  /* EN EL CELULAR LA CABECERA SON DOS FILAS. Con el buscador en la misma
+     fila que la marca y el chip, a 390 px el campo se salía 129 px y la
+     página entera se podía recorrer de lado — el encargo pide que no (regla
+     8). Se parte con `flex-wrap` y en escritorio vuelve a una sola fila. */
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 16px 8px;
+    padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--linea)}
+  .marca{font-family:var(--mono);font-size:15px;letter-spacing:.5px;white-space:nowrap}
+  .marca b{color:var(--es);font-weight:600}
+  .chip{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap}
+  .chip.abierto{color:var(--es)}
+  #buscador{flex:1 1 100%;min-width:0;display:flex;gap:6px;align-items:center}
+  #q{flex:1;min-width:0;background:#0b1118;border:1px solid var(--linea);border-radius:6px;
+    color:var(--texto);font-family:var(--mono);font-size:13px;padding:0 10px;min-height:var(--tap)}
+  #q::placeholder{color:var(--apagado)}
+
+  nav,.toggles{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--linea);
+    overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  nav::-webkit-scrollbar,.toggles::-webkit-scrollbar{display:none}
+  nav[hidden],.toggles[hidden]{display:none}
+  /* `flex:0 0 auto` NO es cosmético: sin él, en un contenedor flex con
+     overflow los botones se encogen por debajo del ancho de su texto y las
+     pestañas se ENCIMAN —"MercadoMéxico · LATAM", "AcciAMEs24"—. La captura
+     a 390 px lo enseñó y ninguna comprobación lo veía, porque cada botón
+     seguía midiendo ≥44 px de alto y la URL cambiaba bien. */
+  nav button,.toggles button{flex:0 0 auto;min-height:var(--tap);min-width:var(--tap);padding:0 12px;
+    background:transparent;border:1px solid var(--linea);border-radius:6px;color:var(--tenue);
+    font-family:var(--mono);font-size:13px;cursor:pointer;white-space:nowrap;
+    -webkit-tap-highlight-color:transparent}
+  nav button[aria-selected="true"],.toggles button[aria-pressed="true"]{
+    background:#18212b;border-color:#2b3845;color:var(--texto)}
+  nav button[disabled]{opacity:.45;cursor:default;border-style:dashed}
+  .toggles{gap:14px;align-items:center}
+  .grupo{display:flex;gap:6px}
+  .grupo-nom{font-family:var(--mono);font-size:10px;color:var(--apagado);align-self:center}
+
+  /* ── CHIPS DE FUENTE ────────────────────────────────────────────── */
+  #fuentes{display:flex;flex-wrap:nowrap;gap:6px;padding:8px 16px;overflow-x:auto;
+    border-bottom:1px solid var(--linea);scrollbar-width:none}
+  #fuentes::-webkit-scrollbar{display:none}
+  .fchip{flex:0 0 auto;min-height:28px;display:inline-flex;align-items:center;gap:5px;padding:0 9px;
+    background:transparent;border:1px solid var(--linea);border-radius:14px;color:var(--tenue);
+    font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap}
+  .fchip.es{color:var(--es);border-color:#1d4a38}
+  .fchip[aria-pressed="true"]{background:#16211c;border-color:#2c6b51;color:var(--texto)}
+  .fchip .pt{width:6px;height:6px;border-radius:50%;background:#243040;flex:none}
+  .fchip.ok .pt{background:var(--es)}
+  .fchip.caida .pt{background:#ff5d5d}
+  .fchip.caida{border-style:dashed}
+  .fchip .n{font-variant-numeric:tabular-nums;color:var(--apagado)}
+
+  main{padding:10px 16px 0}
+  h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
+    letter-spacing:.6px;text-transform:uppercase;margin:14px 0 8px}
+  h2 span{color:var(--apagado);font-weight:400;text-transform:none;letter-spacing:0}
+  .vacio{font-family:var(--mono);font-size:12px;color:var(--tenue);padding:12px;
+    border:1px dashed var(--linea);border-radius:8px;line-height:1.5}
+
+  /* ── DESTACADAS ─────────────────────────────────────────────────── */
+  /* `align-items:start`: la tarjeta sin foto mide lo que mide su titular.
+     Estirada al alto de las que SÍ traen foto quedaba con un hueco vacío
+     debajo del texto — que es reservar el espacio de la foto por la puerta de
+     atrás, y se ve igual de roto. Un borde inferior disparejo es la forma
+     honesta de decir "esta nota no trajo imagen". */
+  /* `hidden` tiene que ganarle al `display` de la rejilla: sin esto, la zona
+     de destacadas seguiría ocupando su fila aunque no tenga tarjetas. */
+  #zona-destacadas[hidden]{display:none}
+  /* ── LA PORTADA ─────────────────────────────────────────────────────
+     Lety, 2026-10-22: *"`/mercado/noticias` también arriba en formato
+     revista: portada grande, rejilla de 4–6 con foto"*. */
+  .rev-portada{display:block;text-decoration:none;color:inherit;margin-bottom:10px;
+    border:1px solid var(--linea);border-radius:10px;overflow:hidden;background:var(--panel)}
+  .rev-portada[hidden]{display:none}
+  .rev-portada img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#121a22}
+  .rev-portada .cuerpo{padding:10px 12px 12px}
+  .rev-portada .tit{font-size:18px;line-height:1.25;font-weight:600;margin-bottom:5px}
+  .rev-portada .meta{font-family:var(--mono);font-size:10px;color:var(--tenue)}
+  .rev-portada .meta b{color:var(--tenue);font-weight:600}
+  @media (min-width:1000px){
+    /* ── LA PORTADA DE ESCRITORIO VA ACOTADA ──────────────────────────
+       A lo ancho y con el alto FIJO. Sin tope, la foto crecía con la
+       columna, la zona de destacadas se comía la fila entera de la rejilla
+       y las columnas de abajo se encimaban con el pie — se vio en la
+       captura de 1440 y no lo veía ninguna comprobación.
+
+       La página promete caber en 1440×1000 sin recorrerse (regla 8), y esa
+       promesa se cumple acotando lo que puede crecer, no esperando que no
+       crezca. */
+    .rev-portada{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);
+      align-items:stretch;height:168px;margin-bottom:8px}
+    .rev-portada img{aspect-ratio:auto;height:168px}
+    .rev-portada .tit{font-size:17px;
+      /* Tres líneas y a los puntos: un titular largo no puede estirar la
+         caja, que es justo lo que rompía la rejilla. */
+      display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+    .rev-portada .cuerpo{padding:12px 16px;display:flex;flex-direction:column;justify-content:center}
+  }
+
+  #destacadas{display:grid;grid-auto-flow:column;grid-auto-columns:76%;gap:10px;
+    align-items:start;
+    overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px;scrollbar-width:none}
+  #destacadas::-webkit-scrollbar{display:none}
+  .dest{scroll-snap-align:start;background:var(--panel);border:1px solid var(--linea);
+    border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:var(--tap)}
+  .dest .foto{aspect-ratio:16/9;width:100%;object-fit:cover;display:block;background:#121a22}
+  .dest .cuerpo{padding:9px 10px 10px;display:flex;flex-direction:column;gap:6px;flex:1}
+  .dest .tit{font-size:14px;line-height:1.3;font-weight:600}
+  .dest .meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:auto}
+
+  /* ── LISTAS ─────────────────────────────────────────────────────── */
+  .lista{border:1px solid var(--linea);border-radius:8px;overflow:hidden;background:var(--panel)}
+  .fila{display:block;padding:9px 11px;border-bottom:1px solid #1a1a1a;min-height:var(--tap)}
+  .fila:last-child{border-bottom:0}
+  .fila .tit{font-size:13px;line-height:1.35}
+  .fila .meta{font-family:var(--mono);font-size:10px;color:var(--tenue);margin-top:3px;
+    display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+  .fila .meta b{color:var(--tenue);font-weight:600}
+  .fila .meta .es{color:var(--es)}
+  .chip-tk{min-height:28px;display:inline-flex;align-items:center;padding:0 7px;
+    border:1px solid var(--linea);border-radius:4px;font-family:var(--mono);font-size:10px;
+    color:var(--tenue);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chip-tk[aria-pressed="true"]{background:#16211c;border-color:#2c6b51;color:var(--texto)}
+  .grupo-fuente{padding:7px 11px;background:#10171f;border-bottom:1px solid #1a1a1a;
+    font-family:var(--mono);font-size:11px;color:var(--tenue);display:flex;gap:8px;align-items:center}
+  .grupo-fuente .n{color:var(--apagado);margin-left:auto}
+  #mas-medios{width:100%;min-height:var(--tap);margin-top:8px;background:transparent;
+    border:1px solid var(--linea);border-radius:8px;color:var(--tenue);
+    font-family:var(--mono);font-size:12px;cursor:pointer}
+  #mas-medios[hidden]{display:none}
+
+  /* ── "HAY MÁS ABAJO" NO ES LO MISMO QUE "ESTO ESTÁ CORTADO" ───────
+     La lista que se recorre por dentro termina partiendo su última fila por
+     la mitad contra el borde, y una fila cortada en seco se lee como que la
+     página está rota o como que el pie se le encimó encima (Lety, mirando
+     prod). El desvanecido es la señal de que hay más y se puede recorrer.
+     Va sólo donde la lista REALMENTE se recorre: en el teléfono las listas
+     crecen hacia abajo y no hay nada que desvanecer. */
+  /* El desvanecido de abajo se fue con el scroll interno: era la señal de
+     "hay más abajo, recorré la caja", y ya no hay caja que recorrer. Una
+     lista que termina donde termina no necesita avisar nada. */
+
+  /* La sección que no tiene nada: su título con la causa al lado, y se
+     acaba. Sin borde, sin alto y sin flex-grow que le reserve lugar. */
+  .seccion-vacia{flex:none}
+  .seccion-vacia h2{margin-bottom:0}
+  .seccion-vacia h2 span{display:inline}
+  .seccion-vacia .lista{display:none}
+
+  .aviso{font-family:var(--mono);font-size:11px;color:#c9a227;line-height:1.5;
+    border:1px dashed #3a3222;border-radius:8px;padding:9px 11px;margin:10px 0}
+  footer{font-family:var(--mono);font-size:10px;color:var(--tenue);line-height:1.6;
+    padding:14px 16px calc(18px + env(safe-area-inset-bottom));border-top:1px solid var(--linea);margin-top:16px}
+  footer a{color:var(--tenue);text-decoration:underline}
+
+  /* ── ESCRITORIO 1440×1000 SIN SCROLL ────────────────────────────── */
+  @media (min-width:1000px){
+    #buscador{flex:0 0 auto;margin-left:12px}
+    #q{flex:0 0 auto;width:220px}
+    main{display:grid;grid-template-columns:1fr 336px;gap:16px;align-items:start;
+      padding:12px 24px 0;max-width:1440px;margin:0 auto}
+    #destacadas{grid-column:1 / -1;grid-auto-flow:row;grid-template-columns:repeat(5,1fr);
+      grid-auto-columns:auto;overflow:visible}
+    .dest .tit{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .dest{scroll-snap-align:none}
+    .dest .tit{font-size:13px}
+    .col-medios{min-width:0}
+    .col-lado{min-width:0;display:flex;flex-direction:column;gap:12px}
+    h2{margin:8px 0 6px}
+    /* ── 1440×1000 SIN SCROLL (regla 8) ────────────────────────────────
+       NO con `max-height: calc(100vh - 500px)`: ese 500 es un número
+       adivinado, y la primera versión lo adivinó mal —la página se recorría
+       68 px y el pie quedaba abajo del borde—. El alto de la cabecera, las
+       pestañas, los toggles, los chips y el aviso de fuentes caídas cambia
+       con el contenido: el aviso aparece sólo cuando hay una fuente caída, y
+       eso es justo lo que movía la cuenta.
+
+       Así que el alto NO se calcula: la página es una columna que mide
+       exactamente una pantalla, `main` se queda con lo que sobra (`flex:1`)
+       y cada lista se recorre por dentro. Es el mismo patrón que `.pantalla`
+       en `mercado.html`, y por la misma razón: un alto medido nunca queda
+       viejo. */
+    /* ── LA PÁGINA CRECE, NO SE RECORTA ───────────────────────────────
+       Acá había un candado: `body{height:100dvh;overflow:hidden}` y cada
+       lista recorriéndose por dentro, para cumplir la regla 8 (1440×1000 sin
+       scroll). Lety, mirando producción (2026-10-20): *"La lista de Medios
+       no debe ser una caja con scroll interno. Debe crecer normal con la
+       página, mostrar unas 10 notas y luego «cargar más». La primera nota
+       sale cortada arriba."*
+
+       La nota cortada arriba era el candado: una caja con `overflow-y:auto`
+       recorrida un poco deja su primera fila partida contra el borde, y eso
+       no se lee como "hay más arriba", se lee como que la página está rota.
+
+       CONSECUENCIA, Y ES A PROPÓSITO: esta pantalla ya NO cabe en 1440×1000
+       sin recorrerse. La regla 8 se cumple donde la pantalla es un tablero
+       —`/mercado`, que sigue sin scroll— y acá cede, porque una lista de
+       noticias con "cargar más" es por definición más larga que la ventana.
+       Lo que NO cede es el recorte: nada se corta ni de lado ni arriba, y de
+       eso sí hay comprobación en los dos anchos. */
+    body{display:flex;flex-direction:column;min-height:100dvh}
+    /* `max-content` y NO `auto` en la primera fila: cuando el contenido
+       total pasa del alto de la pantalla, una fila `auto` SE ENCOGE por
+       debajo de su contenido y lo que sobra se pinta encima de la fila
+       siguiente — en la captura de 1440 la rejilla de destacadas aparecía
+       cortada y las columnas empezaban encima. `max-content` no se encoge:
+       la que cede es la fila de las columnas, que ya se recorre por dentro. */
+    main{grid-template-rows:max-content auto auto;
+      padding-bottom:0;
+      /* `align-items:stretch`, y NO el `start` de la regla de arriba.
+         Con `start` cada columna se mide por su CONTENIDO y se sale de su
+         fila hacia abajo: con nueve notas por columna no se notaba, con las
+         de producción (16 fuentes, decenas de notas) la lista de medios
+         llegaba 600 px más abajo del pie y le pasaba por debajo (Lety, en
+         Chrome contra prod, 2026-10-20).
+
+         Ahora que la página crece, el pie va DESPUÉS de las columnas en el
+         documento y no hay nada que encimar: la fila mide lo que miden las
+         columnas y el pie empieza abajo. Vuelve `start` para que cada
+         columna mida su contenido en vez de estirarse al alto de la otra. */
+      align-items:start}
+    .col-medios,.col-lado{display:flex;flex-direction:column}
+    /* NADA SE RECORRE POR DENTRO. Las tres listas crecen con la página, que
+       es lo que se pidió. `.scrollable` queda como clase sin efecto en vez
+       de borrarse del marcado: la pantalla la pone en `#medios` y borrarla
+       de un lado y no del otro es como se rompen estas cosas. */
+    .scrollable{overflow:visible}
+    .col-lado > div{display:flex;flex-direction:column}
+    #oficiales{overflow:visible}
+    footer{grid-column:1 / -1;margin-top:8px;padding:10px 0 12px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="marca">quant<b>desk</b> · noticias</div>
+  <div class="chip" id="chip">—</div>
+  <div id="buscador">
+    <input id="q" type="search" inputmode="search" autocomplete="off"
+           placeholder="buscar titular o ticker" aria-label="Buscar en los titulares">
+  </div>
+</header>
+
+<nav id="secciones" role="tablist" aria-label="Secciones"></nav>
+
+<div class="toggles">
+  <span class="grupo-nom">ORDEN</span>
+  <div class="grupo" id="t-orden">
+    <button type="button" data-orden="hora" aria-pressed="true">Por hora</button>
+    <button type="button" data-orden="fuente" aria-pressed="false">Por fuente</button>
+  </div>
+  <span class="grupo-nom">IDIOMA</span>
+  <div class="grupo" id="t-idioma">
+    <button type="button" data-idioma="todo" aria-pressed="true">Todo</button>
+    <button type="button" data-idioma="es" aria-pressed="false">Solo español</button>
+  </div>
+</div>
+
+<div id="fuentes" aria-label="Fuentes"></div>
+
+<main>
+  <div id="zona-destacadas" style="grid-column:1 / -1">
+    <h2>Destacadas <span id="dest-nota"></span></h2>
+    <!-- LA REVISTA: una portada grande y una rejilla de 4 a 6. Debajo siguen
+         las columnas de siempre. -->
+    <a id="portada" class="rev-portada" hidden></a>
+    <div id="destacadas"></div>
+  </div>
+  <div class="col-medios">
+    <h2>Medios <span id="medios-nota"></span></h2>
+    <div id="medios" class="lista scrollable"></div>
+    <button type="button" id="mas-medios" hidden>cargar más</button>
+  </div>
+  <div class="col-lado">
+    <div>
+      <h2>Newsletters <span id="news-nota"></span></h2>
+      <div id="newsletters" class="lista scrollable"></div>
+    </div>
+    <div>
+      <h2>Oficiales <span id="ofi-nota"></span></h2>
+      <div id="oficiales" class="lista"></div>
+    </div>
+  </div>
+  <footer id="pie">cargando…</footer>
+</main>
+
+<script src="/qd-mercados.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // ── EL ESTADO VIVE EN LA URL (regla 9) ─────────────────────────────
+  var VALIDO = {
+    seccion: ['todo','mercado','mexico_latam','acciones','etfs','cripto','oficiales'],
+    orden: ['hora','fuente'],
+    idioma: ['todo','es']
+  };
+  function leerEstado(){
+    var p = new URLSearchParams(location.search);
+    function uno(k, def){
+      var v = p.get(k);
+      return VALIDO[k].indexOf(v) >= 0 ? v : def;
+    }
+    return {
+      seccion: uno('seccion','todo'),
+      orden: uno('orden','hora'),
+      idioma: uno('idioma','todo'),
+      q: (p.get('q') || '').slice(0,80),
+      fuente: (p.get('fuente') || '').slice(0,40) || null
+    };
+  }
+  var estado = leerEstado();
+  var datos = null, pidiendo = false, extra = [];
+
+  function escribirEstado(){
+    var p = new URLSearchParams();
+    if(estado.seccion !== 'todo') p.set('seccion', estado.seccion);
+    if(estado.orden !== 'hora') p.set('orden', estado.orden);
+    if(estado.idioma !== 'todo') p.set('idioma', estado.idioma);
+    if(estado.q) p.set('q', estado.q);
+    if(estado.fuente) p.set('fuente', estado.fuente);
+    var qs = p.toString();
+    history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+  }
+
+  // ── HORA ───────────────────────────────────────────────────────────
+  // "hace X" para lo de las últimas horas y la hora exacta para lo demás: un
+  // "hace 2 días" no dice si fue el viernes a la apertura o el sábado.
+  function horaDeNota(iso){
+    if(!iso) return '';
+    var t = Date.parse(iso);
+    if(!isFinite(t)) return '';
+    var min = Math.round((Date.now() - t) / 60000);
+    if(min < 1) return 'ahora';
+    if(min < 60) return 'hace ' + min + ' min';
+    if(min < 60 * 20){
+      var h = Math.floor(min / 60);
+      return 'hace ' + h + ' h';
+    }
+    try{
+      return new Date(t).toLocaleString('es-MX', {
+        day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false
+      });
+    }catch(e){ return iso.slice(0,16).replace('T',' '); }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SIN BLOQUE DE RELLENO. NUNCA.
+  //
+  // Acá vivía `tonoDeFuente` + `htmlDeBloque`: un rectángulo de color con el
+  // nombre del medio que ocupaba el lugar de la foto que no había. En el
+  // iPhone se veía mal (Lety, 2026-10-22), y tiene razón: un rectángulo plano
+  // al lado de tres fotos reales no se lee como "esta nota no trajo imagen",
+  // se lee como que la página está rota.
+  //
+  // Ahora la regla es dura: una destacada es una nota CON FOTO. La foto la
+  // lee la cosecha de la propia nota (`og:image`). Y si la foto que el medio
+  // declaró no carga —404, hotlink bloqueado, o tarda demasiado— la tarjeta
+  // SE QUITA. Tres tarjetas buenas se ven mejor que cuatro con un hueco.
+  // ═══════════════════════════════════════════════════════════════
+  function piezaFoto(n){
+    var nom = n.fuente_nombre || n.fuente_id || 'fuente';
+    if(!n.imagen) return '';
+    // `referrerpolicy=no-referrer`: la foto se sirve desde el sitio del medio
+    // y no hace falta contarle desde dónde se pidió.
+    //
+    // SIN `loading="lazy"`: son lo primero de la página y en el teléfono van
+    // en un carrusel horizontal, así que tres de las cuatro nacen fuera de la
+    // ventana. Con `lazy`, el navegador tenía permiso para no bajarlas nunca
+    // —y una foto que no se baja tampoco dispara `error`, así que ni se
+    // quitaba ni se veía—.
+    return '<img class="foto" src="' + esc(n.imagen) + '" alt="" decoding="async"'
+      + ' referrerpolicy="no-referrer" data-fuente="' + esc(nom) + '">';
+  }
+
+  /**
+   * LA TARJETA CUYA FOTO NO CARGA SE QUITA.
+   *
+   * Tres caminos, porque un hotlink falla de tres formas distintas:
+   *   · `error`: el servidor contestó 404 o 403;
+   *   · ya falló antes de que este código corriera (`complete` con ancho 0),
+   *     que es lo normal cuando la imagen está en caché como rota;
+   *   · no contesta nunca. Hay medios cuyo servidor deja la petición colgada,
+   *     y ahí `error` no llega: por eso el plazo.
+   *
+   * Al quitar una tarjeta se repinta la nota de arriba, que dice cuántas hay:
+   * "4 destacadas" con tres en pantalla sería un conteo que no se sostiene.
+   */
+  function atarCaidaDeFotos(raiz){
+    [].forEach.call((raiz || document).querySelectorAll('img.foto'), function(img){
+      if(img.dataset.atado) return;
+      img.dataset.atado = '1';
+      function quitar(){
+        // La PORTADA no se borra: se esconde. Borrarla dejaría a la página
+        // sin el nodo que la siguiente pintada vuelve a llenar.
+        var portada = img.closest('#portada');
+        if(portada){ portada.hidden = true; portada.innerHTML = ''; notaDeDestacadas(); return; }
+        var tarjeta = img.closest('.dest');
+        if(tarjeta && tarjeta.parentNode) tarjeta.remove();
+        notaDeDestacadas();
+      }
+      img.addEventListener('error', quitar);
+      if(img.complete && img.naturalWidth === 0) return quitar();
+      var plazo = setTimeout(function(){
+        if(!img.complete || img.naturalWidth === 0) quitar();
+      }, 5000);
+      img.addEventListener('load', function(){ clearTimeout(plazo); });
+    });
+  }
+
+  /** La nota de arriba cuenta lo que HAY en pantalla, no lo que llegó. */
+  function notaDeDestacadas(){
+    var zona = document.getElementById('zona-destacadas');
+    var nota = document.getElementById('dest-nota');
+    var portada = document.getElementById('portada');
+    var hayPortada = portada && !portada.hidden;
+    var n = document.querySelectorAll('#destacadas .dest').length + (hayPortada ? 1 : 0);
+    // Sin ninguna, la sección entera desaparece: una franja vacía no es un
+    // hueco que haya que llenar, es la respuesta.
+    zona.hidden = n === 0;
+    if(!n){ nota.textContent = ''; return; }
+    nota.textContent = '· ' + n + (n === 1 ? ' nota con foto propia' : ' notas con foto propia')
+      + ' · de ' + n + (n === 1 ? ' fuente' : ' fuentes distintas');
+  }
+
+  function chipsDeTicker(n){
+    var ts = n.tickers || [];
+    if(!ts.length) return '';
+    return ts.slice(0,4).map(function(t){
+      // Tocar un ticker FILTRA esta página. No lleva a `/analiza/:ticker`
+      // porque esa pantalla es R6 y un chip que abre un 404 es peor que un
+      // chip que filtra.
+      return '<span class="chip-tk" data-tk="' + esc(t) + '" role="button" tabindex="0"'
+        + ' aria-pressed="' + (estado.q.toUpperCase() === t.toUpperCase() ? 'true' : 'false') + '">'
+        + esc(t) + '</span>';
+    }).join('');
+  }
+
+  function metaDeNota(n){
+    var hora = horaDeNota(n.publicado_en);
+    var out = '';
+    if(hora) out += esc(hora) + ' · ';
+    out += '<b class="' + (n.idioma === 'es' ? 'es' : '') + '">'
+      + esc(n.fuente_nombre || n.fuente_id) + '</b>';
+    // Un titular que armamos nosotros desde una serie oficial NO se presenta
+    // como si el medio lo hubiera publicado: dice de qué dato salió.
+    if(n.fuente_dato) out += ' · <span>' + esc(n.fuente_dato) + '</span>';
+    return out;
+  }
+
+  function pintarDestacadas(){
+    var el = document.getElementById('destacadas');
+    var zona = document.getElementById('zona-destacadas');
+    var por = document.getElementById('portada');
+    // LA PORTADA. Sale de `revistaDe`, la misma función con la que `/mercado`
+    // elige la suya: las dos pantallas destacan lo mismo en el mismo momento.
+    var rev = (datos && datos.revista) || {};
+    if(rev.portada && rev.portada.imagen){
+      por.hidden = false;
+      por.href = rev.portada.url;
+      por.target = '_blank'; por.rel = 'noopener noreferrer';
+      // `class="foto"` no es decoración: es lo que mira `atarCaidaDeFotos`
+      // para quitar la tarjeta cuya imagen no carga. Sin la clase, la portada
+      // se quedaba con el hueco gris que todo esto vino a eliminar.
+      por.innerHTML = '<img class="foto" src="' + esc(rev.portada.imagen) + '" alt="" decoding="async"'
+        + ' referrerpolicy="no-referrer" data-fuente="' + esc(rev.portada.fuente_nombre || '') + '">'
+        + '<div class="cuerpo"><div class="tit">' + esc(rev.portada.titular) + '</div>'
+        + '<div class="meta">' + metaDeNota(rev.portada) + '</div></div>';
+      atarCaidaDeFotos(por);
+    } else {
+      por.hidden = true; por.innerHTML = '';
+    }
+    // La rejilla: las de la revista menos la portada. Si la fuente no mandó
+    // revista —una respuesta vieja en caché— se cae a las destacadas.
+    var ds = ((rev.medianas && rev.medianas.length ? rev.medianas : (datos && datos.destacadas)) || [])
+      .filter(function(n){ return n && n.imagen; });
+    if(!ds.length && por.hidden){
+      // La sección no aparece. Lo que pasó se dice en el pie, no con una
+      // franja vacía que ocupa el lugar de las fotos que no hay.
+      el.innerHTML = '';
+      zona.hidden = true;
+      return;
+    }
+    zona.hidden = false;
+    el.innerHTML = ds.map(function(n){
+      return '<a class="dest" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
+        + piezaFoto(n)
+        + '<div class="cuerpo"><div class="tit">' + esc(n.titular) + '</div>'
+        + '<div class="meta">' + metaDeNota(n) + '</div></div></a>';
+    }).join('');
+    atarCaidaDeFotos(el);
+    notaDeDestacadas();
+  }
+
+  function filaDeNota(n){
+    return '<a class="fila" href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer">'
+      + '<div class="tit">' + esc(n.titular) + '</div>'
+      + '<div class="meta">' + metaDeNota(n) + chipsDeTicker(n) + '</div></a>';
+  }
+
+  function motivoVacio(){
+    if(!datos) return 'cargando…';
+    // ERROR PRIMERO. Cero filas por una lectura caída NO es "no pasó nada":
+    // es la cicatriz del mapa, y decir lo segundo afirma algo falso.
+    if(datos.error) return 'no se pudo leer la tabla de noticias: ' + datos.error;
+    var caidas = (datos.fuentes || []).filter(function(f){ return f.estado === 'source_down'; });
+    var sinCosechar = (datos.fuentes || []).filter(function(f){ return f.estado === 'sin_cosechar'; });
+    if(sinCosechar.length === (datos.fuentes || []).length && sinCosechar.length){
+      return 'ninguna fuente se ha cosechado todavía: corré /api/noticias?job=feeds';
+    }
+    if(estado.q || estado.fuente || estado.idioma === 'es' || estado.seccion !== 'todo'){
+      return 'ninguna nota de las últimas ' + ((datos.filtros && datos.filtros.horas) || 72)
+        + ' horas pasa este filtro';
+    }
+    if(caidas.length) return caidas.length + ' fuentes no contestaron en la última cosecha y el resto no dejó notas';
+    return 'sin notas en las últimas ' + ((datos.filtros && datos.filtros.horas) || 72) + ' horas';
+  }
+
+  /**
+   * UNA SECCIÓN VACÍA NO OCUPA EL LUGAR DE UNA LLENA.
+   *
+   * Lety, mirando producción (2026-10-20): *"Si Newsletters está vacío, que
+   * la sección no aparezca o quede en una línea, no un cuadro grande."*
+   *
+   * El cuadro grande era `.vacio`: un recuadro punteado con el motivo
+   * adentro, del mismo tamaño que una lista con notas. Al lado de dos
+   * columnas llenas se lee como un hueco, y es casi siempre lo que pasa con
+   * newsletters —publican una vez al día—.
+   *
+   * La causa NO se tira: sigue dicha, en una línea, al lado del título. Es
+   * la regla 2, que pide la causa real; nunca pidió que ocupara 120 px.
+   * `#medios` sí conserva el recuadro: ahí "no hay nada" es noticia, porque
+   * la pantalla entera es eso.
+   */
+  function pintarColumna(id, notas, total, notaEl, extras){
+    var el = document.getElementById(id);
+    var ns = (notas || []).concat(extras || []);
+    if(!ns.length){
+      var enUnaLinea = id !== 'medios';
+      if(enUnaLinea){
+        el.innerHTML = '';
+        var caja = el.parentElement;
+        if(notaEl) document.getElementById(notaEl).textContent = '· ' + motivoVacio();
+        if(caja) caja.classList.add('seccion-vacia');
+        return;
+      }
+      el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>';
+      if(notaEl) document.getElementById(notaEl).textContent = '';
+      return;
+    }
+    var caja2 = el.parentElement;
+    if(caja2) caja2.classList.remove('seccion-vacia');
+    if(notaEl){
+      document.getElementById(notaEl).textContent = '· ' + ns.length
+        + (total > ns.length ? ' de ' + total : '');
+    }
+    el.innerHTML = ns.map(filaDeNota).join('');
+  }
+
+  function pintarPorFuente(){
+    var el = document.getElementById('medios');
+    var grupos = (datos && datos.medios_por_fuente) || [];
+    if(!grupos.length){
+      el.innerHTML = '<div class="vacio">' + esc(motivoVacio()) + '</div>';
+      document.getElementById('medios-nota').textContent = '';
+      return;
+    }
+    document.getElementById('medios-nota').textContent = '· ' + grupos.length + ' fuentes';
+    el.innerHTML = grupos.map(function(g){
+      return '<div class="grupo-fuente"><b class="' + (g.idioma === 'es' ? 'es' : '') + '">'
+        + esc(g.fuente_nombre) + '</b><span class="n">' + g.notas.length + '</span></div>'
+        + g.notas.map(filaDeNota).join('');
+    }).join('');
+  }
+
+  function pintarSecciones(){
+    var nav = document.getElementById('secciones');
+    var ss = (datos && datos.secciones) || [];
+    var sinFuente = (datos && datos.secciones_sin_fuente) || [];
+    var conteos = (datos && datos.conteos) || {};
+    var html = '<button type="button" role="tab" data-seccion="todo" aria-selected="'
+      + (estado.seccion === 'todo') + '">Todo</button>';
+    html += ss.map(function(s){
+      var vacia = sinFuente.indexOf(s.id) >= 0;
+      // Una sección SIN FUENTE DECLARADA va deshabilitada y punteada con
+      // "pronto", como pide el encargo para Cripto y ETFs. No se finge una
+      // pestaña que no tiene de dónde sacar nada.
+      return '<button type="button" role="tab" data-seccion="' + esc(s.id) + '"'
+        + (vacia ? ' disabled title="pronto: ninguna fuente del registro publica en esta sección"' : '')
+        + ' aria-selected="' + (estado.seccion === s.id) + '">'
+        + esc(s.nombre) + (vacia ? ' · pronto' : (conteos[s.id] != null ? ' ' + conteos[s.id] : ''))
+        + '</button>';
+    }).join('');
+    nav.innerHTML = html;
+  }
+
+
+  function pintarFuentes(){
+    var el = document.getElementById('fuentes');
+    var fs = (datos && datos.fuentes) || [];
+    if(!fs.length){ el.innerHTML = ''; return; }
+    el.innerHTML = fs.map(function(f){
+      var clase = 'fchip' + (f.idioma === 'es' ? ' es' : '')
+        + (f.estado === 'ok' ? ' ok' : (f.estado === 'source_down' ? ' caida' : ''));
+      var titulo = f.estado === 'source_down'
+        ? 'source_down: ' + (f.motivo || 'sin motivo declarado')
+        : (f.estado === 'sin_cosechar' ? (f.motivo || 'sin cosechar') : 'última cosecha ok');
+      return '<button type="button" class="' + clase + '" data-fuente="' + esc(f.id) + '"'
+        + ' aria-pressed="' + (estado.fuente === f.id ? 'true' : 'false') + '"'
+        + ' title="' + esc(titulo) + '">'
+        + '<span class="pt"></span>' + esc(f.nombre)
+        + (f.guardadas != null ? '<span class="n">' + f.guardadas + '</span>' : '')
+        + '</button>';
+    }).join('');
+  }
+
+  function pintarToggles(){
+    [].forEach.call(document.querySelectorAll('#t-orden button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.orden === estado.orden));
+    });
+    [].forEach.call(document.querySelectorAll('#t-idioma button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.idioma === estado.idioma));
+    });
+  }
+
+  function pintarChip(){
+    // Regla 4: el estado del mercado por instrumento. Esta pantalla mezcla
+    // EE.UU. y México, así que se dicen las dos: una sola etiqueta "cerrado"
+    // mentiría la mitad del día (la BMV cierra una hora antes que el NYSE).
+    //
+    // LA MISMA FUNCIÓN QUE EL MAPA (`chipDeMercado`, en `qd-mercados.js`).
+    // Antes cada pantalla componía su renglón a mano y las cuatro nuevas
+    // acabaron diciendo cosas distintas del mismo hecho. `muestra` no se pasa
+    // a propósito: esta pantalla enseña titulares, no cierres, así que no
+    // nombra ninguna fecha de cierre ni se excusa por no tenerla.
+    var el = document.getElementById('chip');
+    var a = chipDeMercado('nyse', { ahora: new Date() });
+    var b = chipDeMercado('bmv', { ahora: new Date() });
+    el.textContent = a.punto + ' NYSE ' + a.texto + ' · ' + b.punto + ' BMV ' + b.texto;
+    el.title = 'NYSE/Nasdaq: ' + a.motivo + ' · BMV: ' + b.motivo;
+    el.className = 'chip' + (a.abierto || b.abierto ? ' abierto' : '');
+  }
+
+  function pintarPie(){
+    var el = document.getElementById('pie');
+    if(!datos){ el.textContent = 'cargando…'; return; }
+    var caidas = (datos.fuentes || []).filter(function(f){ return f.estado === 'source_down'; });
+    var hora = '';
+    try{
+      hora = new Date(datos.generado_en).toLocaleString('es-MX', {
+        day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hour12:false
+      });
+    }catch(e){ hora = String(datos.generado_en || ''); }
+    // CONCORDANCIA DE NÚMERO. "1 caídas" y "1 notas" se leen como un error de
+    // la página, y una página que escribe mal se lee como una página que
+    // cuenta mal. Es la misma corrección que pidió Lety para "ninguna
+    // subieron" en las tablas de R3.
+    function plural(n, sing, pl){ return n + ' ' + (n === 1 ? sing : pl); }
+    var txt = 'Fuente: ' + (datos.fuente || 'neon:mercado_noticias')
+      + ' · ' + (datos.leidas != null ? plural(datos.leidas, 'nota leída', 'notas leídas') : '')
+      // "fuentes GO" es como se llaman en el encargo (Fase 0, go / no-go), y
+      // en pantalla no quiere decir nada: quien lee no sabe qué es un GO.
+      + ' de ' + plural((datos.fuentes || []).length, 'fuente registrada', 'fuentes registradas')
+      + (caidas.length ? ' (' + plural(caidas.length, 'caída', 'caídas') + ': '
+          + caidas.slice(0,3).map(function(f){ return f.id; }).join(', ')
+          + (caidas.length > 3 ? '…' : '') + ')' : '')
+      + ' · actualizado ' + hora
+      + ' · Solo titular, fuente y hora: el texto es de cada medio y el link va a su sitio.'
+      + ' · Información, no asesoría.';
+    el.textContent = txt;
+  }
+
+  function pintarAviso(){
+    var vieja = document.getElementById('aviso-caidas');
+    if(vieja) vieja.remove();
+    if(!datos) return;
+    var caidas = (datos.fuentes || []).filter(function(f){ return f.estado === 'source_down'; });
+    if(!caidas.length) return;
+    var div = document.createElement('div');
+    div.className = 'aviso';
+    div.id = 'aviso-caidas';
+    div.textContent = caidas.length + ' de ' + (datos.fuentes || []).length
+      + (caidas.length === 1 ? ' fuentes no contestó' : ' fuentes no contestaron')
+      + ' en la última cosecha: '
+      + caidas.slice(0,4).map(function(f){ return f.id + ' (' + (f.motivo || 'sin motivo') + ')'; }).join(' · ')
+      + (caidas.length > 4 ? ' y ' + (caidas.length - 4) + ' más' : '')
+      + '. Lo que falta de esas fuentes no está medido, no es que no haya pasado nada.';
+    // DENTRO de la zona de destacadas, no antes.
+    //
+    // Insertado como hermano, el aviso era UNA FILA MÁS de la rejilla de
+    // `main`, y la rejilla tiene tres filas declaradas: la de las
+    // destacadas se corría a la segunda, se quedaba con el alto de otra fila
+    // y la rejilla de tarjetas se pintaba encima de las columnas. Se vio en
+    // la captura de 1440 y no lo veía ninguna comprobación, porque el aviso
+    // sólo aparece cuando hay una fuente caída.
+    var zona = document.getElementById('zona-destacadas');
+    zona.hidden = false;
+    zona.insertBefore(div, zona.firstChild);
+  }
+
+  function pintar(){
+    pintarChip();
+    pintarSecciones();
+    pintarToggles();
+    pintarFuentes();
+    pintarAviso();
+    pintarDestacadas();
+    if(estado.orden === 'fuente'){
+      pintarPorFuente();
+      document.getElementById('mas-medios').hidden = true;
+    } else {
+      pintarColumna('medios', datos && datos.medios, datos && datos.medios_total, 'medios-nota', extra);
+      var el = document.getElementById('mas-medios');
+      var vistos = ((datos && datos.medios) || []).length + extra.length;
+      el.hidden = !(datos && datos.medios_total > vistos);
+      el.textContent = 'cargar más (' + Math.max(0, ((datos && datos.medios_total) || 0) - vistos) + ')';
+    }
+    pintarColumna('newsletters', datos && datos.newsletters, datos && datos.newsletters_total, 'news-nota', null);
+    pintarColumna('oficiales', datos && datos.oficiales, datos && datos.oficiales_total, 'ofi-nota', null);
+    pintarPie();
+  }
+
+  function url(extraParams){
+    var p = new URLSearchParams({ vista: 'pagina' });
+    if(estado.seccion !== 'todo') p.set('seccion', estado.seccion);
+    if(estado.idioma !== 'todo') p.set('idioma', estado.idioma);
+    if(estado.orden !== 'hora') p.set('orden', estado.orden);
+    if(estado.q) p.set('q', estado.q);
+    if(estado.fuente) p.set('fuente', estado.fuente);
+    if(extraParams) for(var k in extraParams) p.set(k, extraParams[k]);
+    return '/api/noticias?' + p.toString();
+  }
+
+  function cargar(){
+    if(pidiendo) return;
+    pidiendo = true;
+    extra = [];
+    fetch(url())
+      .then(function(r){ return r.json(); })
+      .then(function(j){ datos = j; })
+      .catch(function(e){ datos = { error: String((e && e.message) || e), fuentes: [], secciones: [] }; })
+      .then(function(){ pidiendo = false; pintar(); });
+  }
+
+  function cargarMas(){
+    if(pidiendo || !datos) return;
+    var ultimas = ((datos.medios || []).concat(extra));
+    var ultima = ultimas[ultimas.length - 1];
+    if(!ultima || !ultima.publicado_en) return;
+    pidiendo = true;
+    var btn = document.getElementById('mas-medios');
+    btn.textContent = 'cargando…';
+    fetch(url({ antes_de: ultima.publicado_en }))
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        // Sólo se agregan las de MEDIOS: la columna que pidió más.
+        var nuevas = (j && j.medios) || [];
+        var vistas = {};
+        ultimas.forEach(function(n){ vistas[n.url] = 1; });
+        extra = extra.concat(nuevas.filter(function(n){ return !vistas[n.url]; }));
+        // El total se recalcula contra lo que el servidor ya dijo: si la página
+        // siguiente vino vacía, el botón desaparece en vez de quedar colgado.
+        if(!nuevas.length) datos.medios_total = ultimas.length;
+      })
+      .catch(function(){ datos.medios_total = ultimas.length; })
+      .then(function(){ pidiendo = false; pintar(); });
+  }
+
+  // ── EVENTOS ────────────────────────────────────────────────────────
+  document.getElementById('secciones').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-seccion]');
+    if(!b || b.disabled) return;
+    estado.seccion = b.dataset.seccion;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('t-orden').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-orden]');
+    if(!b) return;
+    estado.orden = b.dataset.orden;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('t-idioma').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-idioma]');
+    if(!b) return;
+    estado.idioma = b.dataset.idioma;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('fuentes').addEventListener('click', function(ev){
+    var b = ev.target.closest('button[data-fuente]');
+    if(!b) return;
+    estado.fuente = estado.fuente === b.dataset.fuente ? null : b.dataset.fuente;
+    escribirEstado(); cargar();
+  });
+  document.getElementById('mas-medios').addEventListener('click', cargarMas);
+
+  function tocarTicker(ev){
+    var c = ev.target.closest('.chip-tk');
+    if(!c) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    var t = c.dataset.tk || '';
+    estado.q = estado.q.toUpperCase() === t.toUpperCase() ? '' : t;
+    document.getElementById('q').value = estado.q;
+    escribirEstado(); cargar();
+  }
+  document.addEventListener('click', tocarTicker);
+  document.addEventListener('keydown', function(ev){
+    if(ev.key !== 'Enter' && ev.key !== ' ') return;
+    if(ev.target && ev.target.classList && ev.target.classList.contains('chip-tk')) tocarTicker(ev);
+  });
+
+  var tq = null;
+  var campo = document.getElementById('q');
+  campo.value = estado.q;
+  campo.addEventListener('input', function(){
+    clearTimeout(tq);
+    tq = setTimeout(function(){
+      estado.q = campo.value.slice(0,80);
+      escribirEstado(); cargar();
+    }, 300);
+  });
+
+  pintar();
+  cargar();
+})();
+</script>
+</body>
+</html>

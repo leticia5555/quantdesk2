@@ -30,6 +30,43 @@ export function decodeEntities(s) {
 }
 
 /**
+ * Una etiqueta HTML DE VERDAD, y nada que se le parezca.
+ *
+ * `/<[^>]*>/` no distingue una etiqueta de un "menor que" en prosa, y en
+ * titulares el "menor que" aparece todo el tiempo: con el patrón viejo,
+ * **"AMD <$100 es compra > 2027"** salía como **"AMD 2027"** — se comía cinco
+ * palabras, incluido el precio, que es justo el dato de la nota. Un titular
+ * mutilado es peor que uno que no se muestra: parece correcto.
+ *
+ * Así que una etiqueta tiene que empezar como empiezan las etiquetas: `<` y
+ * una letra, o `</` y una letra. Un `<` seguido de `$`, de un dígito o de un
+ * espacio se queda como texto.
+ */
+const ETIQUETA_HTML = /<\/?[a-zA-Z][a-zA-Z0-9:._-]*(?:\s[^>]*)?\/?>|<!--[\s\S]*?-->|<!\[[\s\S]*?\]>/g;
+
+/**
+ * Los separadores que NO se ven y pegan palabras.
+ *
+ * EL REPORTE: "$1.4Tvaluation" (Lety, 2026-10-20). Entre la cifra y la palabra
+ * el titular traía un separador invisible, no un espacio: varios CMS meten un
+ * `U+200B` (espacio de ancho cero) o un `U+00AD` (guion blando) dentro de
+ * cifras largas para que el navegador pueda cortar la línea ahí. En la página
+ * del medio se ven dos palabras; en una lista como la nuestra, donde no hay
+ * corte, se leen pegadas.
+ *
+ * `\s` de JavaScript NO los incluye, así que `replace(/\s+/g,' ')` los deja
+ * pasar intactos. Se convierten en espacio porque es lo que son: una
+ * oportunidad de corte entre dos palabras.
+ *
+ * LOS QUE NO SE TOCAN, a propósito: `U+200C` y `U+200D` (ZWNJ y ZWJ). Esos sí
+ * significan algo —unen las letras del persa y del hindi, y son el pegamento
+ * de los emoji compuestos—, y convertirlos en espacio partiría palabras
+ * escritas bien. Entre borrar un separador de adorno y partir una palabra
+ * real, se elige lo primero.
+ */
+const INVISIBLES = /[\u200B\u2060\uFEFF\u00AD]/g;
+
+/**
  * Quita las etiquetas de un fragmento. EL ORDEN IMPORTA Y FUE UN BUG.
  *
  * `<![CDATA[Un titular]]>` casa ENTERO con `/<[^>]*>/` —`[^>]*` se come
@@ -45,7 +82,10 @@ export function decodeEntities(s) {
  */
 export function stripTags(s) {
   const sinCdata = decodeEntities(String(s || ''));
-  return decodeEntities(sinCdata.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  return decodeEntities(sinCdata.replace(ETIQUETA_HTML, ' '))
+    .replace(INVISIBLES, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function tagContent(block, tag) {
