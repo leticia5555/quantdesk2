@@ -248,7 +248,15 @@ function trimestreDelReporte(fecha) {
 //   'AMBAS' — el cargo pega en GAAP Y en non-GAAP (IPR&D adquirido de Lilly:
 //             la empresa lo deja en las dos métricas). Se resta siempre.
 // Sin URL no cuenta: la regla es "solo lo que esté en un documento con URL".
-function brechaConocida(gaps, metrica_barra) {
+//
+// `anunciado_en` (24-oct) es SOLO un dato: cuándo se anunció el cargo por
+// primera vez. Si el mercado nació DESPUÉS del anuncio, la fila lo dice
+// (`brechas_anunciadas_antes_de_creacion`), pero la brecha se aplica igual.
+// Se evaluó la regla "creado después del anuncio ⇒ el consenso ya trae el
+// cargo ⇒ brecha 0" y se descartó: META (creado 16-oct, anuncio 26-ago) tenía
+// barra GAAP 6.31 = consenso de creación y salió 3.83. El consenso NO traía el
+// cargo; con esa regla v2 habría dicho ~83% en un mercado que resolvió No.
+function brechaConocida(gaps, metrica_barra, creado = null) {
   const conUrl = (gaps || []).filter((g) => g && g.fuente_url && num(g.brecha_por_accion) !== null);
   let soloGaap = 0, ambas = 0;
   for (const g of conUrl) {
@@ -256,7 +264,14 @@ function brechaConocida(gaps, metrica_barra) {
     if (String(g.afecta || 'GAAP').toUpperCase() === 'AMBAS') ambas += v; else soloGaap += v;
   }
   const aplicada = metrica_barra === 'GAAP' ? soloGaap + ambas : ambas;
+  // Solo cuentan los cargos que de verdad se aplican a esta barra y no son 0.
+  const aplicables = conUrl.filter((g) => Math.abs(num(g.brecha_por_accion)) > 0
+    && (metrica_barra === 'GAAP' || String(g.afecta || 'GAAP').toUpperCase() === 'AMBAS'));
+  const dia = isoDia(creado);
+  const previas = dia ? aplicables.filter((g) => isoDia(g.anunciado_en) && isoDia(g.anunciado_en) < dia) : [];
   return {
+    brechas_anunciadas_antes_de_creacion: dia ? previas.length : null,
+    brecha_anunciada_en: previas.length ? previas.map((g) => isoDia(g.anunciado_en)).sort()[0] : null,
     brecha_gaap_adj: redondea(soloGaap),
     cargo_ambas_metricas: redondea(ambas),
     brecha_aplicada: redondea(aplicada),
@@ -359,7 +374,7 @@ function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UN
   const hist = fuera_universo
     ? { n_8t: 0, sorpresa_mediana_8t: null, sorpresa_std_8t: null, beats_8t: null, sorpresa_metrica_match: metrica_barra === 'NONGAAP', ultimo_reporte: null }
     : sorpresaHistorica(historial, fecha, metrica_barra);
-  const brecha = brechaConocida(gaps, metrica_barra);
+  const brecha = brechaConocida(gaps, metrica_barra, mk.creado);
   const g = guiaImplicita(guia);
 
   const estimado_v2 = estimadoV2({ metrica_barra, consenso_vigente, consenso_creacion, sorpresa_mediana_8t: hist.sorpresa_mediana_8t, brecha_aplicada: brecha.brecha_aplicada });
@@ -681,7 +696,7 @@ function tablaMdV21(filas) {
       : `${f.sorpresa_mediana_8t > 0 ? '+' : ''}${f.sorpresa_mediana_8t.toFixed(2)}${f.sorpresa_metrica_match === null ? '‡' : f.sorpresa_metrica_match === false ? '*' : ''}`;
     const hist = !f.n_8t ? '—' : `${f.beats_8t}/${f.n_8t} ${f.fuente_hist === 'pm_v2_hist' ? 'AV' : 'PEAD'}`;
     const falta = f.faltante || (f.prob_pm_t24 === null ? 'sin_precio_pm' : '');
-    return `| ${f.symbol} | ${f.fecha} | ${n2(f.barra)} | ${f.metrica_barra || '—'} | ${n2(cons)}${f.consenso_usado === 'vigente' ? ' (vig.)' : ''} | ${sorp} | ${hist} | ${n2(f.brecha_aplicada)} | ${guia} | ${n2(f.estimado_A)} | ${n2(f.estimado_B)}${f.B_usa_guia || f.estimado_B === null ? '' : ' (=A)'} | ${pct(f.prob_A)}${f.std_fallback ? '†' : ''} | ${pct(f.prob_B)} | ${pct(f.prob_pm_t24)} | ${sgn(f.desacuerdo_A)} | ${sgn(f.desacuerdo_B)} | ${falta} |`;
+    return `| ${f.symbol} | ${f.fecha} | ${n2(f.barra)} | ${f.metrica_barra || '—'} | ${n2(cons)}${f.consenso_usado === 'vigente' ? ' (vig.)' : ''} | ${sorp} | ${hist} | ${n2(f.brecha_aplicada)}${f.brechas_anunciadas_antes_de_creacion ? '§' : ''} | ${guia} | ${n2(f.estimado_A)} | ${n2(f.estimado_B)}${f.B_usa_guia || f.estimado_B === null ? '' : ' (=A)'} | ${pct(f.prob_A)}${f.std_fallback ? '†' : ''} | ${pct(f.prob_B)} | ${pct(f.prob_pm_t24)} | ${sgn(f.desacuerdo_A)} | ${sgn(f.desacuerdo_B)} | ${falta} |`;
   });
   return [head, sep, ...rows].join('\n');
 }
@@ -711,7 +726,7 @@ function renderMdV21({ titulo, filas, veredicto = null, piloto = false, notas = 
     out.push(`Brier PM ${veredicto.brier_pm ?? '—'} · A: ${r(veredicto.A)} · B: ${r(veredicto.B)}`, '');
   }
   out.push(tablaMdV21(filas), '');
-  out.push('`‡` historial de Alpha Vantage para un símbolo fuera del universo PEAD: no se sabe si es GAAP o non-GAAP (sorpresa_metrica_match = null). `*` sorpresa ajustada contra barra GAAP. `†` std de respaldo. `(=A)` sin guía de la misma métrica: prob B = prob A.', '');
+  out.push('`‡` historial de Alpha Vantage para un símbolo fuera del universo PEAD: no se sabe si es GAAP o non-GAAP (sorpresa_metrica_match = null). `*` sorpresa ajustada contra barra GAAP. `†` std de respaldo. `(=A)` sin guía de la misma métrica: prob B = prob A. `§` el cargo se anunció ANTES de que naciera el mercado (dato; la brecha se aplica igual).', '');
   const res = filas.filter((f) => f.outcome);
   if (res.length) out.push('## Resueltos', '', ...res.map(lineaResueltoV21), '');
   if (notas.length) out.push('## Notas', '', ...notas.map((n) => `- ${n}`), '');

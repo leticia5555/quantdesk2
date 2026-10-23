@@ -199,6 +199,38 @@ Ninguna fila queda sin número.
 - **TSLA** da exactamente 50%: la regla de acierto lo cuenta como fallo (se pre-registró así).
 - **LLY** da 3% por el cargo de IPR&D de $4.57 marcado `afecta = AMBAS`, que se resta también de la barra non-GAAP. Es la columna (1) haciendo su trabajo, igual que con META. Se anota y no se toca.
 
+### Observación del piloto: barra arriba de la guía (post-hoc, NO es regla)
+
+> **Post-hoc, no es regla.** Se anotó después de ver los resultados. No cambia ninguna fórmula ni ningún criterio, y no cuenta para el veredicto de v2.1. Si algún día se quiere probar, va pre-registrado en un set nuevo.
+
+En los dos resueltos del piloto donde la barra quedó **arriba** del rango de la guía, A falló y B acertó o quedó casi en 50%:
+
+| Mercado | Barra | Guía Q implícita | Salió | prob A | prob B |
+|---|---|---|---|---|---|
+| SSNC 10-22 | 1.80 | 1.73–1.79 | No | 76% ✗ | 51% (casi) |
+| PCG 10-22 | 0.43 | 0.405–0.415 | No | 60% ✗ | 42% ✓ |
+
+Las cifras de SSNC son las calculadas el 24-oct con los insumos reales del `?validacion=1` del 23-oct, una vez corregida la métrica. Se confirman con el próximo `?validacion=1`.
+
+El siguiente caso es **PYPL 10-27**: barra 1.34, guía 1.30–1.32, A ~92%, B ~67%. Dos casos no son evidencia; se anotan para no olvidarlos.
+
+### `anunciado_en` (24-oct): dato, no regla
+
+`pm_known_gaps.anunciado_en` registra cuándo se anunció cada cargo por primera vez:
+
+| Cargo | Anunciado |
+|---|---|
+| META | 26-ago |
+| LLY | 7-oct |
+| UNP | 23-jul (8-K de Q2) |
+| GOOGL DMA | 23-jul |
+
+La fila marca con `§` (`brechas_anunciadas_antes_de_creacion` en el JSON) cuando el mercado nació después del anuncio. **La brecha se aplica igual.**
+
+Se evaluó la regla "si el mercado se creó después del anuncio, el consenso ya trae el cargo y la brecha es 0", y se descartó por META. Su mercado se creó el 16-oct, después del anuncio, con barra GAAP 6.31 igual al consenso de creación, y salió 3.83. El consenso no traía el cargo: con esa regla v2 habría dicho ~83% en un mercado que resolvió No, en vez del 3% que acertó.
+
+Para LLY el mercado de 7.49 casi seguro nació después del 7-oct (los de su tanda son del 16-oct). Queda marcado `§` y en 3%. Se sabrá el 29-oct si el consenso traía el cargo.
+
 ## v2.1 — set pre-registrado
 
 **Corte: 23-oct-2026**, el día que se abre el PR de v2.1. El encargo pedía la fecha de merge, pero el PR se abre listo para merge y sin pushes después, así que la fecha no se puede escribir en el código una vez conocida. Se fija la de apertura, que es cuando quedaron escritos los criterios. Si el merge cae después, el set incluye además los mercados creados entre la apertura y el merge: es una ventana más ancha, no una elegida mirando datos. Congelado en `CRITERIOS_V21` y pineado por test.
