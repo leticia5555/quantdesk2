@@ -3276,7 +3276,7 @@ async function runEarningsIntel(){
 
   ['epsPanel','reactionPanel','nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
     const el=document.getElementById(id);
-    if(el) el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:20px;">Loading real Finnhub data...</div>';
+    if(el) el.innerHTML='<div style="color:#555;font-family:var(--mono);font-size:11px;text-align:center;padding:20px;">Loading…</div>';
   });
 
   try{
@@ -3329,67 +3329,89 @@ async function runEarningsIntel(){
     const realNext = hist.next_earnings;  // from Finnhub calendar, may be null
     const hasRealDate = realNext && realNext.date && realNext.days_away != null;
 
-    // 4) Render real NEXT EARNINGS immediately if we have it (skeleton with real fields + loading)
+    // 4) IMPLIED MOVE: straddle ATM de la cadena de opciones (Yahoo), NUNCA del
+    // LLM. Antes lo escribía Claude con la instrucción "3-10% based on sector
+    // vol" y salía rotulado "options priced in": NFLX ±4.2% con el real en
+    // ~±9.6%. Si la cadena no alcanza, el campo es "—" con el motivo.
+    const imP = hasRealDate ? fetchImpliedMove(ticker, realNext) : Promise.resolve(null);
     if(hasRealDate){
       renderNextEarningsPartial(realNext, ticker);
     } else {
       const panel = document.getElementById('nextEarningsPanel');
       if(panel) panel.innerHTML = '<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">No upcoming earnings in next 120 days for '+ticker+'</div>';
     }
+    const im = await imP;
+    const realNextFields = hasRealDate ? {
+      // REAL from Finnhub calendar — never overwritten
+      date: realNext.date, days_away: realNext.days_away, eps_estimate: realNext.eps_estimate,
+      revenue_estimate: realNext.revenue_estimate, time: realNext.time,
+      // REAL from the options chain (or null + motivo)
+      implied: im,
+    } : null;
+    if(hasRealDate) renderNextEarnings({...realNextFields, ai_pending:true}, ticker);
 
-    // 5) Ask Claude ONLY for creative parts (whisper/implied move/metrics/guidance + verdict)
-    // We give Claude today's date + real next date + historical context so it won't hallucinate
+    // 5) FAIL-CLOSED. El veredicto razona sobre los paneles de arriba; si esos
+    // datos se contradicen (el endpoint lo evalúa en `consistencia`), no se le
+    // pide nada a la IA: un veredicto sobre datos rotos es peor que ninguno.
+    // Fue el "MISS, 0% historical beat rate" de NFLX con 15 de 20 en la tarjeta.
+    const inputs = earningsVerdictInputs(hist, im);
+    const cons = hist.consistencia || { ok:false, problemas:[{ codigo:'sin_consistencia', bloquea:true,
+      texto:'el endpoint no evaluó la consistencia de los datos' }] };
+    if(!cons.ok){
+      renderEarningsVerdictBlocked(cons, inputs, ticker);
+      return;
+    }
+
+    // 6) Ask Claude ONLY for narrative parts (whisper/metrics/guidance + verdict).
+    // NO implied move: ese número sale de la cadena de opciones, arriba.
     const todayIso = new Date().toISOString().split('T')[0];
     const realContext = hasRealDate
       ? `Next confirmed report: ${realNext.date} (${realNext.days_away} days from today ${todayIso}). EPS estimate: $${realNext.eps_estimate}. Revenue estimate: $${realNext.revenue_estimate||'N/A'}. DO NOT change these numbers.`
       : `No upcoming report confirmed. Skip next_earnings fields.`;
+    const imContext = (im && im.implied_move_pct!=null)
+      ? `Options-implied move for the report (ATM straddle, exp ${im.expiration}): ±${im.implied_move_pct}%. `
+      : `Options-implied move: unavailable. `;
 
     const claudePrompt =
       `For ${ticker}. Today is ${todayIso}. ${realContext} ` +
-      `Historical context: beat rate ${hist.beat_rate_pct}%, avg surprise ${hist.avg_surprise_pct}%, ` +
-      `avg post-earnings reaction ${hist.avg_stock_reaction_pct!=null?hist.avg_stock_reaction_pct+'%':'N/A'}. ` +
+      `Historical context (source: ${hist.source||'unknown'}): beat ${inputs.beats} of ${inputs.total} quarters (${inputs.beat_rate_pct}%), ` +
+      `median surprise ${inputs.median_surprise_pct!=null?inputs.median_surprise_pct+'%':'N/A'}, ` +
+      `avg absolute post-earnings move ${inputs.avg_abs_reaction_pct!=null?inputs.avg_abs_reaction_pct+'% over '+inputs.reactions+' reports':'N/A'}. ` +
+      imContext +
+      `Use ONLY these numbers; do not introduce other figures. ` +
       `Return ONLY this JSON (educational AI analysis — no historical numbers): ` +
-      `{"next_analysis":{"whisper_number":N,"implied_move_pct":N,` +
+      `{"next_analysis":{"whisper_number":N,` +
       `"key_metrics_to_watch":["s","s","s"],"guidance_tone":"RAISED|MAINTAINED|LOWERED|FIRST_TIME"},` +
       `"verdict":{"signal":"BEAT|MISS|INLINE","confidence":"HIGH|MEDIUM|LOW","trade_setup":"s",` +
       `"risk":"s","bull_scenario":"s","bear_scenario":"s"}}. ` +
-      `Whisper should be realistic (1-5% above consensus for bullish names). Implied move 3-10% based on sector vol. ` +
+      `Whisper should be realistic (1-5% above consensus for bullish names). ` +
       `CRITICAL: key_metrics_to_watch must be natural English phrases like "Data Center revenue growth" or "AI chip demand visibility" — NEVER use snake_case, camelCase, or underscores. Each metric should read like a Bloomberg analyst would write it.`;
 
     const aiText=await qdAI({max_tokens:900,
       messages:[{role:'user',content:claudePrompt + langDirective()}]});
     const analysis=aiText==null?null:safeJSON(aiText);
     if(!analysis){
-      // IA caída/timeout: fallback honesto SOLO en los paneles de IA — los
-      // paneles con datos reales de Finnhub ya quedaron pintados arriba.
-      ['nextEarningsPanel','earningsVerdictPanel'].forEach(id=>{
-        const el=document.getElementById(id);
-        if(el) el.innerHTML=qdUnavailableHTML('earnings AI · '+ticker);
-      });
+      // IA caída/timeout: fallback honesto SOLO en el veredicto — los paneles
+      // con datos reales ya quedaron pintados arriba (incluido el implied move).
+      if(hasRealDate) renderNextEarnings({...realNextFields, ai_pending:false}, ticker);
+      const el=document.getElementById('earningsVerdictPanel');
+      if(el) el.innerHTML=qdUnavailableHTML('earnings AI · '+ticker)+earningsInputsHTML(inputs, cons);
+      return;
     }
 
-    // 6) Merge real Finnhub data with Claude's AI analysis
-    if(hasRealDate && analysis && analysis.next_analysis){
-      const merged = {
-        // REAL from Finnhub — never overwritten
-        date: realNext.date,
-        days_away: realNext.days_away,
-        eps_estimate: realNext.eps_estimate,
-        revenue_estimate: realNext.revenue_estimate,
-        time: realNext.time,
+    // 7) Merge real data with Claude's narrative
+    if(hasRealDate){
+      const na = analysis.next_analysis || {};
+      renderNextEarnings({ ...realNextFields, ai_pending:false,
         // AI estimates (labeled as such in render)
-        whisper_number: analysis.next_analysis.whisper_number,
-        implied_move_pct: analysis.next_analysis.implied_move_pct,
-        key_metrics_to_watch: analysis.next_analysis.key_metrics_to_watch,
-        guidance_tone: analysis.next_analysis.guidance_tone
-      };
-      renderNextEarnings(merged, ticker);
+        whisper_number: na.whisper_number,
+        key_metrics_to_watch: na.key_metrics_to_watch,
+        guidance_tone: na.guidance_tone
+      }, ticker);
     }
 
-    if(analysis && analysis.verdict){
-      // Inject REAL beat rate into verdict so display is consistent with history
-      analysis.verdict.historical_beat_rate = hist.beat_rate_pct;
-      renderEarningsVerdict(analysis.verdict, ticker);
+    if(analysis.verdict){
+      renderEarningsVerdict(analysis.verdict, ticker, inputs, cons);
     }
   }catch(e){
     console.error('Earnings error:',e);
@@ -3400,48 +3422,72 @@ async function runEarningsIntel(){
   }
 }
 
-// ── REAL EPS HISTORY (from Finnhub) ────────────────────────────
+// ── EPS HISTORY — fuente: pead_earnings (Finnhub solo de respaldo) ─────
+// El titular es EL MISMO conteo que la tarjeta de Polymarket de arriba: mismo
+// SELECT, misma función (`estadisticasHistoricas`), misma ventana. Ver
+// api/_lib/historial-pead.js y tests/earnings-tab-coherencia.test.mjs.
+function earningsSourceTag(hist){
+  return hist.fallback
+    ? '<span style="color:#EF9F27;">SOURCE: Finnhub · FALLBACK</span><div style="color:#7a6a45;margin-top:2px;">'
+      +qdEscHTML(hist.fallback_reason||smL('el símbolo no está en pead_earnings','symbol not in pead_earnings'))+'</div>'
+    : 'SOURCE: pead_earnings (Alpha Vantage) · '+smL('misma base que la tarjeta de arriba','same data as the card above');
+}
+
+// Con dos decimales, 0.8032 y 0.80 se ven iguales y la etiqueta MISS parece
+// contradecirlos. Cuando redondean igual, se muestran con las cifras que
+// distinguen.
+function epsPair(est, act){
+  const d = (Number(est).toFixed(2)===Number(act).toFixed(2) && est!==act) ? 4 : 2;
+  return [Number(est).toFixed(d), Number(act).toFixed(d)];
+}
+
 function renderEpsHistoryReal(hist){
   const el=document.getElementById('epsPanel');
   if(!el||!hist.history) return;
 
-  // Header with aggregate stats
+  const win = hist.window_quarters ? (hist.total<hist.window_quarters ? hist.total : hist.window_quarters) : hist.total;
+  const med = hist.median_surprise_pct;
   let html='<div style="background:#111;border:1px solid #ff6600;padding:10px;margin-bottom:8px;text-align:center;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">BEAT RATE · LAST '+hist.total+' QUARTERS</div>'
-    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#ff6600;">'+hist.beats+'/'+hist.total+' · '+hist.beat_rate_pct.toFixed(1)+'%</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:4px;">avg surprise '+(hist.avg_surprise_pct>0?'+':'')+hist.avg_surprise_pct.toFixed(1)+'%</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">BEAT RATE · LAST '+win+' QUARTERS</div>'
+    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:#ff6600;">'+hist.beats+'/'+hist.total+' · '+Number(hist.beat_rate_pct).toFixed(0)+'%</div>'
+    +(med!=null?'<div style="font-family:var(--mono);font-size:9px;color:#888;margin-top:4px;">median surprise '+(med>0?'+':'')+Number(med).toFixed(1)+'%</div>':'')
+    +(hist.contraste_finnhub&&hist.contraste_finnhub.trimestres
+      ?'<div style="font-family:var(--mono);font-size:8px;color:#555;margin-top:4px;">Finnhub (other consensus): '+hist.contraste_finnhub.beats+'/'+hist.contraste_finnhub.trimestres+' — not used</div>':'')
     +'</div>';
 
   html+='<div style="display:flex;flex-direction:column;gap:6px;">';
   hist.history.forEach(q=>{
-    if(q.surprise_pct==null||q.eps_actual==null||q.eps_estimate==null) return;
-    const beat=q.surprise_pct>0;
+    if(q.eps_actual==null||q.eps_estimate==null) return;
+    const beat=q.beat===true;
     const col=beat?'#00c97d':'#E24B4A';
-    const bar=Math.min(Math.abs(q.surprise_pct)*3,100);
-    const qLabel='Q'+q.quarter+' '+q.year;
+    const sp=q.surprise_pct;
+    const bar=sp==null?0:Math.min(Math.abs(sp)*3,100);
+    // El trimestre se nombra por la FECHA DE REPORTE (la que se ve en la
+    // tarjeta) y su cierre fiscal al lado. Q/año solo cuando la fuente lo da.
+    const qLabel = q.report_date ? smL('Reportó ','Reported ')+q.report_date
+      : (q.quarter&&q.year ? 'Q'+q.quarter+' '+q.year : (q.period||''));
+    const [e2,a2]=epsPair(q.eps_estimate,q.eps_actual);
 
-    // Revenue line (only if we have data)
     let revLine = '';
     if(q.revenue_actual != null){
-      // Format revenue in billions or millions
       const rev = q.revenue_actual;
       const revStr = rev >= 1e9 ? '$'+(rev/1e9).toFixed(2)+'B' : rev >= 1e6 ? '$'+(rev/1e6).toFixed(0)+'M' : '$'+rev.toFixed(0);
       const yoyColor = q.revenue_yoy_pct==null ? '#555' : q.revenue_yoy_pct>0 ? '#00c97d' : '#E24B4A';
       const yoyStr = q.revenue_yoy_pct==null ? '' : ' · <span style="color:'+yoyColor+';">'+(q.revenue_yoy_pct>0?'+':'')+q.revenue_yoy_pct.toFixed(1)+'% YoY</span>';
       revLine = '<div style="display:flex;gap:12px;font-size:10px;margin-bottom:6px;color:#555;">'
-        +'<span>Revenue: <span style="color:#ccc;">'+revStr+'</span>'+yoyStr+'</span>'
+        +'<span title="'+qdEscHTML(q.revenue_basis||'')+'">Revenue (quarter): <span style="color:#ccc;">'+revStr+'</span>'+yoyStr+'</span>'
         +'</div>';
     }
 
     html+='<div style="background:#111;border:1px solid #1a1a1a;padding:10px;">'
       +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
       +'<span style="font-family:var(--mono);font-size:10px;color:#888;">'+qLabel+'</span>'
-      +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+col+';">'+(beat?'BEAT':'MISS')+' '+(q.surprise_pct>0?'+':'')+q.surprise_pct.toFixed(1)+'%</span>'
+      +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+col+';">'+(beat?'BEAT':'MISS')+(sp==null?'':' '+(sp>0?'+':'')+sp.toFixed(1)+'%')+'</span>'
       +'</div>'
       +'<div style="display:flex;gap:12px;font-size:10px;margin-bottom:6px;">'
-      +'<span style="color:#555;">EPS est: <span style="color:#888;">$'+q.eps_estimate.toFixed(2)+'</span></span>'
-      +'<span style="color:#555;">act: <span style="color:'+col+';">$'+q.eps_actual.toFixed(2)+'</span></span>'
-      +'<span style="color:#555;margin-left:auto;font-size:9px;">'+q.period+'</span>'
+      +'<span style="color:#555;">EPS est: <span style="color:#888;">$'+e2+'</span></span>'
+      +'<span style="color:#555;">act: <span style="color:'+col+';">$'+a2+'</span></span>'
+      +'<span style="color:#555;margin-left:auto;font-size:9px;">'+(q.period?'FQ end '+q.period:'')+'</span>'
       +'</div>'
       +revLine
       +'<div style="height:3px;background:#1a1a1a;border-radius:2px;overflow:hidden;">'
@@ -3450,18 +3496,22 @@ function renderEpsHistoryReal(hist){
       +'</div>';
   });
   html+='</div>';
-  html+='<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:8px;text-align:center;">SOURCE: Finnhub · LIVE DATA</div>';
+  html+='<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:8px;text-align:center;">'+earningsSourceTag(hist)+'</div>';
   el.innerHTML=html;
 }
 
-// ── REAL POST-EARNINGS STOCK REACTION (from Yahoo) ─────────────
+// ── POST-EARNINGS REACTION — desde la FECHA DE REPORTE (Yahoo) ─────────
+// Antes se medía desde `period` de Finnhub, que es el CIERRE FISCAL (30-jun),
+// no el reporte (16-jul): un día cualquiera. De ahí el ±2.5% de NFLX.
 function renderPriceReactionsReal(hist){
   const el=document.getElementById('reactionPanel');
   if(!el||!hist.history) return;
 
-  const reactions = hist.history.filter(h => h.stock_reaction_pct != null);
+  const reactions = hist.history.filter(h => h.stock_reaction_pct != null && h.report_date);
   if(reactions.length===0){
-    el.innerHTML='<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">Stock reaction data unavailable</div>';
+    el.innerHTML='<div style="color:#888;font-family:var(--mono);font-size:11px;padding:16px;text-align:center;">Stock reaction data unavailable'
+      +(hist.fallback?'<div style="font-size:9px;color:#555;margin-top:6px;">'+smL('Finnhub no da la fecha de reporte: no se mide desde el cierre fiscal.','Finnhub gives no report date: we do not measure from the fiscal period end.')+'</div>':'')
+      +'</div>';
     return;
   }
 
@@ -3470,28 +3520,27 @@ function renderPriceReactionsReal(hist){
   let html='<div style="background:#111;border:1px solid #ff6600;padding:8px;margin-bottom:8px;text-align:center;">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:2px;">AVG MOVE POST-EARNINGS</div>'
     +'<div style="font-family:var(--mono);font-size:20px;font-weight:700;color:#ff6600;">±'+avgAbs.toFixed(1)+'%</div>'
-    +'<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:4px;">'+reactions.length+' quarters · next-day close</div>'
+    +'<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:4px;">'+reactions.length+' reports · '+smL('desde la fecha de reporte (BMO/AMC)','from the report date (BMO/AMC)')+'</div>'
     +'</div>';
 
   html+='<div style="display:flex;flex-direction:column;gap:6px;">';
   reactions.forEach(r=>{
     const col=r.stock_reaction_pct>0?'#00c97d':'#E24B4A';
     const bar=Math.min(Math.abs(r.stock_reaction_pct)*4,100);
-    const qLabel='Q'+r.quarter+' '+r.year;
     const beatTag = r.beat==null ? '' : (r.beat ? ' · beat' : ' · miss');
     html+='<div style="background:#111;border:1px solid #1a1a1a;padding:8px;">'
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
-      +'<span style="font-family:var(--mono);font-size:10px;color:#555;min-width:60px;">'+qLabel+'</span>'
+      +'<span style="font-family:var(--mono);font-size:10px;color:#555;min-width:72px;">'+r.report_date+'</span>'
       +'<div style="flex:1;height:3px;background:#1a1a1a;border-radius:2px;overflow:hidden;">'
       +'<div style="width:'+bar+'%;height:100%;background:'+col+';"></div>'
       +'</div>'
       +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:'+col+';min-width:50px;text-align:right;">'+(r.stock_reaction_pct>0?'+':'')+r.stock_reaction_pct.toFixed(1)+'%</span>'
       +'</div>'
-      +'<div style="font-size:9px;color:#444;font-family:var(--mono);">'+r.period+beatTag+'</div>'
+      +'<div style="font-size:9px;color:#444;font-family:var(--mono);">'+(r.hour?r.hour.toUpperCase():'?')+beatTag+'</div>'
       +'</div>';
   });
   html+='</div>';
-  html+='<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:8px;text-align:center;">SOURCE: Yahoo Finance · LIVE DATA</div>';
+  html+='<div style="font-family:var(--mono);font-size:8px;color:#444;margin-top:8px;text-align:center;">SOURCE: Yahoo Finance closes · report dates: '+(hist.fallback?'Finnhub calendar':'pead_earnings')+'</div>';
   el.innerHTML=html;
 }
 
@@ -3548,8 +3597,37 @@ function renderPriceReactions(reactions){
   el.innerHTML=html;
 }
 
+// Implied move del reporte desde /api/options (straddle ATM de la primera
+// expiración que contiene el reporte). Devuelve el JSON tal cual —con su
+// `motivo` cuando no hay número— o null si la llamada misma falló.
+async function fetchImpliedMove(ticker, next){
+  const hora = next.hour || (/after/i.test(next.time||'') ? 'amc' : /before/i.test(next.time||'') ? 'bmo' : '');
+  try{
+    const r=await fetch('/api/options?ticker='+encodeURIComponent(ticker)+'&reporte='+encodeURIComponent(next.date)+(hora?'&hora='+hora:''));
+    const d=await r.json();
+    return (d&&typeof d==='object')?d:null;
+  }catch(e){ return null; }
+}
+
+// La caja del IMPLIED MOVE. Un solo camino: el número de la cadena, o "—".
+function impliedMoveHTML(im, loading){
+  const head='<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IMPLIED MOVE <span style="color:#00c97d;">· OPTIONS</span></div>';
+  if(loading){
+    return head+'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#444;">…</div>'
+      +'<div style="font-size:9px;color:#555;margin-top:2px;">Yahoo options chain</div>';
+  }
+  if(im && im.implied_move_pct!=null){
+    return head+'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ff6600;">±'+Number(im.implied_move_pct).toFixed(1)+'%</div>'
+      +'<div style="font-size:9px;color:#555;margin-top:2px;">ATM straddle $'+Number(im.straddle).toFixed(2)+' @ '+im.strike
+      +' · exp '+qdEscHTML(im.expiration||'')+(im.base_precio==='last'?' · last trade':'')+'</div>';
+  }
+  return head+'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#555;">—</div>'
+    +'<div style="font-size:9px;color:#7a6a45;margin-top:2px;">'+qdEscHTML((im&&im.motivo)||smL('cadena de opciones no disponible','options chain unavailable'))
+    +' · '+smL('no se estima','not estimated')+'</div>';
+}
+
 function renderNextEarningsPartial(next, ticker){
-  // Renders immediately with REAL Finnhub data while waiting for Claude's AI analysis
+  // Renders immediately with REAL data while the options chain and the AI load
   const el=document.getElementById('nextEarningsPanel');
   if(!el||!next) return;
   const urgency=next.days_away<=7?'#E24B4A':next.days_away<=21?'#EF9F27':'#555';
@@ -3562,13 +3640,11 @@ function renderNextEarningsPartial(next, ticker){
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">'
     +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">EPS ESTIMATE <span style="color:#00c97d;">· LIVE</span></div>'
-    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">$'+(next.eps_estimate||0).toFixed(2)+'</div>'
+    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">'+(next.eps_estimate!=null?'$'+Number(next.eps_estimate).toFixed(2):'—')+'</div>'
     +'<div style="font-size:9px;color:#555;margin-top:2px;">Whisper loading...</div>'
     +'</div>'
     +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IMPLIED MOVE</div>'
-    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#444;">calculating...</div>'
-    +'<div style="font-size:9px;color:#555;margin-top:2px;">AI analysis</div>'
+    +impliedMoveHTML(null, true)
     +'</div>'
     +'</div>'
     +'<div style="font-family:var(--mono);font-size:9px;color:#555;">AI analysis loading...</div>';
@@ -3579,7 +3655,10 @@ function renderNextEarnings(next, ticker){
   if(!el||!next) return;
   const urgency=next.days_away<=7?'#E24B4A':next.days_away<=21?'#EF9F27':'#555';
   const guideColor={'RAISED':'#00c97d','MAINTAINED':'#888','LOWERED':'#E24B4A','FIRST_TIME':'#EF9F27'}[next.guidance_tone]||'#888';
-  const whisper = next.whisper_number || next.eps_estimate;
+  const whisper = Number.isFinite(Number(next.whisper_number)) && next.whisper_number!=null ? Number(next.whisper_number) : null;
+  const aiLine = next.ai_pending ? 'Whisper loading...'
+    : (whisper!=null ? 'Whisper: $'+whisper.toFixed(2)+' <span style="color:#555;">· AI</span>' : 'Whisper: — <span style="color:#555;">· AI</span>');
+  const metrics = (next.key_metrics_to_watch||[]);
   el.innerHTML='<div style="text-align:center;margin-bottom:16px;padding:12px;background:#111;border:1px solid '+urgency+';">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">NEXT REPORT <span style="color:#00c97d;">· LIVE</span></div>'
     +'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:'+urgency+';">'+next.date+'</div>'
@@ -3589,17 +3668,15 @@ function renderNextEarnings(next, ticker){
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">'
     +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">EPS ESTIMATE <span style="color:#00c97d;">· LIVE</span></div>'
-    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">$'+(next.eps_estimate||0).toFixed(2)+'</div>'
-    +'<div style="font-size:9px;color:#EF9F27;margin-top:2px;">Whisper: $'+whisper.toFixed(2)+' <span style="color:#555;">· AI</span></div>'
+    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ccc;">'+(next.eps_estimate!=null?'$'+Number(next.eps_estimate).toFixed(2):'—')+'</div>'
+    +'<div style="font-size:9px;color:#EF9F27;margin-top:2px;">'+aiLine+'</div>'
     +'</div>'
     +'<div style="background:#111;padding:8px;border:1px solid #1a1a1a;">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:3px;">IMPLIED MOVE <span style="color:#888;">· AI</span></div>'
-    +'<div style="font-family:var(--mono);font-size:16px;font-weight:700;color:#ff6600;">±'+(next.implied_move_pct||0).toFixed(1)+'%</div>'
-    +'<div style="font-size:9px;color:#555;margin-top:2px;">options priced in</div>'
+    +impliedMoveHTML(next.implied, false)
     +'</div>'
     +'</div>'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">KEY METRICS TO WATCH <span style="color:#888;">· AI</span></div>'
-    +(next.key_metrics_to_watch||[]).map(m=>{
+    +(metrics.length?'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">KEY METRICS TO WATCH <span style="color:#888;">· AI</span></div>':'')
+    +metrics.map(m=>{
       // Convert snake_case/camelCase to Title Case if LLM returned programmatic keys
       let pretty = String(m||'').trim();
       if(pretty.includes('_') || /[a-z][A-Z]/.test(pretty)){
@@ -3608,42 +3685,86 @@ function renderNextEarnings(next, ticker){
           .replace(/([a-z])([A-Z])/g,'$1 $2')
           .replace(/\b\w/g,c=>c.toUpperCase());
       }
-      return '<div style="font-size:10px;color:#888;padding:3px 0;border-bottom:1px solid #1a1a1a;font-family:var(--sans);">→ '+pretty+'</div>';
+      return '<div style="font-size:10px;color:#888;padding:3px 0;border-bottom:1px solid #1a1a1a;font-family:var(--sans);">→ '+qdEscHTML(pretty)+'</div>';
     }).join('')
-    +'<div style="margin-top:8px;display:flex;align-items:center;gap:6px;">'
-    +'<span style="font-family:var(--mono);font-size:9px;color:#555;">GUIDANCE TREND <span style="color:#888;">· AI</span></span>'
-    +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+guideColor+';">'+(next.guidance_tone||'N/A')+'</span>'
+    +(next.guidance_tone?'<div style="margin-top:8px;display:flex;align-items:center;gap:6px;">'
+      +'<span style="font-family:var(--mono);font-size:9px;color:#555;">GUIDANCE TREND <span style="color:#888;">· AI</span></span>'
+      +'<span style="font-family:var(--mono);font-size:10px;font-weight:700;color:'+guideColor+';">'+qdEscHTML(next.guidance_tone)+'</span>'
+      +'</div>':'');
+}
+
+// Lo que el veredicto RECIBE, en un solo objeto: es lo que va al prompt y lo
+// que se pinta debajo del veredicto (o en su lugar, si se bloquea).
+function earningsVerdictInputs(hist, im){
+  return {
+    source: hist.source || null,
+    fallback: !!hist.fallback,
+    beats: hist.beats, total: hist.total, beat_rate_pct: hist.beat_rate_pct,
+    median_surprise_pct: hist.median_surprise_pct!=null ? hist.median_surprise_pct : null,
+    avg_abs_reaction_pct: hist.avg_abs_stock_reaction_pct!=null ? hist.avg_abs_stock_reaction_pct : null,
+    reactions: hist.reactions_count||0,
+    implied_move_pct: im && im.implied_move_pct!=null ? im.implied_move_pct : null,
+    implied_move_note: im && im.implied_move_pct==null ? (im.motivo||null) : null,
+  };
+}
+
+function earningsInputsHTML(inp, cons){
+  const row=(k,v)=>'<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px solid #161616;"><span style="color:#555;">'+k+'</span><span style="color:#aaa;">'+v+'</span></div>';
+  const probs=((cons&&cons.problemas)||[]);
+  return '<div style="margin-top:10px;background:#0f0f0f;border:1px solid #1a1a1a;padding:10px;font-family:var(--mono);font-size:9px;">'
+    +'<div style="color:#ff6600;letter-spacing:.1em;margin-bottom:6px;">'+smL('DATOS QUE RECIBIÓ EL VEREDICTO','DATA THE VERDICT RECEIVED')+'</div>'
+    +row('source', qdEscHTML(inp.source||'—')+(inp.fallback?' (fallback)':''))
+    +row('beats', inp.total ? inp.beats+'/'+inp.total+' ('+Number(inp.beat_rate_pct).toFixed(0)+'%)' : '—')
+    +row('median surprise', inp.median_surprise_pct!=null ? (inp.median_surprise_pct>0?'+':'')+Number(inp.median_surprise_pct).toFixed(1)+'%' : '—')
+    +row('avg |move| post-earnings', inp.avg_abs_reaction_pct!=null ? '±'+Number(inp.avg_abs_reaction_pct).toFixed(1)+'% · '+inp.reactions+' reports' : '—')
+    +row('implied move (options)', inp.implied_move_pct!=null ? '±'+Number(inp.implied_move_pct).toFixed(1)+'%' : '— '+qdEscHTML(inp.implied_move_note||''))
+    +(probs.length?'<div style="margin-top:6px;">'+probs.map(p=>'<div style="color:'+(p.bloquea?'#E24B4A':'#7a6a45')+';padding:1px 0;">'+(p.bloquea?'✗ ':'· ')+qdEscHTML(p.texto)+'</div>').join('')+'</div>':'')
     +'</div>';
 }
 
-function renderEarningsVerdict(v, ticker){
+// FAIL-CLOSED: datos inconsistentes → sin veredicto, y se dice por qué.
+function renderEarningsVerdictBlocked(cons, inputs, ticker){
+  const el=document.getElementById('earningsVerdictPanel');
+  if(!el) return;
+  el.innerHTML='<div style="padding:12px;background:#111;border:1px solid #E24B4A;font-family:var(--mono);">'
+    +'<div style="font-size:9px;color:#E24B4A;letter-spacing:.1em;margin-bottom:4px;">'+smL('SIN VEREDICTO','NO VERDICT')+' · '+qdEscHTML(ticker)+'</div>'
+    +'<div style="font-size:11px;color:#888;font-family:var(--sans);line-height:1.5;">'
+    +smL('Los datos de los paneles de arriba no son consistentes entre sí. No se le pide un veredicto a la IA sobre datos que se contradicen.',
+         'The data in the panels above is not internally consistent. The AI is not asked for a verdict on contradictory data.')
+    +'</div></div>'
+    +earningsInputsHTML(inputs, cons);
+}
+
+function renderEarningsVerdict(v, ticker, inputs, cons){
   const el=document.getElementById('earningsVerdictPanel');
   if(!el||!v) return;
   const sigCol={'BEAT':'#00c97d','MISS':'#E24B4A','IN-LINE':'#888'}[v.signal]||'#888';
   const confCol={'HIGH':'#00c97d','MEDIUM':'#EF9F27','LOW':'#E24B4A'}[v.confidence]||'#888';
+  const br = inputs && inputs.total ? inputs.beats+'/'+inputs.total+' · '+Number(inputs.beat_rate_pct).toFixed(0)+'%' : '—';
   el.innerHTML='<div style="display:grid;grid-template-columns:200px 1fr 1fr 1fr;gap:12px;align-items:start;">'
     +'<div style="text-align:center;padding:16px;background:#111;border:1px solid '+sigCol+';">'
-    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">LIKELY OUTCOME</div>'
-    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+sigCol+';">'+v.signal+'</div>'
-    +'<div style="font-family:var(--mono);font-size:10px;color:'+confCol+';margin-top:4px;">'+v.confidence+' CONFIDENCE</div>'
-    +'<div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:#888;">'+( v.historical_beat_rate||0).toFixed(0)+'%</div>'
-    +'<div style="font-size:9px;color:#555;">historical beat rate</div>'
+    +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:6px;">LIKELY OUTCOME <span style="color:#888;">· AI</span></div>'
+    +'<div style="font-family:var(--mono);font-size:22px;font-weight:700;color:'+sigCol+';">'+qdEscHTML(v.signal)+'</div>'
+    +'<div style="font-family:var(--mono);font-size:10px;color:'+confCol+';margin-top:4px;">'+qdEscHTML(v.confidence)+' CONFIDENCE</div>'
+    +'<div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:#888;">'+br+'</div>'
+    +'<div style="font-size:9px;color:#555;">historical beat count</div>'
     +'</div>'
     +'<div style="background:#111;padding:12px;border:1px solid #1a1a1a;border-left:2px solid #00c97d;">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#00c97d;margin-bottom:6px;">BULL SCENARIO</div>'
-    +'<div style="font-size:11px;color:#888;font-family:var(--sans);line-height:1.6;">'+v.bull_scenario+'</div>'
+    +'<div style="font-size:11px;color:#888;font-family:var(--sans);line-height:1.6;">'+qdEscHTML(v.bull_scenario)+'</div>'
     +'</div>'
     +'<div style="background:#111;padding:12px;border:1px solid #1a1a1a;border-left:2px solid #E24B4A;">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#E24B4A;margin-bottom:6px;">BEAR SCENARIO</div>'
-    +'<div style="font-size:11px;color:#888;font-family:var(--sans);line-height:1.6;">'+v.bear_scenario+'</div>'
+    +'<div style="font-size:11px;color:#888;font-family:var(--sans);line-height:1.6;">'+qdEscHTML(v.bear_scenario)+'</div>'
     +'</div>'
     +'<div style="background:#111;padding:12px;border:1px solid #EF9F27;">'
     +'<div style="font-family:var(--mono);font-size:9px;color:#EF9F27;margin-bottom:6px;">TRADE SETUP</div>'
-    +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);line-height:1.6;margin-bottom:8px;">'+v.trade_setup+'</div>'
+    +'<div style="font-size:11px;color:#ccc;font-family:var(--sans);line-height:1.6;margin-bottom:8px;">'+qdEscHTML(v.trade_setup)+'</div>'
     +'<div style="font-family:var(--mono);font-size:9px;color:#555;margin-bottom:4px;">KEY RISK</div>'
-    +'<div style="font-size:10px;color:#666;font-family:var(--sans);">'+v.risk+'</div>'
+    +'<div style="font-size:10px;color:#666;font-family:var(--sans);">'+qdEscHTML(v.risk)+'</div>'
     +'</div>'
-    +'</div>';
+    +'</div>'
+    +(inputs?earningsInputsHTML(inputs, cons):'');
 }
 
 // ─── SMART MONEY ENGINE ──────────────────────────────────
