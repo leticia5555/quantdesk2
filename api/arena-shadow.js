@@ -66,6 +66,7 @@ import { shadowBroker, shadowJournalInsert as shadowJournalInsertReal, shadowRun
 import { rechazosPrevios, bloqueDeRechazos } from './_lib/arena-rechazos.js';
 import { marcarDesagote, rechazosDeEnvio } from './_lib/arena-desagote.js';
 import { currentTier, recordRunSpend, callCost } from './_lib/arena-budget.js';
+import { esRechazoDeCuenta } from './_lib/arena-manos.js';
 import { marketDay } from './_lib/arena-buffet-cache.js';
 import { createTrace } from './_lib/arena-trace.js';
 import { buildInfo } from './_lib/build-info.js';
@@ -581,6 +582,11 @@ export async function runAgenteObjetivo({ agent, buffet, now = new Date(), tier 
       // var o el reparto del loop, y se arreglan en lugares opuestos.
       techo_ms: llm.techo_ms ?? null, techo_origen: llm.techo_origen || null,
     };
+    // ── CAUSA `cuenta`: NUESTRA, NO DEL MODELO (2026-10-21) ─────────────
+    // Un 402 (sin créditos) es la cuenta rechazando la llamada antes de que
+    // el modelo vea nada. Se escribe acá, en cada fila de cada agente que lo
+    // recibió, para que /liga no tenga que adivinarlo por el texto.
+    if (esRechazoDeCuenta({ ...ctx.llm_error, error_detail: llm.error_detail }, error)) ctx.llm_error.causa = 'cuenta';
     if (trace) ctx.trace = trace.report();
     const status = vacio ? 'aborted_cuerpo_vacio' : 'aborted_llm_error';
     await shadowJournalInsert({ ...base, account: cuenta, status, error, context: ctx });

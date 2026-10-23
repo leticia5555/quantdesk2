@@ -63,6 +63,7 @@ import { readBaselines, baselineDe, returnPct, indexarEquity, BASE_INDEX_USD } f
 import { margenDeLaTabla } from './_lib/arena-piso-retorno.js';
 import { ordenesDeActions, resumenDeOrdenes } from './_lib/arena-fills.js';
 import { manosDeLaLiga } from './_lib/arena-manos.js';
+import { CLAVE_META as CLAVE_SALDO } from './_lib/openrouter-saldo.js';
 
 const BASELINE = (() => {
   const n = Number(process.env.ARENA_BASELINE_EQUITY);
@@ -453,6 +454,14 @@ export default async function handler(req, res) {
     ranking,
   };
   if (journalErr) body.journal_error = journalErr;
+
+  // ── EL SALDO DE OPENROUTER, ARRIBA DE LA TABLA (2026-10-21) ──────────
+  // Lo escribe el vigilante en cada ciclo. Si no se puede leer, no se inventa:
+  // `saldo_openrouter` queda null y la página no pinta nada.
+  try {
+    const r = await sql(`select value, updated_at from arena_watch_meta where key = $1`, [CLAVE_SALDO]);
+    body.saldo_openrouter = (r[0] && r[0].value) || null;
+  } catch { body.saldo_openrouter = null; }
 
   // ── EL POST-MORTEM, detrás de bandera ────────────────────────────────
   // Exceso por agente CONTRA el piso de ruido. Exige leer el journal de la

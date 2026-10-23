@@ -70,9 +70,25 @@ export const FIRMAS_SIN_SALDO = [
 export const errorDeFila = (fila) =>
   (fila && (fila.llm_error || (fila.context && fila.context.llm_error))) || {};
 
+// ── EL RECHAZO DE CUENTA, POR CAMPO Y NO SOLO POR TEXTO (2026-10-21) ──
+// El 402 de OpenRouter es la cuenta diciendo "no hay créditos". El status es
+// un hecho, no un mensaje que puede cambiar de redacción: un HTTP 402 es
+// rechazo de cuenta venga con el texto que venga. Y `causa: 'cuenta'` lo
+// escribe arena-shadow en el journal en el momento del rechazo.
+export const STATUS_DE_CUENTA = new Set([402]);
+export function esRechazoDeCuenta(llmError, textoExtra = '') {
+  const e = llmError || {};
+  if (e.causa === 'cuenta') return true;
+  if (STATUS_DE_CUENTA.has(Number(e.status))) return true;
+  const pe = e.provider_error && typeof e.provider_error === 'object' ? e.provider_error.message : e.provider_error;
+  const texto = [textoExtra, e.detail, e.error_detail, pe, e.raw_body].filter((x) => typeof x === 'string').join(' \n ');
+  return !!texto && FIRMAS_SIN_SALDO.some((re) => re.test(texto));
+}
+
 export function esAbortoDeSaldo(fila) {
   if (!fila || !CORRIDA_ABORTADA(fila.status)) return false;
   const e = errorDeFila(fila);
+  if (e.causa === 'cuenta' || STATUS_DE_CUENTA.has(Number(e.status))) return true;
   const texto = [fila.error, e.detail, e.provider_error, e.raw_body]
     .filter((x) => typeof x === 'string').join(' \n ');
   if (!texto) return false;
