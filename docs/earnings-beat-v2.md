@@ -231,6 +231,39 @@ Se evaluó la regla "si el mercado se creó después del anuncio, el consenso ya
 
 Para LLY el mercado de 7.49 casi seguro nació después del 7-oct (los de su tanda son del 16-oct). Queda marcado `§` y en 3%. Se sabrá el 29-oct si el consenso traía el cargo.
 
+### Semillas para el set v2.1 (24-oct, `docs/sql/earnings-beat-v2-3.sql`)
+
+Se cargaron antes de que resuelvan los mercados, todas con documento. Las fórmulas no cambian.
+
+| Símbolo | Tabla | Qué | Verificada |
+|---|---|---|---|
+| MRK | brecha | IPR&D de SciBrunch, 0.13, `afecta = AMBAS`, anunciado el 28-sep | sí |
+| HLT | guía Q3 | 2.28–2.34 | **no**: la URL del 8-K está, pero la sesión no puede abrir sec.gov |
+| NET | guía Q3 | 0.34 (punto) | sí |
+| EBAY | guía Q3 | 1.36–1.42 (el 8-K del 22-oct dice "above guidance ranges") | sí |
+| MRK | guía anual | 2.66–2.76, YTD −1.41 → Q3 implícito 2.035–2.085 | sí |
+| CL | guía anual | "mid-single-digit growth" sobre 3.69 → 3.84–3.91 (interpretación), YTD 1.97 → Q3 implícito 0.935–0.97 | **no**, pendiente de confirmar |
+
+No se cargaron, porque no tienen guía de EPS: YELP, CBOE, CVX, IVZ, HGV, RDDT, DKNG y COIN.
+
+**Fechas reales de reporte.** En varios casos el slug de Polymarket trae otra fecha:
+
+| Empresa | Reporta |
+|---|---|
+| GOOGL | 28-oct |
+| EBAY | 28-oct |
+| HGV | 29-oct |
+| RDDT | 29-oct |
+| YELP | 5-nov |
+| DKNG | ~5-nov |
+| IMAX | 5-nov |
+
+Se documentan, no se cargan: ninguna fórmula lee una fecha de reporte aparte, y la fecha del slug solo se usa para cruzar el piloto.
+
+**IMAX 10-22 del piloto.** IMAX reporta el 5-nov, así que ese mercado (barra 0.88) no podía resolver el 22. Resuelve contra el **mismo** reporte que IMAX 11-05 (barra 0.89): son dos barras sobre un solo evento, no dos datos independientes. Quedó anotado en `pm_v2_validation.nota`; el piloto no tiene veredicto y no se toca nada más.
+
+**MRK, para el registro (no cambia la fórmula).** La guía anual es de julio, anterior al cargo del 28-sep, así que no lo trae adentro. En cambio, el estimado A sí resta los 0.13 (`AMBAS`). prob B promedia entonces un A con el cargo y una guía sin el cargo.
+
 ## v2.1 — set pre-registrado
 
 **Corte: 23-oct-2026**, el día que se abre el PR de v2.1. El encargo pedía la fecha de merge, pero el PR se abre listo para merge y sin pushes después, así que la fecha no se puede escribir en el código una vez conocida. Se fija la de apertura, que es cuando quedaron escritos los criterios. Si el merge cae después, el set incluye además los mercados creados entre la apertura y el merge: es una ventana más ancha, no una elegida mirando datos. Congelado en `CRITERIOS_V21` y pineado por test.

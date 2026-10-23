@@ -414,6 +414,7 @@ test('búsqueda por símbolo: pedidos primero, sin universo cerrado, rotando por
 const SQL_V2 = readFileSync('docs/sql/earnings-beat-v2.sql', 'utf8');
 const SQL_V21 = readFileSync('docs/sql/earnings-beat-v2-1.sql', 'utf8');
 const SQL_V22 = readFileSync('docs/sql/earnings-beat-v2-2.sql', 'utf8');
+const SQL_V23 = readFileSync('docs/sql/earnings-beat-v2-3.sql', 'utf8');
 const norm = (s) => s.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
 
 test('la DDL de los .sql es la misma que SCHEMA_V2', () => {
@@ -435,19 +436,22 @@ test('migración + semillas + consultas + upserts v2.1, contra Postgres', { skip
   psql(`create table if not exists pead_earnings (symbol text not null, fiscal_date_ending date not null,
           reported_date date not null, reported_eps numeric, estimated_eps numeric, surprise numeric,
           surprise_pct numeric, source text, ingested_at timestamptz default now(), primary key (symbol, reported_date));`);
-  for (let i = 0; i < 2; i++) { psql(SQL_V2); psql(SQL_V21); psql(SQL_V22); }   // idempotentes
+  for (let i = 0; i < 2; i++) { psql(SQL_V2); psql(SQL_V21); psql(SQL_V22); psql(SQL_V23); }   // idempotentes
   assert.equal(psql('select count(*) from pm_v2_validation').trim(), '22');
   assert.equal(psql("select count(*) from pm_v2_validation where set = 'piloto-oct26'").trim(), '22');
   assert.equal(psql("select count(*) from pm_v2_validation where outcome is not null").trim(), '7');
-  assert.equal(psql('select count(*) from pm_known_gaps').trim(), '5');
-  assert.equal(psql('select count(*) from pm_company_guidance').trim(), '6');
+  assert.equal(psql('select count(*) from pm_known_gaps').trim(), '6');          // + MRK (v2-3)
+  assert.equal(psql('select count(*) from pm_company_guidance').trim(), '11');   // + HLT, NET, EBAY, MRK, CL (v2-3)
   assert.equal(psql('select count(*) from pm_known_gaps where fuente_url is null').trim(), '0');
   // lo que Lety abrió, verificado; lo que no, no
   assert.equal(psql("select string_agg(symbol || ':' || concepto, ',' order by symbol, concepto) from pm_known_gaps where not verificada").trim(), 'GOOGL:multa_dma_ce_jul_2026');
-  assert.equal(psql("select string_agg(symbol, ',' order by symbol) from pm_company_guidance where not verificada").trim(), 'SSNC');
+  assert.equal(psql("select string_agg(symbol, ',' order by symbol) from pm_company_guidance where not verificada").trim(), 'CL,HLT,SSNC');
+  // v2-3: lo que NO se carga (sin guía de EPS) no está
+  assert.equal(psql("select count(*) from pm_company_guidance where symbol in ('YELP','CBOE','CVX','IVZ','HGV','RDDT','DKNG','COIN')").trim(), '0');
+  assert.match(psql("select nota from pm_v2_validation where symbol = 'IMAX' and fecha_mercado = '2026-10-22'"), /mismo reporte que IMAX 11-05/i);
   assert.equal(psql("select brecha_por_accion from pm_known_gaps where symbol = 'UNP'").trim(), '0.05');
   assert.equal(psql("select string_agg(symbol || ':' || anunciado_en, ',' order by symbol, concepto) from pm_known_gaps where anunciado_en is not null").trim(),
-    'GOOGL:2026-07-23,LLY:2026-10-07,META:2026-08-26,UNP:2026-07-23');
+    'GOOGL:2026-07-23,LLY:2026-10-07,META:2026-08-26,MRK:2026-09-28,UNP:2026-07-23');
 
   for (const [nombre, f] of Object.entries(CONSULTAS)) {
     const q = f(2);
@@ -583,4 +587,14 @@ test('anunciado_en no mueve prob A ni prob B (META sigue en 3%)', () => {
   assert.equal(con.prob_A, 0.03);
   assert.equal(con.brechas_anunciadas_antes_de_creacion, 1);
   assert.match(renderMdV21({ titulo: 'x', filas: [con] }), /\| 3\.30§ \|/);
+});
+
+// ── semillas v2-3 (24-oct): la guía implícita que sale de lo cargado ──
+test('v2-3: guía implícita de MRK y CL con la fórmula (guía anual − YTD) / 2', () => {
+  const mrk = guiaImplicita({ alcance: 'anual', guia_min: 2.66, guia_max: 2.76, ytd_reportado: -1.41, trimestres_restantes: 2 });
+  assert.deepEqual([mrk.guia_q_min, mrk.guia_q_max], [2.035, 2.085]);
+  const cl = guiaImplicita({ alcance: 'anual', guia_min: 3.84, guia_max: 3.91, ytd_reportado: 1.97, trimestres_restantes: 2 });
+  assert.deepEqual([cl.guia_q_min, cl.guia_q_max], [0.935, 0.97]);
+  const net = guiaImplicita({ alcance: 'trimestre', guia_min: 0.34, guia_max: 0.34 });
+  assert.equal(net.guia_q_implicita, 0.34);
 });
