@@ -47,7 +47,7 @@ import { fetchEarnings } from './_lib/av-earnings.js';
 import { budgetUsed, budgetAdd, ensurePeadSchema } from './_lib/pead-db.js';
 import {
   VALIDACION_V2, CORTE_VALIDACION, CRITERIOS_V2, CRITERIOS_V21, SET_PILOTO, UNIVERSO,
-  leeMercado, filaV21, trimestreDelReporte, veredictoV21, enSetV21, acierto, renderMdV21, estimadoVigenteDeAv,
+  leeMercado, eligeMercadoPiloto, filaV21, trimestreDelReporte, veredictoV21, enSetV21, acierto, renderMdV21, estimadoVigenteDeAv,
 } from './_lib/earnings-beat-v2.js';
 import {
   ensureSchemaV2, upsertFeatures, guardaVigente, upsertHist, upsertMercadosV2,
@@ -70,6 +70,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const COLS_MERCADO = `market_id, symbol, slug, question,
        to_char(coalesce(report_date, resolved_date), 'YYYY-MM-DD') as fecha,
        to_char(creado, 'YYYY-MM-DD') as creado,
+       to_char(creado at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as creado_ts,
        outcome, abierto, yes_price_t24h, yes_price_estado, consensus_pm, raw`;
 
 // v2.1 primero; de v1 solo lo que v2.1 todavía no tiene.
@@ -106,7 +107,7 @@ const CONSULTAS = {
             metrica_barra, barra, consenso_creacion, prob_pm_t24, outcome, actual_eps
        from pm_v2_validation where set = $1`,
   validacion: (n) => `${SELECT_MERCADO}
-     where symbol in (${ph(n)}) and fecha between '2026-10-19' and '2026-11-06'`, /* date-lint-ok: ventana del piloto congelado */
+     where symbol in (${ph(n)}) and fecha between '2026-10-15' and '2026-12-31'`, /* date-lint-ok: ventana ancha del piloto; el cruce fino lo hace eligeMercadoPiloto */
   setV21: () => `${SELECT_MERCADO}
      where creado between $1 and $2 and fecha < $3`,
   // job hist: quiénes NO necesitan llamada (están en PEAD o tienen historial fresco)
@@ -143,7 +144,7 @@ function mercadoDesdeFila(r, vigentes) {
   }
   return {
     market_id: r.market_id, symbol: r.symbol, fecha: r.fecha, creado: r.creado || isoDia(norm.creado),
-    metrica_barra: lec.metrica_barra, barra: lec.barra,
+    metrica_barra: lec.metrica_barra, metrica_via: lec.metrica_via, metrica_motivo: lec.metrica_motivo, barra: lec.barra,
     consenso_creacion: lec.consenso_creacion ?? num(r.consensus_pm),
     consenso_vigente: vigentes.get(r.market_id) ?? null,
     prob_pm_t24, prob_pm_fuente, outcome: r.outcome, cosecha: r.cosecha || null,
@@ -182,7 +183,8 @@ function construyeFilas(mercados, ctx) {
     const guias = ctx.guias.filter((g) => g.symbol === m.symbol && g.quarter_end === q);
     const guia = guias.find((g) => g.metrica === m.metrica_barra) || guias[0] || null;
     const f = filaV21({ mercado: m, historial: ctx.hist.get(m.symbol) || [], fuenteHist: ctx.fuente.get(m.symbol) || null, gaps, guia });
-    return { ...f, prob_pm_fuente: m.prob_pm_fuente || null, cosecha: m.cosecha || null };
+    return { ...f, prob_pm_fuente: m.prob_pm_fuente || null, cosecha: m.cosecha || null,
+      ...(m.piloto_cruce ? { piloto_cruce: m.piloto_cruce } : {}) };
   });
 }
 
@@ -216,11 +218,14 @@ async function mercadosPiloto(vigentes) {
   const pm = await sql(CONSULTAS.validacion(simbolos.length), simbolos);
   return VALIDACION_V2.map(({ symbol, fecha }) => {
     const s = porClave.get(`${symbol}|${fecha}`) || {};
-    const r = (s.market_id && pm.find((x) => x.market_id === s.market_id))
-      || pm.find((x) => x.symbol === symbol && Math.abs(Date.parse(x.fecha) - Date.parse(fecha)) <= 86400000);
+    const fijo = s.market_id ? pm.find((x) => x.market_id === s.market_id) : null;
+    const eleccion = fijo ? { mercado: fijo, via: 'semilla', ambiguo: false, descartados_por_corte: 0 }
+      : eligeMercadoPiloto(pm, { symbol, fecha, barraSemilla: num(s.barra) });
+    const r = eleccion.mercado;
     const base = r ? mercadoDesdeFila(r, vigentes) : { market_id: null, symbol, fecha, consenso_vigente: null, prob_pm_t24: null };
     return {
       ...base,
+      piloto_cruce: { via: eleccion.via, ambiguo: eleccion.ambiguo, descartados_por_corte: eleccion.descartados_por_corte },
       symbol, fecha,
       metrica_barra: base.metrica_barra || s.metrica_barra || null,
       barra: base.barra ?? num(s.barra),
