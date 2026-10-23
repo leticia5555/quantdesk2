@@ -29,84 +29,141 @@ const { VISTA_DECISIONES, SQL_DECISIONES, filaDecision } = await import('../api/
 
 const FIX = JSON.parse(readFileSync(new URL('./fixtures/liga-decisiones-dia.json', import.meta.url), 'utf8'));
 const BIN = binDePostgres();
-const PUERTO = 55449;
 const lit = (s) => (s == null ? 'null' : `'${String(s).replace(/'/g, "''")}'`);
 
-test('la vista contra un Postgres real', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
-  assert.ok(BIN, FALTA_POSTGRES);
-  const psql = levantaPostgres(t, { bin: BIN, puerto: PUERTO });
+function base(t, puerto) {
+  const psql = levantaPostgres(t, { bin: BIN, puerto });
   for (const q of [...SCHEMA, ...SCHEMA_PRECIOS_US]) {
     try { psql(q + ';'); } catch { /* migración que no aplica en vacío */ }
   }
-  for (const r of FIX.journal) {
-    psql(`insert into arena_journal (id, run_date, phase, status, agent_id, actions)
-          values (${lit(r.id)}, ${lit(r.run_date)}, 'objetivo', 'ok_target', ${lit(r.agent_id)}, ${lit(JSON.stringify(r.actions))}::jsonb);`);
-  }
-  psql('insert into mercado_precios_us (symbol, fecha, cierre, cierre_ajustado) values '
-    + FIX.cierres.map(([s, f, c]) => `(${lit(s)}, ${lit(f)}, ${c}, ${c})`).join(', ') + ';');
+  const journal = (rows) => rows.forEach((r) => psql(`insert into arena_journal (id, run_date, phase, status, agent_id, actions)
+      values (${lit(r.id)}, ${lit(r.run_date)}, 'objetivo', 'ok_target', ${lit(r.agent_id)}, ${lit(JSON.stringify(r.actions))}::jsonb);`));
+  const cierres = (rows) => psql('insert into mercado_precios_us (symbol, fecha, cierre, cierre_ajustado) values '
+    + rows.map(([s, f, c]) => `(${lit(s)}, ${lit(f)}, ${c}, ${c})`).join(', ') + ';');
+  const leer = () => JSON.parse(psql(`select coalesce(json_agg(d order by filled_at, corrida_id, orden_n), '[]') from liga_decisiones d;`).trim()).map(filaDecision);
+  return { psql, journal, cierres, leer };
+}
+
+// ── EL DÍA REAL: 2026-10-21 ─────────────────────────────────────────────
+// 42 corridas, 124 órdenes llenas, 36 símbolos. Cierres guardados: 21 y 22-oct.
+test('el día real (21-oct) contra un Postgres real', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
+  assert.ok(BIN, FALTA_POSTGRES);
+  const { psql, journal, cierres, leer } = base(t, 55449);
+  journal(FIX.journal);
+  cierres(FIX.cierres);
   psql(VISTA_DECISIONES + ';');
   // Dos veces: es `create or replace`, el endpoint la corre en cada lambda.
   psql(VISTA_DECISIONES + ';');
 
-  const filas = JSON.parse(psql(`select coalesce(json_agg(d order by filled_at, corrida_id, orden_n), '[]') from liga_decisiones d;`).trim()).map(filaDecision);
-  const de = (agent, symbol, lado) => filas.find((f) => f.agent_id === agent && f.symbol === symbol && f.lado === lado);
+  const ordenes = FIX.journal.flatMap((r) => r.actions.map((a) => ({ ...a, agent_id: r.agent_id, corrida_id: r.id })));
+  const cierre22 = new Map(FIX.cierres.filter(([, f]) => f === '2026-10-22').map(([s, , c]) => [s, Number(c)]));
+  const filas = leer();
+  const clave = (x) => (x.corrida_id + '|' + (x.client_order_id || ''));
 
-  await t.test('solo las llenas: 5 de 6 órdenes (la cancelada sin fill no entra)', () => {
-    assert.equal(filas.length, 5);
-    assert.equal(filas.find((f) => f.symbol === 'DVA'), undefined);
+  await t.test('las 124 órdenes llenas están, una fila cada una', () => {
+    assert.equal(ordenes.length, 124);
+    assert.equal(filas.length, 124);
+    assert.deepEqual(new Set(filas.map(clave)), new Set(ordenes.map(clave)));
+    assert.ok(filas.every((f) => f.dia_fill === '2026-10-21'), 'todas del 21 en hora del Este');
   });
 
-  await t.test('compra: 1, 3 y 5 sesiones después del día del fill', () => {
-    const f = de('claude', 'MU', 'buy');
-    assert.equal(f.dia_fill, '2026-10-21');
-    assert.deepEqual([f.fecha_1, f.fecha_3, f.fecha_5], ['2026-10-22', '2026-10-24', '2026-10-28'], 'el cierre del día del fill no cuenta');
-    assert.deepEqual([f.cierre_1, f.cierre_3, f.cierre_5], [120, 122, 125]);
-    assert.equal(f.resultado_1_pct, +((120 - 118.4) / 118.4 * 100).toFixed(4));
-    assert.equal(f.resultado_3_pct, +((122 - 118.4) / 118.4 * 100).toFixed(4));
-    assert.equal(f.resultado_5_pct, +((125 - 118.4) / 118.4 * 100).toFixed(4));
-    assert.equal(f.cantidad, 40);
+  await t.test('resultado a 1 sesión = cierre del 22 contra el precio de ejecución, con signo por lado (las 120 con cierre)', () => {
+    let comprobadas = 0;
+    for (const o of ordenes) {
+      if (o.symbol === 'ANET') continue;
+      const f = filas.find((x) => clave(x) === clave(o));
+      const c = cierre22.get(o.symbol);
+      const signo = o.side === 'sell' ? -1 : 1;
+      assert.equal(f.fecha_1, '2026-10-22', o.client_order_id);
+      assert.equal(f.cierre_1, c, o.client_order_id);
+      assert.ok(Math.abs(f.resultado_1_pct - signo * ((c - o.filled_avg_price) / o.filled_avg_price) * 100) < 1e-4, o.client_order_id);
+      comprobadas++;
+    }
+    assert.equal(comprobadas, 120);
   });
 
-  await t.test('venta: el signo se invierte (gana si baja) y un día que le falta al símbolo es null', () => {
-    const f = de('claude', 'PGR', 'sell');
-    assert.equal(f.resultado_1_pct, +(-(260 - 265.1) / 265.1 * 100).toFixed(4));
-    assert.ok(f.resultado_1_pct > 0, 'bajó de 265.10 a 260: la venta acertó');
-    assert.equal(f.fecha_3, '2026-10-24', 'la sesión 3 es la del calendario, no "la tercera fila de PGR"');
-    assert.equal(f.cierre_3, null);
-    assert.equal(f.resultado_3_pct, null, 'sin cierre de PGR ese día: null, no se corre al día siguiente ni se pone 0');
-    assert.equal(f.resultado_5_pct, +(-(262 - 265.1) / 265.1 * 100).toFixed(4));
+  await t.test('a mano, una: claude vendió 2 MU a 918.04 y MU cerró el 22 en 856.49 → la venta ganó +6.70%', () => {
+    const f = filas.find((x) => x.client_order_id === 'arena-claude-d1930-2026-10-21-MU-sell');
+    assert.equal(f.lado, 'sell');
+    assert.equal(f.resultado_1_pct, 6.7045);
   });
 
-  await t.test('el día del fill es el del Este: 00:30 UTC del 22 es el 21', () => {
-    const f = de('control', 'MU', 'buy');
-    assert.equal(f.dia_fill, '2026-10-21');
-    assert.equal(f.order_status, 'partially_filled');
-    assert.equal(f.cantidad, 20, 'la parcial entra con lo que se llenó, no con lo pedido');
-    assert.equal(f.fecha_1, '2026-10-22');
-    assert.equal(f.resultado_1_pct, +((120 - 118.5) / 118.5 * 100).toFixed(4));
+  await t.test('ANET (no está en mercado_precios_us): sus 4 órdenes salen, con resultado null — no desaparecen', () => {
+    const anet = filas.filter((f) => f.symbol === 'ANET');
+    assert.equal(anet.length, 4, 'deepseek: 1 compra y 3 ventas');
+    for (const f of anet) {
+      assert.equal(f.agent_id, 'deepseek');
+      assert.equal(f.fecha_1, '2026-10-22', 'la sesión existe; lo que falta es el cierre de ANET');
+      assert.deepEqual([f.cierre_1, f.resultado_1_pct, f.resultado_3_pct, f.resultado_5_pct], [null, null, null, null]);
+      assert.ok(f.precio_ejecucion > 0 && f.cantidad > 0, 'la orden está entera');
+    }
   });
 
-  await t.test('símbolo sin cierres guardados: todo null, con las fechas de sesión igual', () => {
-    const f = de('control', 'ZZZQ', 'buy');
-    assert.equal(f.fecha_1, '2026-10-22');
-    assert.deepEqual([f.cierre_1, f.resultado_1_pct, f.resultado_3_pct, f.resultado_5_pct], [null, null, null, null]);
+  await t.test('a 3 y 5 sesiones: null, porque esas sesiones todavía no ocurrieron', () => {
+    for (const f of filas) assert.deepEqual([f.fecha_3, f.resultado_3_pct, f.fecha_5, f.resultado_5_pct], [null, null, null, null], f.client_order_id);
   });
 
-  await t.test('sesiones que todavía no ocurrieron: null', () => {
-    const f = de('claude', 'MU', 'sell');
-    assert.equal(f.fecha_1, '2026-10-28');
-    assert.equal(f.resultado_1_pct, +(-(125 - 121) / 121 * 100).toFixed(4));
-    assert.deepEqual([f.fecha_3, f.resultado_3_pct, f.fecha_5, f.resultado_5_pct], [null, null, null, null]);
+  await t.test('los null NO se guardan: cuando llegan los cierres, la misma consulta los llena sola', () => {
+    // Llegan las sesiones 23, 24, 27 y 28-oct, solo para MU y VRT.
+    cierres([['MU', '2026-10-23', 870], ['MU', '2026-10-24', 880], ['MU', '2026-10-27', 890], ['MU', '2026-10-28', 900],
+      ['VRT', '2026-10-23', 200], ['VRT', '2026-10-24', 205], ['VRT', '2026-10-27', 210], ['VRT', '2026-10-28', 220]]);
+    const despues = leer();
+    const mu = despues.find((x) => x.client_order_id === 'arena-claude-d1930-2026-10-21-MU-sell');
+    assert.deepEqual([mu.fecha_3, mu.cierre_3, mu.fecha_5, mu.cierre_5], ['2026-10-24', 880, '2026-10-28', 900]);
+    assert.equal(mu.resultado_3_pct, +(-(880 - 918.04) / 918.04 * 100).toFixed(4));
+    const vrt = despues.find((x) => x.client_order_id === 'arena-deepseek-w1335-2026-10-21-VRT-buy');
+    assert.equal(vrt.resultado_5_pct, +((220 - 217.691959) / 217.691959 * 100).toFixed(4));
+    // Los demás símbolos no tienen cierre del 24: siguen null (el calendario
+    // avanzó, su cierre no llegó) — y ANET sigue null en todo.
+    const dell = despues.find((x) => x.symbol === 'DELL');
+    assert.equal(dell.fecha_3, '2026-10-24');
+    assert.equal(dell.resultado_3_pct, null);
+    assert.ok(despues.filter((x) => x.symbol === 'ANET').every((x) => x.resultado_1_pct === null && x.resultado_5_pct === null));
+    assert.equal(despues.length, 124);
   });
 
   await t.test('la consulta del endpoint, con parámetros reales: agent y desde', () => {
     const contar = (a, d) => psql(`prepare q_${a || 'x'}_${(d || 'x').replace(/-/g, '')} as ${SQL_DECISIONES};
       execute q_${a || 'x'}_${(d || 'x').replace(/-/g, '')}(${lit(a)}, ${lit(d)});`).trim().split('\n').filter(Boolean).length;
-    assert.equal(contar(null, null), 5);
-    assert.equal(contar('claude', null), 3);
-    assert.equal(contar('control', null), 2);
-    assert.equal(contar('claude', '2026-10-22'), 1, 'desde filtra por día del fill');
+    const deAgente = (a) => ordenes.filter((o) => o.agent_id === a).length;
+    assert.equal(contar(null, null), 124);
+    assert.equal(contar('deepseek', null), deAgente('deepseek'));
+    assert.equal(contar('claude', null), deAgente('claude'));
+    assert.equal(contar('claude', '2026-10-22'), 0, 'desde filtra por día del fill');
   });
+});
+
+// ── BORDES QUE EL DÍA REAL NO TRAE (sintéticos, a propósito) ─────────────
+// El 21-oct todo llenó completo, en horario de mercado, y sin huecos de
+// calendario. Estas reglas igual tienen que valer, y solo se pueden probar con
+// filas armadas para cada borde. Forma exacta del reconcile.
+test('bordes: parcial, cancelada, fill de noche (UTC del día siguiente) y un día que le falta al símbolo', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
+  assert.ok(BIN, FALTA_POSTGRES);
+  const { psql, journal, cierres, leer } = base(t, 55451);
+  const orden = (o) => ({ result: 'approved', origin: 'objetivo', intencion: o.side, ...o });
+  journal([
+    { id: 'b1', agent_id: 'control', run_date: '2026-10-21', actions: [
+      orden({ symbol: 'MU', side: 'buy', qty: 50, order_status: 'partially_filled', filled_qty: 20, filled_avg_price: 118.5, filled_at: '2026-10-22T00:30:00Z', client_order_id: 'parcial-noche' }),
+      orden({ symbol: 'DVA', side: 'buy', qty: 30, order_status: 'canceled', filled_qty: 0, filled_avg_price: null, filled_at: null, client_order_id: 'cancelada' }),
+      orden({ symbol: 'PGR', side: 'sell', qty: 10, order_status: 'filled', filled_qty: 10, filled_avg_price: 265.1, filled_at: '2026-10-21T19:58:05Z', client_order_id: 'venta-hueco' }),
+    ] },
+  ]);
+  cierres([['MU', '2026-10-21', 118], ['MU', '2026-10-22', 120], ['MU', '2026-10-23', 117], ['MU', '2026-10-24', 122],
+    ['PGR', '2026-10-21', 265], ['PGR', '2026-10-22', 260], ['PGR', '2026-10-23', 266]]);
+  psql(VISTA_DECISIONES + ';');
+  const filas = leer();
+  const de = (c) => filas.find((f) => f.client_order_id === c);
+
+  assert.equal(filas.length, 2, 'la cancelada sin fill no entra');
+  const p = de('parcial-noche');
+  assert.equal(p.dia_fill, '2026-10-21', '00:30 UTC del 22 es el 21 en el Este');
+  assert.equal(p.order_status, 'partially_filled');
+  assert.equal(p.cantidad, 20, 'la parcial entra con lo que se llenó');
+  assert.deepEqual([p.fecha_1, p.cierre_1, p.fecha_3, p.cierre_3], ['2026-10-22', 120, '2026-10-24', 122]);
+  const v = de('venta-hueco');
+  assert.equal(v.resultado_1_pct, +(-(260 - 265.1) / 265.1 * 100).toFixed(4), 'venta: gana si baja');
+  assert.equal(v.fecha_3, '2026-10-24', 'la sesión 3 es la del calendario, no "la tercera fila de PGR"');
+  assert.equal(v.resultado_3_pct, null, 'sin cierre de PGR ese día: null, no se corre al siguiente');
 });
 
 // El handler: valida y pasa los parámetros, nunca los interpola.
