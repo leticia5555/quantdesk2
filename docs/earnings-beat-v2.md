@@ -283,6 +283,7 @@ Todos los símbolos que tengan mercado de earnings en Polymarket, no solo los 99
   - Los símbolos que están en `pead_earnings` no se piden: se leen de ahí.
   - Tope de 10 llamadas por corrida, respeta el cupo diario compartido (`pead_api_budget`, 25/día) y está apagado sin `EARNINGS_V2_HIST_ENABLED=1`.
   - Un símbolo con historial de menos de 80 días no se vuelve a pedir (salvo `&forzar=1`). Si AV dice rate limit, la corrida para.
+  - **Orden de la cola (24-oct)**: primero los símbolos con un mercado abierto que resuelve antes; después los que solo tienen mercados ya pasados, del más reciente al más viejo; al final los que no están en la cosecha. Los empates se resuelven por orden alfabético. Con `&symbols=` se respeta el orden pedido. Antes iba por orden de aparición: con 46 en cola y 10 llamadas por corrida, HLT (reporta el 27-oct) se quedaba sin historial.
   - **Costo de llenar el piloto: 10 llamadas.** Son 11 mercados fuera del universo PEAD pero 10 símbolos distintos (IMAX aparece dos veces), así que entran en una sola corrida y usan 10 de las 25 llamadas diarias compartidas.
 - **`reported_date`** se agregó a `pm_v2_hist` aunque no estaba en el encargo: sin esa fecha no hay forma de usar solo los trimestres reportados antes del mercado (cero look-ahead).
 - **Limitación, documentada y no resuelta:** AV no distingue GAAP de non-GAAP en `reportedEPS`. Para los símbolos con historial de `pm_v2_hist`, `sorpresa_metrica_match = null`.
