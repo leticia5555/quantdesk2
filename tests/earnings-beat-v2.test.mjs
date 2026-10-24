@@ -415,10 +415,11 @@ const SQL_V2 = readFileSync('docs/sql/earnings-beat-v2.sql', 'utf8');
 const SQL_V21 = readFileSync('docs/sql/earnings-beat-v2-1.sql', 'utf8');
 const SQL_V22 = readFileSync('docs/sql/earnings-beat-v2-2.sql', 'utf8');
 const SQL_V23 = readFileSync('docs/sql/earnings-beat-v2-3.sql', 'utf8');
+const SQL_V24 = readFileSync('docs/sql/earnings-beat-v2-4.sql', 'utf8');
 const norm = (s) => s.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
 
 test('la DDL de los .sql es la misma que SCHEMA_V2', () => {
-  const ambos = norm(SQL_V2 + '\n' + SQL_V21 + '\n' + SQL_V22);
+  const ambos = norm(SQL_V2 + '\n' + SQL_V21 + '\n' + SQL_V22 + '\n' + SQL_V24);
   for (const q of SCHEMA_V2) assert.ok(ambos.includes(norm(q)), q.slice(0, 60));
 });
 
@@ -436,7 +437,7 @@ test('migración + semillas + consultas + upserts v2.1, contra Postgres', { skip
   psql(`create table if not exists pead_earnings (symbol text not null, fiscal_date_ending date not null,
           reported_date date not null, reported_eps numeric, estimated_eps numeric, surprise numeric,
           surprise_pct numeric, source text, ingested_at timestamptz default now(), primary key (symbol, reported_date));`);
-  for (let i = 0; i < 2; i++) { psql(SQL_V2); psql(SQL_V21); psql(SQL_V22); psql(SQL_V23); }   // idempotentes
+  for (let i = 0; i < 2; i++) { psql(SQL_V2); psql(SQL_V21); psql(SQL_V22); psql(SQL_V23); psql(SQL_V24); }   // idempotentes
   assert.equal(psql('select count(*) from pm_v2_validation').trim(), '22');
   assert.equal(psql("select count(*) from pm_v2_validation where set = 'piloto-oct26'").trim(), '22');
   assert.equal(psql("select count(*) from pm_v2_validation where outcome is not null").trim(), '7');

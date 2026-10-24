@@ -29,7 +29,7 @@ Tres columnas aritméticas producen una probabilidad con Brier menor que Polymar
 ### Fórmula
 
 - `estimado_v2`:
-  - barra GAAP: `(consenso_vigente ?? consenso_creacion) + sorpresa_mediana_8t − brecha`;
+  - barra GAAP: `(consenso_vigente ?? consenso_creacion) + sorpresa_mediana_8t − brecha`. Desde el 26-oct, fuera del piloto, el `?? consenso_creacion` ya no aplica: sin vigente, la fila queda `sin_vigente` (ver §"Consenso vigente");
   - barra NONGAAP: `consenso + sorpresa_mediana_8t`, menos solo los cargos marcados `afecta = AMBAS`, que se explican más abajo.
 - `prob_v2 = Φ((estimado_v2 − barra − 0.005) / sorpresa_std_8t)`, con clamp a [0.03, 0.97].
   - Si no hay `sorpresa_std_8t`, se usa `0.05 × |barra|` y se marca `std_fallback`.
@@ -96,14 +96,21 @@ Una en particular: **META**. El encargo habla de un 8-K de agosto que pre-anunci
 
 ## Consenso vigente
 
-Es el `estimatedEPS` de Alpha Vantage `EARNINGS` del trimestre sin reportar. Lo captura el job diario, **solo desde que se prende** y solo mientras falten más de 24 h para el reporte. No se rellena hacia atrás: para los mercados pasados queda null y se usa el de creación.
+**Fuente desde el 26-oct: snapshot diario de Alpha Vantage `EARNINGS_CALENDAR`.** Antes era `EARNINGS`, pero el diagnóstico del 25-oct (`?job=vigente_diag&symbols=CL,VZ&calendario=1`) confirmó que `EARNINGS` no trae el trimestre por reportar. `EARNINGS_CALENDAR` sí: CL `estimate` 0.92, 4,276 filas, en una sola llamada.
 
-- La captura está **apagada por default** (`EARNINGS_V2_VIGENTE_ENABLED=1` la prende).
-  - El cupo de AV (25/día) es compartido y hoy es del wheel (docs/wheel-fase0.md §4.3).
-  - Prendida, gasta como mucho 5 llamadas por corrida y respeta `pead_api_budget`.
-- AV no publica el estimado del trimestre siguiente para todos los símbolos ni con la misma anticipación. Cuando falta, el job lo dice (`av_sin_estimado_del_trimestre`) y sigue.
+- **Captura:** con `EARNINGS_V2_VIGENTE_ENABLED=1`, `?job=diario` hace **una llamada al día** y guarda el CSV completo en `pm_v2_consenso_snap`.
+  - La tabla tiene las columnas `symbol, fiscal_date_ending, report_date, estimate, capturado_en, dia`, con PK `(symbol, fiscal_date_ending, dia)`.
+  - Si ya hay snapshot del día, no llama.
+  - Respeta el cupo compartido (`pead_api_budget`).
+  - **Nunca se rellena hacia atrás.**
+- **Regla:** el `consenso_vigente` de cada mercado es el `estimate` del snapshot **más reciente tomado antes de su T-24h**. El T-24h es la fecha del mercado a las 00:00 UTC menos 24 h, el mismo corte que el precio de Polymarket. El snapshot tiene que ser del trimestre del mercado (`fiscal_date_ending` a ± 45 días). Una vez pasado el T-24h, el valor queda congelado: un snapshot posterior no lo mueve.
+- **Sin snapshot antes del T-24h:** `consenso_vigente` queda null y la fila dice **`sin_vigente`**, con A y B sin número. El consenso de creación ya **no** se usa como si fuera vigente (decisión del 26-oct). La fórmula no cambia; cambia solo de dónde sale la columna.
+- **Excepción, el piloto oct-26:** está congelado y sin veredicto, y se calculó con el consenso de creación, así que sigue así (`exigeVigente = false`). Todo lo demás (abiertos, resueltos, set v2.1) exige vigente.
+- `?job=hist` sigue usando `EARNINGS`, solo para el historial de trimestres reportados.
 
-### Frontera (25-oct): las 68 abiertas con `consenso_vigente` null
+**Frontera.** El primer snapshot es el del primer `?job=diario` con la bandera prendida después del merge. Los mercados cuyo T-24h cae antes de ese snapshot salen con A y B en `sin_vigente`; entre ellos, los que reportan el lunes 27-oct. El set v2.1 cuenta, en la práctica, desde el primer mercado con un snapshot válido antes de su T-24h. Ese conteo sale solo: un mercado sin vigente no tiene prob A ni prob B, así que no entra en los "completos" del veredicto. No se movió ningún criterio.
+
+### Historia: el diagnóstico del 25-oct (las 68 abiertas con `consenso_vigente` null)
 
 Con la captura prendida desde el 24-oct, las 68 filas abiertas seguían sin consenso vigente. Sin esa columna, A queda en "barra + sorpresa", porque la barra es el consenso de creación. En nombres estables da ~97%. Es lo pre-registrado, no un error de fórmula, y no se toca.
 
@@ -143,7 +150,7 @@ Cambiar la captura a esa fuente es otro PR: cambia de dónde sale el dato, no la
 | `GET /api/earnings-beat-v2?job=mercados_v2` | Cron `20 22 * * *`, latido `earnings-beat:v2-mercados`. Cosecha sin universo. |
 | `GET /api/earnings-beat-v2?job=hist[&symbols=AAL,PCG]` | Cron `50 22 * * *`, latido `earnings-beat:v2-hist`. Historial de AV; apagado sin `EARNINGS_V2_HIST_ENABLED=1`. |
 | `GET /api/earnings-beat-v2?job=vigente_diag&symbols=CL,VZ[&calendario=1]` | Diagnóstico del consenso vigente: qué trae AV `EARNINGS` (y `EARNINGS_CALENDAR`) para esos símbolos. Gasta una llamada por símbolo, más una por el calendario; no escribe nada. |
-| `GET /api/earnings-beat-v2?job=diario` | Cron `55 23 * * *`, latido `earnings-beat:v2`. Features + consenso vigente. |
+| `GET /api/earnings-beat-v2?job=diario` | Cron `55 23 * * *`, latido `earnings-beat:v2`. Primero el snapshot del día de `EARNINGS_CALENDAR` (1 llamada, con `EARNINGS_V2_VIGENTE_ENABLED=1`), después las features. |
 
 Los mercados se leen de `pm_earnings_markets_v2` y, para lo que esa cosecha todavía no vio, de `pm_earnings_markets` (v1). En la vista de abiertos, `prob_pm` es el precio válido a T-24h si ya existe. Si no existe, es el último precio de Gamma, marcado `prob_pm_fuente = gamma_ahora`. Las vistas no escriben datos, pero sí crean las tablas si faltan (antes de la primera cosecha v2.1, la unión con v1 fallaría).
 

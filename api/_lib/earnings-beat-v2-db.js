@@ -126,6 +126,21 @@ const SCHEMA_V2 = [
   // si el mercado nació después, pero la brecha se aplica igual (ver
   // brechaConocida en earnings-beat-v2.js: el caso META).
   `alter table pm_known_gaps add column if not exists anunciado_en date`,
+  // Snapshot diario de EARNINGS_CALENDAR (26-oct): de acá sale el consenso
+  // vigente. Una fila por símbolo y trimestre y DÍA; la PK con `dia` hace que
+  // correr el job dos veces el mismo día no duplique (se queda el primero).
+  // Nunca se rellena hacia atrás: un día sin snapshot es un día sin dato.
+  `create table if not exists pm_v2_consenso_snap (
+     symbol             text not null,
+     fiscal_date_ending date not null,
+     report_date        date,
+     estimate           numeric,
+     capturado_en       timestamptz not null default now(),
+     dia                date not null default current_date,
+     primary key (symbol, fiscal_date_ending, dia)
+   )`,
+  `create index if not exists pm_v2_consenso_snap_symbol_idx on pm_v2_consenso_snap (symbol, capturado_en)`,
+  `alter table pm_earnings_v2_features add column if not exists consenso_vigente_snap timestamptz`,
 ];
 
 let listo = false;
@@ -140,7 +155,7 @@ const COLS_FEATURES = [
   'consenso_vigente', 'sorpresa_mediana_8t', 'sorpresa_std_8t', 'n_8t', 'beats_8t',
   'sorpresa_metrica_match', 'brecha_gaap_adj', 'cargo_ambas_metricas', 'guia_q_implicita', 'guia_q_min',
   'guia_q_max', 'estimado_v2', 'margen_v2', 'prob_v2', 'std_fallback', 'prob_pm_t24', 'desacuerdo',
-  'fuera_universo', 'faltante', 'outcome', 'estimado_b', 'prob_b',
+  'fuera_universo', 'faltante', 'outcome', 'estimado_b', 'prob_b', 'consenso_vigente_snap',
 ];
 
 // Upsert por market_id. consenso_vigente NO se escribe acá (lo escribe
@@ -156,7 +171,9 @@ async function upsertFeatures(filas) {
     values.push(`(${COLS_FEATURES.map(() => `$${++n}`).join(', ')})`);
     for (const c of COLS_FEATURES) params.push(f[c] ?? (c === 'brecha_gaap_adj' || c === 'cargo_ambas_metricas' ? 0 : c === 'fuera_universo' ? false : null));
   }
-  const upd = COLS_FEATURES.filter((c) => c !== 'market_id' && c !== 'consenso_vigente')
+  // consenso_vigente ahora se recalcula de los snapshots (inmutables y
+  // anteriores al T-24h), así que se puede reescribir: da siempre lo mismo.
+  const upd = COLS_FEATURES.filter((c) => c !== 'market_id')
     .map((c) => `${c} = excluded.${c}`).join(', ');
   const rows = await sql(
     `insert into pm_earnings_v2_features (${COLS_FEATURES.join(', ')})
@@ -168,21 +185,6 @@ async function upsertFeatures(filas) {
   return rows.length;
 }
 
-// Captura PIT del consenso vigente. Solo mientras falten > 24h para el
-// reporte: después de T-24h el número ya no es comparable con el precio de
-// Polymarket a T-24h, y se congela el último capturado.
-async function guardaVigente(market_id, valor) {
-  const rows = await sql(
-    `update pm_earnings_v2_features
-        set consenso_vigente = $2, consenso_vigente_ts = now()
-      where market_id = $1
-        and fecha is not null
-        and now() < (fecha::timestamptz - interval '24 hours')
-      returning market_id`,
-    [market_id, valor]
-  );
-  return rows.length;
-}
 
 // ─────────────────── v2.1: historial AV ───────────────────
 
@@ -269,7 +271,35 @@ async function upsertMercadosV2(filas) {
   return { insertados, actualizados: rows.length - insertados };
 }
 
+// ─────────────────── snapshot de EARNINGS_CALENDAR ───────────────────
+
+// filas: salida de parseCalendarioCsv. En lotes (≈4,300 filas × 4 parámetros).
+// on conflict do nothing: el primer snapshot del día es EL snapshot del día.
+async function guardaSnapshotConsenso(filas, { lote = 1000 } = {}) {
+  const validas = (filas || []).filter((f) => f && f.symbol && f.fiscal_date_ending);
+  let insertadas = 0;
+  for (let i = 0; i < validas.length; i += lote) {
+    const parte = validas.slice(i, i + lote);
+    let n = 0;
+    const values = [];
+    const params = [];
+    for (const f of parte) {
+      values.push(`($${++n}, $${++n}, $${++n}, $${++n})`);
+      params.push(f.symbol, f.fiscal_date_ending, f.report_date || null, f.estimate ?? null);
+    }
+    const rows = await sql(
+      `insert into pm_v2_consenso_snap (symbol, fiscal_date_ending, report_date, estimate)
+       values ${values.join(', ')}
+       on conflict (symbol, fiscal_date_ending, dia) do nothing
+       returning symbol`,
+      params
+    );
+    insertadas += rows.length;
+  }
+  return { filas: validas.length, insertadas };
+}
+
 export {
-  SCHEMA_V2, ensureSchemaV2, upsertFeatures, guardaVigente, COLS_FEATURES,
+  SCHEMA_V2, ensureSchemaV2, upsertFeatures, COLS_FEATURES, guardaSnapshotConsenso,
   upsertHist, upsertMercadosV2, COLS_V2,
 };
