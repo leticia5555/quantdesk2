@@ -14,9 +14,9 @@
 //   ?job=hist          historial AV para símbolos que NO están en
 //                      pead_earnings → pm_v2_hist. EARNINGS_V2_HIST_ENABLED=1.
 //                      &symbols=AAL,PCG para pedir unos en particular.
-//   ?job=diario        recalcula pm_earnings_v2_features y, con
-//                      EARNINGS_V2_VIGENTE_ENABLED=1, captura el consenso
-//                      vigente de Alpha Vantage.
+//   ?job=diario        con EARNINGS_V2_VIGENTE_ENABLED=1, guarda el snapshot
+//                      del día de AV EARNINGS_CALENDAR (pm_v2_consenso_snap,
+//                      1 llamada); después recalcula pm_earnings_v2_features.
 //
 // Los mercados se leen de pm_earnings_markets_v2 y, para lo que la cosecha
 // v2.1 todavía no vio, de pm_earnings_markets (v1). El historial, de
@@ -27,8 +27,8 @@
 // ── Alpha Vantage ──────────────────────────────────────────────────
 // El cupo diario (25) es compartido y hoy es del wheel (docs/wheel-fase0.md
 // §4.3). Las dos capturas están APAGADAS por default; prendidas, respetan el
-// mismo guard pead_api_budget: el consenso vigente gasta ≤ 5 por corrida y el
-// historial ≤ 10.
+// mismo guard pead_api_budget: el consenso vigente gasta 1 llamada al día
+// (EARNINGS_CALENDAR) y el historial ≤ 10 por corrida (EARNINGS).
 //
 // ENV VARS: DATABASE_URL · CRON_SECRET (opc) · ALPHAVANTAGE_API_KEY (opc) ·
 //           EARNINGS_V2_VIGENTE_ENABLED (opc) · EARNINGS_V2_HIST_ENABLED (opc)
@@ -47,18 +47,17 @@ import { fetchEarnings } from './_lib/av-earnings.js';
 import { budgetUsed, budgetAdd, ensurePeadSchema } from './_lib/pead-db.js';
 import {
   VALIDACION_V2, CORTE_VALIDACION, CRITERIOS_V2, CRITERIOS_V21, SET_PILOTO, UNIVERSO,
-  resumenCaptura, parseCalendarioCsv,
+  parseCalendarioCsv, vigenteDeSnapshots,
   leeMercado, eligeMercadoPiloto, filaV21, trimestreDelReporte, veredictoV21, enSetV21, acierto, renderMdV21, estimadoVigenteDeAv,
 } from './_lib/earnings-beat-v2.js';
 import {
-  ensureSchemaV2, upsertFeatures, guardaVigente, upsertHist, upsertMercadosV2,
+  ensureSchemaV2, upsertFeatures, upsertHist, upsertMercadosV2, guardaSnapshotConsenso,
 } from './_lib/earnings-beat-v2-db.js';
 
 export const maxDuration = 300;
 export { CONSULTAS, simbolosParaBuscar, ordenaColaHist };
 
 const AV_TOPE_DIARIO = 25;
-const AV_POR_CORRIDA = 5;       // consenso vigente
 const AV_HIST_POR_CORRIDA = 10; // historial (encargo v2.1)
 const AV_ESPACIO_MS = 11000;
 const PRESUPUESTO_MS = 240000;
@@ -97,7 +96,13 @@ const CONSULTAS = {
   guias: (n) => `select symbol, to_char(quarter_end, 'YYYY-MM-DD') as quarter_end, metrica, alcance, guia_min, guia_max,
              ytd_reportado, trimestres_restantes, fuente_url, verificada
       from pm_company_guidance where symbol in (${ph(n)})`,
-  vigentes: () => `select market_id, consenso_vigente from pm_earnings_v2_features where consenso_vigente is not null`,
+  // snapshots de EARNINGS_CALENDAR de esos símbolos (los últimos 200 días
+  // alcanzan: el vigente se toma del más reciente antes del T-24h).
+  snapsDe: (n) => `select symbol, to_char(fiscal_date_ending, 'YYYY-MM-DD') as fiscal_date_ending, estimate,
+            to_char(capturado_en at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as capturado_en
+       from pm_v2_consenso_snap
+      where symbol in (${ph(n)}) and estimate is not null and capturado_en > now() - interval '200 days'`,
+  snapHoy: () => `select count(*)::int as n from pm_v2_consenso_snap where dia = current_date`,
   abiertos: () => `${SELECT_MERCADO}
      where outcome is null and fecha >= to_char(current_date, 'YYYY-MM-DD')
      order by fecha asc`,
@@ -139,7 +144,7 @@ const CONSULTAS = {
 const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
 
 // Fila de mercado (v1 o v2) → entrada de filaV21 (sin historial).
-function mercadoDesdeFila(r, vigentes) {
+function mercadoDesdeFila(r) {
   const norm = normalizaMercado(r.raw && typeof r.raw === 'object' ? r.raw : {}) || {};
   const m = { slug: r.slug || norm.slug, pregunta: r.question || norm.pregunta, descripcion: norm.descripcion };
   const lec = leeMercado(m);
@@ -156,20 +161,26 @@ function mercadoDesdeFila(r, vigentes) {
     market_id: r.market_id, symbol: r.symbol, fecha: r.fecha, creado: r.creado || isoDia(norm.creado),
     metrica_barra: lec.metrica_barra, metrica_via: lec.metrica_via, metrica_motivo: lec.metrica_motivo, barra: lec.barra,
     consenso_creacion: lec.consenso_creacion ?? num(r.consensus_pm),
-    consenso_vigente: vigentes.get(r.market_id) ?? null,
+    consenso_vigente: null,   // lo pone construyeFilas, desde los snapshots
     prob_pm_t24, prob_pm_fuente, outcome: r.outcome, cosecha: r.cosecha || null,
   };
 }
 
 async function contexto(mercados) {
   const simbolos = [...new Set(mercados.map((m) => m.symbol).filter(Boolean))];
-  if (!simbolos.length) return { hist: new Map(), fuente: new Map(), gaps: [], guias: [] };
-  const [pead, av, gaps, guias] = await Promise.all([
+  if (!simbolos.length) return { hist: new Map(), fuente: new Map(), gaps: [], guias: [], snaps: new Map() };
+  const [pead, av, gaps, guias, snapsFilas] = await Promise.all([
     sql(CONSULTAS.historial(simbolos.length), simbolos),
     sql(CONSULTAS.historialV2(simbolos.length), simbolos).catch(() => []),
     sql(CONSULTAS.gaps(simbolos.length), simbolos).catch(() => []),
     sql(CONSULTAS.guias(simbolos.length), simbolos).catch(() => []),
+    sql(CONSULTAS.snapsDe(simbolos.length), simbolos).catch(() => []),
   ]);
+  const snaps = new Map();
+  for (const x of snapsFilas) {
+    if (!snaps.has(x.symbol)) snaps.set(x.symbol, []);
+    snaps.get(x.symbol).push(x);
+  }
   // pead_earnings manda; pm_v2_hist solo para quien no tiene PEAD.
   const hist = new Map();
   const fuente = new Map();
@@ -181,47 +192,49 @@ async function contexto(mercados) {
     }
     for (const [s, f] of porSim) if (!hist.has(s)) { hist.set(s, f); fuente.set(s, nombre); }
   }
-  return { hist, fuente, gaps, guias };
+  return { hist, fuente, gaps, guias, snaps };
 }
 
-function construyeFilas(mercados, ctx) {
-  return mercados.map((m) => {
-    const q = trimestreDelReporte(m.fecha);
+// exigeVigente: true en todo menos el piloto oct-26 (congelado, sin
+// veredicto, calculado con el consenso de creación). Ver filaV2.
+function construyeFilas(mercados, ctx, { exigeVigente = true } = {}) {
+  return mercados.map((m0) => {
+    const q = trimestreDelReporte(m0.fecha);
+    // Consenso vigente: el snapshot de EARNINGS_CALENDAR más reciente antes
+    // del T-24h de ESTE mercado (vigenteDeSnapshots). Congelado ahí.
+    const v = vigenteDeSnapshots((ctx.snaps && ctx.snaps.get(m0.symbol)) || [], { fecha: m0.fecha, quarter_end: q });
+    const m = { ...m0, consenso_vigente: v.valor, vigente_snap_ts: v.snap_ts };
     const gaps = ctx.gaps.filter((g) => g.symbol === m.symbol && g.quarter_end === q);
     // La guía de la MISMA métrica que la barra, si la hay; si no, la que haya
     // (la columna se muestra igual; prob_B solo la usa si la métrica coincide).
     const guias = ctx.guias.filter((g) => g.symbol === m.symbol && g.quarter_end === q);
     const guia = guias.find((g) => g.metrica === m.metrica_barra) || guias[0] || null;
-    const f = filaV21({ mercado: m, historial: ctx.hist.get(m.symbol) || [], fuenteHist: ctx.fuente.get(m.symbol) || null, gaps, guia });
-    return { ...f, prob_pm_fuente: m.prob_pm_fuente || null, cosecha: m.cosecha || null,
+    const f = filaV21({ mercado: m, historial: ctx.hist.get(m.symbol) || [], fuenteHist: ctx.fuente.get(m.symbol) || null, gaps, guia, exigeVigente });
+    return { ...f, consenso_vigente_snap: v.snap_ts, prob_pm_fuente: m.prob_pm_fuente || null, cosecha: m.cosecha || null,
       ...(m.piloto_cruce ? { piloto_cruce: m.piloto_cruce } : {}) };
   });
 }
 
-async function vigentesGuardados() {
-  const rows = await sql(CONSULTAS.vigentes()).catch(() => []);
-  return new Map(rows.map((r) => [r.market_id, Number(r.consenso_vigente)]));
+
+async function mercadosAbiertos() {
+  return (await sql(CONSULTAS.abiertos())).map((r) => mercadoDesdeFila(r));
 }
 
-async function mercadosAbiertos(vigentes) {
-  return (await sql(CONSULTAS.abiertos())).map((r) => mercadoDesdeFila(r, vigentes));
+async function mercadosResueltos(limite) {
+  return (await sql(CONSULTAS.resueltos(), [limite])).map((r) => mercadoDesdeFila(r));
 }
 
-async function mercadosResueltos(vigentes, limite) {
-  return (await sql(CONSULTAS.resueltos(), [limite])).map((r) => mercadoDesdeFila(r, vigentes));
-}
-
-async function mercadosSetV21(vigentes) {
+async function mercadosSetV21() {
   const c = CRITERIOS_V21;
   const rows = await sql(CONSULTAS.setV21(), [c.creado_desde, c.creado_hasta, c.resuelve_antes]);
-  return rows.map((r) => mercadoDesdeFila(r, vigentes)).filter((m) => enSetV21(m));
+  return rows.map((r) => mercadoDesdeFila(r)).filter((m) => enSetV21(m));
 }
 
 // El piloto de 22. La semilla de pm_v2_validation manda en la resolución (no
 // depende de que Polymarket los marque) y completa la barra de los que no
 // están en ninguna cosecha. El market_id se busca por símbolo + fecha (± 1
 // día: Polymarket fecha por la resolución y pead_earnings por el reporte).
-async function mercadosPiloto(vigentes) {
+async function mercadosPiloto() {
   const semillas = await sql(CONSULTAS.semillas(), [SET_PILOTO]).catch(() => []);
   const porClave = new Map(semillas.map((s) => [`${s.symbol}|${s.fecha}`, s]));
   const simbolos = [...new Set(VALIDACION_V2.map((v) => v.symbol))];
@@ -232,7 +245,7 @@ async function mercadosPiloto(vigentes) {
     const eleccion = fijo ? { mercado: fijo, via: 'semilla', ambiguo: false, descartados_por_corte: 0 }
       : eligeMercadoPiloto(pm, { symbol, fecha, barraSemilla: num(s.barra) });
     const r = eleccion.mercado;
-    const base = r ? mercadoDesdeFila(r, vigentes) : { market_id: null, symbol, fecha, consenso_vigente: null, prob_pm_t24: null };
+    const base = r ? mercadoDesdeFila(r) : { market_id: null, symbol, fecha, consenso_vigente: null, prob_pm_t24: null };
     return {
       ...base,
       piloto_cruce: { via: eleccion.via, ambiguo: eleccion.ambiguo, descartados_por_corte: eleccion.descartados_por_corte },
@@ -454,49 +467,59 @@ async function jobHist(q) {
 
 // ─────────────────── job: diario ───────────────────
 
+// ── EARNINGS_CALENDAR: UNA llamada, todos los reportes de los próximos 3 meses ──
+async function fetchCalendario(apiKey) {
+  const url = `https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey=${apiKey}`;
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    const texto = await resp.text();
+    return { http: resp.status, ...parseCalendarioCsv(texto) };
+  } catch (e) {
+    return { status: 'neterror', filas: [], mensaje: String((e && e.message) || e) };
+  }
+}
+
+// Snapshot del día (26-oct). Con EARNINGS_V2_VIGENTE_ENABLED=1: si hoy todavía
+// no hay snapshot, UNA llamada a EARNINGS_CALENDAR y se guarda completo en
+// pm_v2_consenso_snap. Si ya hay, no llama. Nunca rellena días pasados.
+async function capturaSnapshotConsenso() {
+  const captura = { activa: process.env.EARNINGS_V2_VIGENTE_ENABLED === '1', fuente: 'EARNINGS_CALENDAR', llamadas: 0 };
+  if (!captura.activa) return captura;
+  const apiKey = process.env.ALPHAVANTAGE_API_KEY;
+  if (!apiKey) return { ...captura, error: 'ALPHAVANTAGE_API_KEY no está' };
+  const [hoy] = await sql(CONSULTAS.snapHoy());
+  if (hoy && hoy.n > 0) return { ...captura, ya_habia_hoy: hoy.n };
+  await ensurePeadSchema();
+  const dia = new Date().toISOString().slice(0, 10);
+  const libres = AV_TOPE_DIARIO - (await budgetUsed(dia));
+  if (libres < 1) return { ...captura, error: 'sin cupo de AV hoy', cupo_libre_antes: libres };
+  const cal = await fetchCalendario(apiKey);
+  await budgetAdd(dia, 1);   // el cupo se gasta con la llamada, haya datos o no
+  if (cal.status !== 'ok') return { ...captura, llamadas: 1, cupo_libre_antes: libres, status: cal.status, mensaje: cal.mensaje || null };
+  const g = await guardaSnapshotConsenso(cal.filas);
+  return { ...captura, llamadas: 1, cupo_libre_antes: libres, status: 'ok', filas: g.filas, insertadas: g.insertadas,
+    con_estimate: cal.filas.filter((f) => f.estimate !== null).length };
+}
+
 async function jobDiario() {
   await ensureSchemaV2();
-  const vigentes = await vigentesGuardados();
-  const abiertos = await mercadosAbiertos(vigentes);
-  const piloto = (await mercadosPiloto(vigentes)).filter((m) => m.market_id);
-  const setV21 = await mercadosSetV21(vigentes);
+  // Primero el snapshot: así el de hoy ya cuenta para los mercados cuyo T-24h
+  // todavía no pasó.
+  const captura = await capturaSnapshotConsenso();
+  const abiertos = await mercadosAbiertos();
+  const piloto = (await mercadosPiloto()).filter((m) => m.market_id);
+  const setV21 = await mercadosSetV21();
+  const conPiloto = new Set(piloto.map((m) => m.market_id));
   const todos = [...new Map([...abiertos, ...piloto, ...setV21].map((m) => [m.market_id, m])).values()];
-  const filas = construyeFilas(todos, await contexto(todos));
+  const ctx = await contexto(todos);
+  // El piloto se guarda como siempre (con el de creación); el resto, exigiendo vigente.
+  const filas = [
+    ...construyeFilas(todos.filter((m) => conPiloto.has(m.market_id)), ctx, { exigeVigente: false }),
+    ...construyeFilas(todos.filter((m) => !conPiloto.has(m.market_id)), ctx, { exigeVigente: true }),
+  ];
   const escritas = await upsertFeatures(filas);
-
-  const captura = { activa: process.env.EARNINGS_V2_VIGENTE_ENABLED === '1', intentos: [] };
-  const apiKey = process.env.ALPHAVANTAGE_API_KEY;
-  if (captura.activa && !apiKey) captura.error = 'ALPHAVANTAGE_API_KEY no está';
-  if (captura.activa && apiKey) {
-    await ensurePeadSchema();
-    const dia = new Date().toISOString().slice(0, 10);
-    const libres = AV_TOPE_DIARIO - (await budgetUsed(dia));
-    // Los más cercanos primero, con > 24h por delante. v2.1: sin filtro de
-    // universo (el consenso vigente no depende del historial).
-    const manana = Date.now() + 24 * 3600 * 1000;
-    const cola = filas
-      .filter((f) => f.market_id && f.symbol && Date.parse(f.fecha + 'T00:00:00Z') > manana)
-      .sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
-    const porSimbolo = new Map();
-    for (const f of cola) {
-      let res = porSimbolo.get(f.symbol);
-      if (!res) {
-        if (porSimbolo.size >= Math.min(AV_POR_CORRIDA, libres)) break;
-        if (porSimbolo.size) await sleep(AV_ESPACIO_MS);
-        res = await fetchEarnings(f.symbol, apiKey);
-        await budgetAdd(dia, 1);
-        porSimbolo.set(f.symbol, res);
-      }
-      if (res.status !== 'ok') { captura.intentos.push({ symbol: f.symbol, estado: res.status }); continue; }
-      const v = estimadoVigenteDeAv(res.events, f.quarter_end);
-      if (v.valor === null) { captura.intentos.push({ symbol: f.symbol, estado: v.motivo }); continue; }
-      const n = await guardaVigente(f.market_id, v.valor);
-      captura.intentos.push({ symbol: f.symbol, estado: n ? 'capturado' : 'pasado_t24h', valor: v.valor });
-    }
-    captura.cupo_libre_antes = libres;
-    captura.llamadas = porSimbolo.size;
-  }
-  return { job: 'diario', features_escritas: escritas, abiertos: abiertos.length, piloto_con_market_id: piloto.length, set_v21: setV21.length, captura };
+  return { job: 'diario', features_escritas: escritas, abiertos: abiertos.length, piloto_con_market_id: piloto.length, set_v21: setV21.length,
+    con_vigente: filas.filter((f) => f.consenso_vigente !== null).length, captura };
 }
 
 // ─────────────────── job: vigente_diag (solo lectura) ───────────────────
@@ -526,7 +549,7 @@ async function jobVigenteDiag(q) {
   const necesarias = simbolos.length + (conCalendario ? 1 : 0);
   if (libres < necesarias) return { job: 'vigente_diag', error: 'sin cupo de AV hoy', cupo_libre: libres, necesarias };
 
-  const abiertos = (await mercadosAbiertos(new Map())).filter((m) => simbolos.includes(m.symbol));
+  const abiertos = (await mercadosAbiertos()).filter((m) => simbolos.includes(m.symbol));
   const porSimbolo = [];
   for (let i = 0; i < simbolos.length; i++) {
     if (i) await sleep(AV_ESPACIO_MS);
@@ -548,22 +571,10 @@ async function jobVigenteDiag(q) {
   let calendario = null;
   if (conCalendario) {
     await sleep(AV_ESPACIO_MS);
-    const url = `https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey=${apiKey}`;
-    let texto = null;
-    let http = null;
-    try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(20000) });
-      http = resp.status;
-      texto = await resp.text();
-    } catch (e) {
-      calendario = { status: 'neterror', mensaje: String((e && e.message) || e) };
-    }
+    const c = await fetchCalendario(apiKey);
     await budgetAdd(dia, 1);
-    if (texto !== null) {
-      const c = parseCalendarioCsv(texto);
-      calendario = { status: c.status, http, cabecera: c.cabecera || null, filas_totales: c.filas.length,
-        mensaje: c.mensaje || null, pedidos: c.filas.filter((f) => simbolos.includes(f.symbol)) };
-    }
+    calendario = { status: c.status, http: c.http ?? null, cabecera: c.cabecera || null, filas_totales: c.filas.length,
+      mensaje: c.mensaje || null, pedidos: c.filas.filter((f) => simbolos.includes(f.symbol)) };
   }
   return { job: 'vigente_diag', escribe: false, llamadas: necesarias, cupo_libre_antes: libres, por_simbolo: porSimbolo, calendario };
 }
@@ -597,7 +608,7 @@ export default async function handler(req, res) {
       // El latido de `diario` guarda QUÉ contestó AV (por estado + muestras):
       // sin esto, "consenso_vigente null en las 68" no se podía diagnosticar.
       const detalle = job === 'hist' ? { llamadas: out.llamadas ?? 0 }
-        : job === 'diario' ? { features: out.features_escritas, captura: resumenCaptura(out.captura) } : null;
+        : job === 'diario' ? { features: out.features_escritas, con_vigente: out.con_vigente, captura: out.captura } : null;
       await beat(LATIDO[job], out.apagado ? 'disabled' : 'ok', detalle);
       return res.status(200).json(out);
     }
@@ -608,18 +619,17 @@ export default async function handler(req, res) {
     // de la primera cosecha v2.1, pm_earnings_markets_v2 no existe y la unión
     // con v1 fallaría. Crear una tabla vacía no es escribir datos.
     await ensureSchemaV2();
-    const vigentes = await vigentesGuardados();
     const v = String(q.validacion || '');
 
     if (v === '1' || v === 'piloto') {
-      const mercados = await mercadosPiloto(vigentes);
-      const filas = construyeFilas(mercados, await contexto(mercados));
+      const mercados = await mercadosPiloto();
+      const filas = construyeFilas(mercados, await contexto(mercados), { exigeVigente: false });
       if (esMd) return md(renderMdV21({ titulo: `earnings-beat v2 — piloto ${SET_PILOTO} (corte ${CORTE_VALIDACION}), sin veredicto`, filas, piloto: true }));
       return res.status(200).json({ vista: 'piloto', set: SET_PILOTO, veredicto: null, criterios_v2: CRITERIOS_V2, filas });
     }
 
     if (v === 'v21' || v === '2.1') {
-      const mercados = await mercadosSetV21(vigentes);
+      const mercados = await mercadosSetV21();
       const filas = construyeFilas(mercados, await contexto(mercados));
       const veredicto = veredictoV21(filas, { hoy: new Date().toISOString() });
       if (esMd) return md(renderMdV21({ titulo: `earnings-beat v2.1 — set pre-registrado (creados ${CRITERIOS_V21.creado_desde}…${CRITERIOS_V21.creado_hasta})`, filas, veredicto }));
@@ -628,7 +638,7 @@ export default async function handler(req, res) {
 
     if (String(q.resueltos || '') === '1') {
       const limite = Math.min(500, Math.max(1, Number(q.limite) || 200));
-      const mercados = await mercadosResueltos(vigentes, limite);
+      const mercados = await mercadosResueltos(limite);
       const filas = construyeFilas(mercados, await contexto(mercados)).map((f) => ({
         ...f, acierto_A: acierto(f.prob_A, f.outcome), acierto_B: acierto(f.prob_B, f.outcome), acierto_pm: acierto(f.prob_pm_t24, f.outcome),
       }));
@@ -636,7 +646,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ vista: 'resueltos', n: filas.length, filas });
     }
 
-    const mercados = await mercadosAbiertos(vigentes);
+    const mercados = await mercadosAbiertos();
     const filas = construyeFilas(mercados, await contexto(mercados))
       .sort((a, b) => Math.abs(b.desacuerdo_A ?? -1) - Math.abs(a.desacuerdo_A ?? -1));
     if (esMd) {

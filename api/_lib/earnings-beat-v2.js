@@ -361,7 +361,11 @@ function probV2(margen, sorpresa_std_8t, beats_8t, metrica_match, { barra = null
 //   gaps       filas pm_known_gaps del símbolo+trimestre
 //   guia       fila pm_company_guidance del símbolo+trimestre (o null)
 //   universo   Set de símbolos (default: los 99)
-function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UNIVERSO }) {
+// exigeVigente (26-oct): desde que el consenso vigente sale de los snapshots
+// de EARNINGS_CALENDAR, un mercado SIN snapshot anterior a su T-24h no usa el
+// consenso de creación como si fuera vigente: queda `sin_vigente`. Solo el
+// piloto oct-26 (congelado, sin veredicto) sigue con el de creación.
+function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UNIVERSO, exigeVigente = false }) {
   const mk = mercado || {};
   const symbol = mk.symbol || null;
   const fecha = isoDia(mk.fecha);
@@ -377,7 +381,7 @@ function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UN
   const brecha = brechaConocida(gaps, metrica_barra, mk.creado);
   const g = guiaImplicita(guia);
 
-  const estimado_v2 = estimadoV2({ metrica_barra, consenso_vigente, consenso_creacion, sorpresa_mediana_8t: hist.sorpresa_mediana_8t, brecha_aplicada: brecha.brecha_aplicada });
+  const estimado_v2 = estimadoV2({ metrica_barra, consenso_vigente, consenso_creacion: exigeVigente ? null : consenso_creacion, sorpresa_mediana_8t: hist.sorpresa_mediana_8t, brecha_aplicada: brecha.brecha_aplicada });
   const margen_v2 = estimado_v2 !== null && barra !== null ? redondea(estimado_v2 - barra) : null;
   const pr = probV2(margen_v2, hist.sorpresa_std_8t, hist.beats_8t, hist.sorpresa_metrica_match, { barra });
   const prob_pm_t24 = num(mk.prob_pm_t24);
@@ -387,7 +391,8 @@ function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UN
   const faltante = fuera_universo ? 'fuera_universo'
     : !metrica_barra ? (mk.metrica_motivo === 'metrica_ambigua' ? 'metrica_ambigua' : 'sin_metrica')
       : barra === null ? 'sin_barra'
-        : (consenso_vigente ?? consenso_creacion) === null ? 'sin_consenso'
+        : exigeVigente && consenso_vigente === null ? 'sin_vigente'
+          : (consenso_vigente ?? consenso_creacion) === null ? 'sin_consenso'
           : hist.sorpresa_mediana_8t === null ? 'sin_historial_8t'
             : null;
 
@@ -395,7 +400,8 @@ function filaV2({ mercado, historial = [], gaps = [], guia = null, universo = UN
     market_id: mk.market_id || null, symbol, fecha,
     quarter_end: trimestreDelReporte(fecha),
     metrica_barra, metrica_via: mk.metrica_via || null, barra, consenso_creacion, consenso_vigente,
-    consenso_usado: consenso_vigente !== null ? 'vigente' : consenso_creacion !== null ? 'creacion' : null,
+    consenso_usado: consenso_vigente !== null ? 'vigente' : !exigeVigente && consenso_creacion !== null ? 'creacion' : null,
+    vigente_snap_ts: mk.vigente_snap_ts || null,
     consenso_vs_barra_ok: consenso_creacion === null || barra === null ? null
       : Math.abs(consenso_creacion - barra) <= CRITERIOS_V2.tolerancia_consenso_barra + 1e-9,
     ...hist,
@@ -469,10 +475,10 @@ function estimadoB(estimado_A, guia_q_implicita, guia_metrica, metrica_barra) {
 // pead_earnings para los 99, pm_v2_hist para el resto. fuenteHist dice de dónde
 // vino; con pm_v2_hist la métrica de la sorpresa NO se sabe (AV no distingue
 // GAAP de non-GAAP en reportedEPS) → sorpresa_metrica_match = null.
-function filaV21({ mercado, historial = [], fuenteHist = null, gaps = [], guia = null, universoPead = UNIVERSO }) {
+function filaV21({ mercado, historial = [], fuenteHist = null, gaps = [], guia = null, universoPead = UNIVERSO, exigeVigente = false }) {
   const mk = mercado || {};
   const symbol = mk.symbol || null;
-  const base = filaV2({ mercado: mk, historial, gaps, guia, universo: new Set(symbol ? [symbol] : []) });
+  const base = filaV2({ mercado: mk, historial, gaps, guia, universo: new Set(symbol ? [symbol] : []), exigeVigente });
   const universo_pead = !!(symbol && universoPead.has(symbol));
   const sorpresa_metrica_match = fuenteHist === 'pm_v2_hist' ? null : base.sorpresa_metrica_match;
   const faltante = !symbol ? 'sin_simbolo'
@@ -579,23 +585,40 @@ function estimadoVigenteDeAv(events, quarter_end) {
   return { valor: num(candidatos[0].e.estimated_eps), motivo: null, fiscal_date_ending: candidatos[0].e.fiscal_date_ending };
 }
 
+// ── Consenso vigente desde los snapshots de EARNINGS_CALENDAR (26-oct) ──
+// El diagnóstico del 25-oct confirmó que EARNINGS no trae el trimestre por
+// reportar y que EARNINGS_CALENDAR sí (una llamada, ~4,300 filas). El job
+// diario guarda un snapshot completo por día en pm_v2_consenso_snap; nunca se
+// rellena hacia atrás.
+//
+// El vigente de un mercado es el estimate del snapshot MÁS RECIENTE tomado
+// ANTES de su T-24h (fecha del mercado 00:00 UTC − 24 h, el mismo corte que
+// el precio de Polymarket), para su trimestre (fiscal_date_ending a ± 45 días
+// del fin de trimestre del mercado). Ahí queda congelado: un snapshot de
+// después del T-24h no lo mueve. Sin snapshot antes del T-24h → null.
+//
+// snaps: [{ fiscal_date_ending, estimate, capturado_en }] de un símbolo.
+const VENTANA_TRIMESTRE_DIAS = 45;
+function vigenteDeSnapshots(snaps, { fecha, quarter_end }) {
+  const f = isoDia(fecha), q = isoDia(quarter_end);
+  if (!f || !q) return { valor: null, motivo: 'sin_fecha', snap_ts: null };
+  const corte = Date.parse(f + 'T00:00:00Z') - 24 * 3600 * 1000;
+  const qms = Date.parse(q + 'T00:00:00Z');
+  const candidatos = (snaps || [])
+    .filter((x) => x && num(x.estimate) !== null && x.capturado_en && Date.parse(x.capturado_en) < corte)
+    .map((x) => ({ x, dist: Math.abs(Date.parse(isoDia(x.fiscal_date_ending) + 'T00:00:00Z') - qms) / 86400000, ts: Date.parse(x.capturado_en) }))
+    .filter((c) => c.dist <= VENTANA_TRIMESTRE_DIAS)
+    .sort((a, b) => b.ts - a.ts || a.dist - b.dist);
+  if (!candidatos.length) return { valor: null, motivo: 'sin_snapshot_antes_de_t24h', snap_ts: null };
+  const c = candidatos[0];
+  return { valor: num(c.x.estimate), motivo: null, snap_ts: c.x.capturado_en, fiscal_date_ending: isoDia(c.x.fiscal_date_ending) };
+}
+
 // ── Diagnóstico del consenso vigente (25-oct) ──
 // Con EARNINGS_V2_VIGENTE_ENABLED=1, las 68 filas abiertas seguían con
 // consenso_vigente null, y el latido no guardaba qué había contestado AV.
 // Estas dos funciones son para VER eso, no cambian ninguna fórmula.
 
-// Resumen chico de una captura, para el latido (cron_heartbeat.detail).
-function resumenCaptura(captura) {
-  const c = captura || {};
-  const por_estado = {};
-  for (const i of c.intentos || []) por_estado[i.estado] = (por_estado[i.estado] || 0) + 1;
-  return {
-    activa: !!c.activa, error: c.error || null,
-    llamadas: c.llamadas ?? 0, cupo_libre_antes: c.cupo_libre_antes ?? null,
-    por_estado,
-    muestras: (c.intentos || []).slice(0, 8).map((i) => `${i.symbol}:${i.estado}${i.valor !== undefined ? '=' + i.valor : ''}`),
-  };
-}
 
 // EARNINGS_CALENDAR de Alpha Vantage viene en CSV:
 //   symbol,name,reportDate,fiscalDateEnding,estimate,currency
@@ -790,6 +813,6 @@ export {
   metricaBarra, leeMetrica, oracionPrincipal, fechaDelSlug, eligeMercadoPiloto, leeMercado, sorpresaHistorica, trimestreDelReporte,
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
-  estimadoVigenteDeAv, resumenCaptura, parseCalendarioCsv,
+  estimadoVigenteDeAv, parseCalendarioCsv, vigenteDeSnapshots,
   SET_PILOTO, CRITERIOS_V21, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
 };
