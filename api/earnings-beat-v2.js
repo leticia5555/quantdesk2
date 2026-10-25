@@ -51,7 +51,7 @@ import {
   leeMercado, eligeMercadoPiloto, filaV21, trimestreDelReporte, veredictoV21, enSetV21, acierto, renderMdV21, estimadoVigenteDeAv,
 } from './_lib/earnings-beat-v2.js';
 import {
-  ensureSchemaV2, upsertFeatures, upsertHist, upsertMercadosV2, guardaSnapshotConsenso,
+  ensureSchemaV2, upsertFeatures, upsertHist, marcaSinDatosAv, upsertMercadosV2, guardaSnapshotConsenso,
 } from './_lib/earnings-beat-v2-db.js';
 
 export const maxDuration = 300;
@@ -119,7 +119,7 @@ const CONSULTAS = {
   // job hist: quiénes NO necesitan llamada (están en PEAD o tienen historial fresco)
   conPead: (n) => `select distinct symbol from pead_earnings where symbol in (${ph(n)})`,
   histFresco: (n) => `select symbol from pm_v2_hist where symbol in (${ph(n)})
-      group by symbol having max(capturado_en) > now() - ($${n + 1})::int * interval '1 day'`,
+      group by symbol having max(capturado_en) > now() - ($${n + 1})::int * interval '1 day' or bool_or(fuente = 'sin_datos_av')`,
   simbolosCosechados: () => `select distinct symbol from pm_earnings_markets_v2 where symbol is not null`,
   // job hist: la fecha más cercana por símbolo, para ordenar la cola.
   // proxima: el mercado ABIERTO que resuelve antes (desde ayer, para no
@@ -454,7 +454,8 @@ async function jobHist(q) {
       const n = await upsertHist(s, r.events);
       resultado.push({ symbol: s, estado: 'ok', trimestres: n });
     } else {
-      resultado.push({ symbol: s, estado: r.status, mensaje: r.message || null });
+      if (r.status === 'empty') await marcaSinDatosAv(s);   // no se vuelve a pedir (salvo &forzar=1)
+      resultado.push({ symbol: s, estado: r.status === 'empty' ? 'sin_datos_av' : r.status, mensaje: r.message || null });
       if (r.status === 'rate_limited') break;   // AV dijo basta: seguir es tirar cupo
     }
   }
