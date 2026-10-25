@@ -135,10 +135,30 @@
      "Quién" (401 px) y "Cargo" (232): nombres completos sin recortar.
      Se recortan con "…" y el nombre entero vive en el `title`. */
   @media (min-width:1000px){
-    td.c-quien{max-width:190px}
-    td.c-cargo{max-width:150px}
-    td.c-quien,td.c-cargo{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    /* `table-layout:fixed` SIN anchos declarados reparte en partes iguales, y
+       entonces la celda de "Tipo" —que ahora lleva el código, la etiqueta del
+       plan y "ejerció y vendió"— se desbordaba ENCIMA de "Precio": se leía
+       "plan: sin dato10.00". El ancho se declara por columna, y "Tipo" se
+       queda con lo que sobra porque es la única que crece. */
     .tabla table{table-layout:fixed;width:100%}
+    .tabla th.izq:first-child,.tabla td.c-tk{width:64px}
+    .tabla td.c-quien{width:150px}
+    .tabla td.c-cargo{width:115px}
+    .tabla td.c-fecha{width:92px}
+    .tabla td.c-precio{width:64px}
+    .tabla td.c-acciones{width:82px}
+    .tabla td.c-valor{width:76px}
+    .tabla td.c-quedan{width:88px}
+    .tabla td.c-filing{width:92px}
+    td.c-quien,td.c-cargo{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    /* "Tipo" se queda con el resto y ENVUELVE: las etiquetas no se recortan
+       ni pisan la columna de al lado, se van a un segundo renglón. */
+    td.c-tipo{white-space:normal;line-height:1.5}
+    /* La etiqueta NO puede ir `nowrap` acá: es más ancha que la columna, y
+       con `nowrap` la celda la recortaba — se leía "programada · plan" y el
+       "10b5-1 desde AAAA-MM-DD" se perdía. En la tarjeta de celular sí va
+       `nowrap`, porque ahí tiene el renglón entero. */
+    .lupa.plan,.lupa.combo{white-space:normal}
   }
 
   /* ══ CELULAR: CADA FILA ES UNA TARJETA ════════════════════════════

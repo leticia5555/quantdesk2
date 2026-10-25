@@ -239,13 +239,32 @@ const DENTRO_DE_LA_CAJA = () => {
     const e = document.querySelector(sel);
     if (!e) return { hay: false };
     const r = e.getBoundingClientRect();
+    // ── CONTRA TODO ANCESTRO QUE RECORTE, NO SÓLO CONTRA `#contenido` ──
+    // La primera versión comparaba únicamente con el contenedor de afuera, y
+    // por eso dio verde con la etiqueta recortada por SU PROPIA CELDA: se
+    // leía "programada · plan" y el "10b5-1 desde AAAA-MM-DD" se perdía. El
+    // rectángulo de un elemento recortado sigue midiendo lo que mide; quien
+    // lo tapa es un ancestro con `overflow` distinto de `visible`.
+    let cortado = null;
+    for (let a = e.parentElement; a; a = a.parentElement) {
+      const cs = getComputedStyle(a);
+      if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+      const ar = a.getBoundingClientRect();
+      if (r.right > ar.right + 0.5 || r.left < ar.left - 0.5
+        || r.bottom > ar.bottom + 0.5 || r.top < ar.top - 0.5) {
+        cortado = a.className || a.tagName;
+        break;
+      }
+    }
     return {
       hay: true,
       x: Math.round(r.x), derecha: Math.round(r.right),
-      // Visible de verdad: dentro de la caja que lo contiene Y dentro de la
-      // ventana. Las dos cosas, porque fallan por motivos distintos.
+      // Visible de verdad: dentro de la caja que lo contiene, dentro de la
+      // ventana, y sin que ningún ancestro lo recorte. Las tres, porque
+      // fallan por motivos distintos y cada una me pasó por separado.
       dentro: r.left >= caja.left - 0.5 && r.right <= caja.right + 0.5,
       enPantalla: r.left >= -0.5 && r.right <= window.innerWidth + 0.5 && r.width > 0,
+      cortadoPor: cortado,
     };
   };
   return {
@@ -393,8 +412,9 @@ try {
   chequeo('celular: la tabla NO es más ancha que su caja (nada de scroll horizontal)',
     visible390.tablaAncho <= visible390.cajaAncho + 1,
     `tabla ${visible390.tablaAncho} vs caja ${visible390.cajaAncho}`);
-  chequeo('celular: la etiqueta del plan cae DENTRO de la caja y en pantalla',
-    visible390.plan.hay && visible390.plan.dentro && visible390.plan.enPantalla,
+  chequeo('celular: la etiqueta del plan cae DENTRO de la caja, en pantalla y SIN recortar',
+    visible390.plan.hay && visible390.plan.dentro && visible390.plan.enPantalla
+      && !visible390.plan.cortadoPor,
     JSON.stringify(visible390.plan));
   chequeo('celular: y el "cuánto" también — una tarjeta sin monto no informa',
     visible390.valor.hay && visible390.valor.dentro, JSON.stringify(visible390.valor));
@@ -634,8 +654,9 @@ try {
   chequeo('escritorio: la tabla cabe en su caja',
     visible1440.tablaAncho <= visible1440.cajaAncho + 1,
     `tabla ${visible1440.tablaAncho} vs caja ${visible1440.cajaAncho}`);
-  chequeo('escritorio: la etiqueta del plan cae DENTRO de la caja y en pantalla',
-    visible1440.plan.hay && visible1440.plan.dentro && visible1440.plan.enPantalla,
+  chequeo('escritorio: la etiqueta del plan cae DENTRO de la caja, en pantalla y SIN recortar',
+    visible1440.plan.hay && visible1440.plan.dentro && visible1440.plan.enPantalla
+      && !visible1440.plan.cortadoPor,
     JSON.stringify(visible1440.plan));
   // El recorte de "Quién" y "Cargo" es lo que hizo que las diez entraran: se
   // exige que recorten de verdad y que el nombre completo siga disponible.
@@ -663,6 +684,28 @@ try {
 
   await d.screenshot({ path: join(OUT, 'insiders-1440.png') });
   console.log(`  → ${join(OUT, 'insiders-1440.png')}`);
+  // ── Y LA TABLA SOLA, HASTA LA FILA 15 ───────────────────────────────
+  // La página entera son ~11.700 px y lo que hay que mirar está arriba.
+  // El recorte se calcula del DOM y no a ojo: con un número de píxeles fijo,
+  // el día que cambie el alto de una fila la captura muestra otra cosa.
+  const corte = await d.evaluate(() => {
+    const tabla = document.querySelector('#contenido table');
+    const filas = [...document.querySelectorAll('#contenido tbody tr')];
+    if (!tabla || !filas.length) return null;
+    const r = tabla.getBoundingClientRect();
+    const ult = filas[Math.min(14, filas.length - 1)].getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.round(r.x) - 8), y: Math.max(0, Math.round(r.y) - 8),
+      width: Math.min(Math.round(r.width) + 16, window.innerWidth),
+      height: Math.round(ult.bottom - r.y) + 16,
+      filas: Math.min(15, filas.length),
+    };
+  });
+  if (corte) {
+    await d.screenshot({ path: join(OUT, 'insiders-1440-tabla15.png'),
+      clip: { x: corte.x, y: corte.y, width: corte.width, height: corte.height } });
+    console.log(`  → ${join(OUT, 'insiders-1440-tabla15.png')} (${corte.filas} filas)`);
+  }
   await esc2.close();
 // ── NINGUNA ENTIDAD XML LLEGA A LA PANTALLA ──────────────────────────────
 // Lety, contra producción (2026-10-20): el cargo salía "EVP, CFO &amp; COO".
