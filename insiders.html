@@ -116,6 +116,16 @@
   td.todo{color:var(--rojo);font-weight:600}
   .tk{font-weight:600}
   .lupa{font-size:9px;color:var(--apagado)}
+  /* ── LO QUE CONSTA PROGRAMADO, EN GRIS ──────────────────────────────
+     Una venta bajo un plan 10b5-1 se fijó con meses de anticipación: el
+     verde o el rojo la leerían como una decisión de hoy. Se apaga el color
+     de la fila —NO se esconde la fila— y la etiqueta dice desde cuándo.
+     `!important` porque `tr.venta td` y `tr.compra td` pintan el fondo con
+     la misma especificidad y el orden del archivo no alcanza. */
+  tr.programada td{background:rgba(139,152,165,.07) !important;color:var(--tenue)}
+  tr.programada td.tk{color:var(--texto)}
+  .lupa.plan{color:var(--tenue);border:1px solid var(--linea);border-radius:3px;padding:0 3px;white-space:nowrap}
+  .lupa.combo{color:var(--ambar);white-space:nowrap}
 
   .lado{display:flex;flex-direction:column;gap:0}
   .fila-lado{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;
@@ -309,7 +319,8 @@
       var valor = Number.isFinite(f.valor)
         ? '<td>' + fmtUsd(f.valor) + '</td>'
         : '<td class="falta" title="' + esc(f.valor_motivo || '') + '">—</td>';
-      return '<tr class="' + esc(f.tipo) + '">'
+      return '<tr class="' + esc(f.tipo)
+        + (f.plan_estado === 'programada' ? ' programada' : '') + '">'
         + '<td class="izq tk">' + esc(f.ticker || f.emisora || '—') + '</td>'
         + '<td class="izq">' + esc(f.quien || '—')
           + (f.firmantes > 1 ? ' <span class="lupa">+' + (f.firmantes - 1) + '</span>' : '') + '</td>'
@@ -318,7 +329,8 @@
         + '<td>' + esc(f.fecha || '—') + '</td>'
         + '<td class="izq" title="' + esc(f.nombre || '') + '">' + esc(f.codigo || '—')
           + ' · ' + esc(f.tipo) + (f.derivada ? ' <span class="lupa">deriv.</span>' : '')
-          + (f.plan_10b5 ? ' <span class="lupa" title="venta programada por un plan 10b5-1">10b5-1</span>' : '')
+          + etiquetaPlan(f)
+          + (f.ejercio_y_vendio ? ' <span class="lupa combo" title="Ejerció opciones y vendió las mismas acciones el mismo día: no es vender acciones que ya tenía, es convertir opciones en efectivo">ejerció y vendió</span>' : '')
           + (f.indirecta ? ' <span class="lupa" title="' + esc(f.naturaleza || 'tenencia indirecta') + '">indir.</span>' : '')
           + '</td>'
         + '<td>' + (Number.isFinite(f.precio) ? f.precio.toFixed(2) : '—') + '</td>'
@@ -344,6 +356,25 @@
       return k + ' (' + (datos.sources[k].error || 'sin motivo') + ')'; }).join(', ');
     if(estado.chips.length || estado.q) return 'ninguna transacción de la ventana pasa este filtro';
     return 'la ventana del feed de EDGAR no trajo transacciones';
+  }
+
+  // ── LA ETIQUETA DEL PLAN ──────────────────────────────────────────
+  // Tres estados, no dos. `sin_dato` NO dice "no programada": el formulario
+  // anterior a abril de 2023 no tiene dónde declararlo, y callar no es negar.
+  // Lo único que se pinta en gris es lo que CONSTA programado.
+  function etiquetaPlan(f){
+    if(f.plan_estado === 'programada'){
+      var desde = f.plan_adoptado_en ? ' desde ' + f.plan_adoptado_en : '';
+      return ' <span class="lupa plan" title="Venta programada: salió de un plan 10b5-1'
+        + (f.plan_adoptado_en ? ' adoptado el ' + esc(f.plan_adoptado_en) : '')
+        + (f.plan_fuente ? ' (' + esc(f.plan_fuente) + ')' : '')
+        + '. La fecha se fijó con meses de anticipación, no es una decisión de hoy.">'
+        + 'programada · plan 10b5-1' + esc(desde) + '</span>';
+    }
+    if(f.plan_estado === 'sin_dato'){
+      return ' <span class="lupa falta" title="El formulario no trae la casilla de 10b5-1 (es anterior a abril de 2023) y ninguna nota la menciona. No sabemos si fue programada: eso NO quiere decir que no lo fuera.">plan: sin dato</span>';
+    }
+    return '';
   }
 
   // ── TOP DE LA SEMANA (espejo de topDeLaSemana) ────────────────────
