@@ -126,7 +126,7 @@ const FUNDS = [
 // porque es otra lectura, no un filtro más flojo: la tarjeta de TRACKER se
 // queda con las compras destacadas y la pantalla nueva ve todo. Se parsea en
 // la MISMA pasada del escaneo para no pedirle a la SEC dos veces lo mismo.
-import { form4Completo, filasDeForm4, desentidad, xtag, xval } from './_lib/form4.js';
+import { form4Completo, filasDeForm4, completaFilasViejas, desentidad, xtag, xval } from './_lib/form4.js';
 import { sql, sqlBatch, ensureSchema as ensureBase } from './_lib/db.js';
 import { beat } from './_lib/heartbeat.js';
 import { crearCliente, bajarTickerMap } from './_lib/edgar.js';
@@ -1387,7 +1387,16 @@ async function buildForm4() {
   const completa = !!(cobertura && cobertura.completa && cobertura.medidos > 0);
   return {
     cat: 'form4',
-    items: filas,
+    // ── LAS FILAS GUARDADAS, PUESTAS AL DÍA AL SERVIRLAS ───────────────
+    // `mercado_form4_tx.filas` es JSONB con la forma del día en que se
+    // parseó. Las 400 de producción no traen `plan_estado` ni
+    // `ejercio_y_vendio`, y su `salio_del_todo` es el viejo POR LÍNEA. Se
+    // completa acá, en el servidor, y NO en el espejo de `insiders.html`:
+    // un arreglo que vive en la pantalla deja fuera a cualquier otro
+    // consumidor del endpoint, y este repo ya pagó por tener dos copias.
+    // Nada se re-lee de EDGAR: los tres salen de las filas agrupadas por
+    // `accession`.
+    items: completaFilasViejas(filas),
     // El TOP y las destacadas los arma la pantalla desde estas mismas filas
     // (`api/_lib/form4.js`): una sola fuente de verdad por pantalla.
     scan: diag.scan || null,

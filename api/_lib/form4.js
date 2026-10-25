@@ -413,6 +413,64 @@ export function filasDeForm4(doc, meta = {}) {
 }
 
 /**
+ * LAS FILAS YA GUARDADAS, PUESTAS AL DÍA SIN RE-PARSEAR.
+ *
+ * `mercado_form4_tx.filas` es JSONB: lo guardado se parseó con el código de
+ * ESE día. Cuando #341 agregó `plan_estado`, `ejercio_y_vendio` y el "vendió
+ * todo" por documento, las 400 filas de producción se quedaron sin los tres —
+ * y la pantalla, que ya sólo miraba los campos nuevos, dejó de mostrar hasta
+ * el `10b5-1` que mostraba antes. Una mejora que en producción QUITÓ
+ * información; lo vi al sacar la captura (2026-10-25).
+ *
+ * Es el mismo problema que el `&amp;` de octubre: el dato ya estaba escrito.
+ * La diferencia es que acá no hay que re-leer nada de EDGAR — los tres salen
+ * de las filas que ya tenemos, agrupadas por `accession`.
+ *
+ * LO QUE NO SE PUEDE DERIVAR, NO SE INVENTA: la fecha de adopción vive en la
+ * nota al pie, que no se guardó. Una fila vieja programada sale SIN fecha y
+ * la etiqueta la omite.
+ *
+ * Y UN `plan_10b5: false` VIEJO NO ES "NO PROGRAMADA". Ese booleano valía
+ * `false` tanto con la casilla vacía como cuando el formulario no la tenía:
+ * indistinguibles mirando sólo la fila. Por la regla del encargo —nunca "no
+ * programada" por descarte— se resuelve como `sin_dato`.
+ */
+export function completaFilasViejas(filas = []) {
+  const porAcc = new Map();
+  for (const f of filas) {
+    const k = f && f.accession ? String(f.accession) : null;
+    if (!k) continue;
+    if (!porAcc.has(k)) porAcc.set(k, []);
+    porAcc.get(k).push(f);
+  }
+  const derivado = new Map();
+  for (const [k, grupo] of porAcc) {
+    derivado.set(k, { tenencia: tenenciaFinal(grupo), combo: ejercicioYVenta(grupo) });
+  }
+  return (filas || []).map((f) => {
+    const d = f && f.accession ? derivado.get(String(f.accession)) : null;
+    const estado = f.plan_estado
+      || (f.plan_10b5 === true ? PLAN_10B5.PROGRAMADA : PLAN_10B5.SIN_DATO);
+    const combo = d ? d.combo : { hubo: false, fecha: null, acciones: null };
+    return {
+      ...f,
+      plan_estado: estado,
+      plan_adoptado_en: f.plan_adoptado_en || null,
+      plan_fuente: f.plan_fuente || (f.plan_estado ? null : 'fila guardada antes de registrar la fuente'),
+      // El "vendió todo" viejo era POR LÍNEA, y ése es el valor que trae la
+      // fila guardada. Se recalcula por documento siempre que se pueda.
+      salio_del_todo: d ? d.tenencia.salio_del_todo : !!f.salio_del_todo,
+      salio_del_todo_motivo: d ? d.tenencia.motivo : null,
+      le_quedan_total: d ? d.tenencia.acciones : null,
+      le_quedan_derivados: d ? d.tenencia.derivados : null,
+      ejercio_y_vendio: f.ejercio_y_vendio != null ? f.ejercio_y_vendio
+        : (combo.hubo && !f.derivada && (f.codigo === 'M' || f.codigo === 'S') && f.fecha === combo.fecha),
+      ejercio_y_vendio_acciones: combo.hubo ? combo.acciones : null,
+    };
+  });
+}
+
+/**
  * EL TOP DE LA SEMANA POR TICKER: neto en dólares, conteos y "vendió todo".
  *
  * El neto suma compras y resta ventas, y SÓLO cuenta lo que tiene valor: un

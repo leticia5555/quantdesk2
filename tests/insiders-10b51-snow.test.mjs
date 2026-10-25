@@ -127,3 +127,59 @@ test('la venta de Slootman no encabeza la semana: estaba programada', () => {
   assert.equal(snow.no_programadas, 0);
   assert.ok(Math.abs(snow.neto_usd) > 94_000_000, String(snow.neto_usd));
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// LAS FILAS QUE YA ESTABAN GUARDADAS
+//
+// Lo vi al sacar la captura de producción, no antes: `mercado_form4_tx.filas`
+// es JSONB con la forma del día en que se parseó. Las 400 filas de producción
+// traían `plan_10b5` (121 en true) pero ninguno de los campos nuevos, y la
+// pantalla —que ya sólo miraba los nuevos— dejó de mostrar hasta el `10b5-1`
+// que mostraba antes. Una mejora que en producción QUITÓ información.
+// ═══════════════════════════════════════════════════════════════════════
+import { completaFilasViejas } from '../api/_lib/form4.js';
+
+// La forma EXACTA que sirve producción hoy: sin plan_estado, sin
+// ejercio_y_vendio, y con el `salio_del_todo` viejo (por línea).
+const VIEJAS = [
+  { accession: 'A', codigo: 'M', fecha: '2026-10-19', acciones: 300000, derivada: false, le_quedan: 319024, plan_10b5: true, salio_del_todo: false, tipo: 'opcion' },
+  { accession: 'A', codigo: 'S', fecha: '2026-10-19', acciones: 300000, derivada: false, le_quedan: 0, plan_10b5: true, salio_del_todo: true, tipo: 'venta', quien: 'X' },
+  { accession: 'A', codigo: 'M', fecha: '2026-10-19', acciones: 300000, derivada: true, le_quedan: 3836655, plan_10b5: true, salio_del_todo: false, tipo: 'opcion' },
+  { accession: 'B', codigo: 'S', fecha: '2026-10-20', acciones: 10, derivada: false, le_quedan: 5, plan_10b5: false, salio_del_todo: false, tipo: 'venta' },
+];
+
+test('una fila vieja con la casilla marcada se resuelve como programada', () => {
+  const r = completaFilasViejas(VIEJAS);
+  assert.ok(r.filter((f) => f.accession === 'A').every((f) => f.plan_estado === 'programada'));
+  // Sin fecha: vive en la nota al pie, que no se guardó. No se inventa.
+  assert.ok(r.every((f) => f.plan_adoptado_en === null));
+});
+
+test('y un `plan_10b5: false` viejo es `sin_dato`, NUNCA "no programada"', () => {
+  // Ese booleano valía false tanto con la casilla vacía como cuando el
+  // formulario no la tenía. Mirando sólo la fila son indistinguibles.
+  const b = completaFilasViejas(VIEJAS).find((f) => f.accession === 'B');
+  assert.equal(b.plan_estado, 'sin_dato');
+});
+
+test('el "vendió todo" viejo, que era por línea, se recalcula por documento', () => {
+  // La fila S traía `salio_del_todo: true` porque esa TENENCIA quedó en cero.
+  // Con las tres del filing a la vista, quedan 3.836.655 derivados.
+  const s = completaFilasViejas(VIEJAS).find((f) => f.accession === 'A' && f.codigo === 'S');
+  assert.equal(s.salio_del_todo, false, 'le quedan derivados: no se salió');
+  assert.equal(s.le_quedan_derivados, 3836655);
+});
+
+test('y "ejerció y vendió" se deriva de las filas guardadas, sin re-leer EDGAR', () => {
+  const r = completaFilasViejas(VIEJAS);
+  assert.equal(r.find((f) => f.codigo === 'S' && f.accession === 'A').ejercio_y_vendio, true);
+  assert.equal(r.find((f) => f.accession === 'B').ejercio_y_vendio, false);
+});
+
+test('una fila NUEVA no se toca: lo que ya trae manda', () => {
+  const nueva = { accession: 'C', codigo: 'S', plan_estado: 'no_programada', plan_adoptado_en: null,
+    ejercio_y_vendio: false, derivada: false, le_quedan: 100, fecha: '2026-10-21' };
+  const r = completaFilasViejas([nueva])[0];
+  assert.equal(r.plan_estado, 'no_programada', 'no se degrada a sin_dato');
+  assert.equal(r.ejercio_y_vendio, false);
+});

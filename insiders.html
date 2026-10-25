@@ -320,7 +320,7 @@
         ? '<td>' + fmtUsd(f.valor) + '</td>'
         : '<td class="falta" title="' + esc(f.valor_motivo || '') + '">—</td>';
       return '<tr class="' + esc(f.tipo)
-        + (f.plan_estado === 'programada' ? ' programada' : '') + '">'
+        + ((f.plan_estado === 'programada' || (!f.plan_estado && f.plan_10b5 === true)) ? ' programada' : '') + '">'
         + '<td class="izq tk">' + esc(f.ticker || f.emisora || '—') + '</td>'
         + '<td class="izq">' + esc(f.quien || '—')
           + (f.firmantes > 1 ? ' <span class="lupa">+' + (f.firmantes - 1) + '</span>' : '') + '</td>'
@@ -371,7 +371,14 @@
         + '. La fecha se fijó con meses de anticipación, no es una decisión de hoy.">'
         + 'programada · plan 10b5-1' + esc(desde) + '</span>';
     }
-    if(f.plan_estado === 'sin_dato'){
+    // Una fila guardada antes de #341 llega sin `plan_estado`; el servidor la
+    // completa al servirla (`completaFilasViejas`). Este respaldo es por si
+    // una llega igual: `plan_10b5` true es programada, y cualquier otra cosa
+    // es `sin_dato` — nunca "no programada" por descarte.
+    if(!f.plan_estado && f.plan_10b5 === true){
+      return ' <span class="lupa plan" title="Venta programada por un plan 10b5-1. La fila se guardó antes de que se registrara la fecha de adopción.">programada · plan 10b5-1</span>';
+    }
+    if(f.plan_estado === 'sin_dato' || !f.plan_estado){
       return ' <span class="lupa falta" title="El formulario no trae la casilla de 10b5-1 (es anterior a abril de 2023) y ninguna nota la menciona. No sabemos si fue programada: eso NO quiere decir que no lo fuera.">plan: sin dato</span>';
     }
     return '';
