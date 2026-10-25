@@ -599,6 +599,33 @@ function estimadoVigenteDeAv(events, quarter_end) {
 //
 // snaps: [{ fiscal_date_ending, estimate, capturado_en }] de un símbolo.
 const VENTANA_TRIMESTRE_DIAS = 45;
+
+// ── Candado del vigente (pre-registrado el 24-oct) ──
+// El `estimate` de EARNINGS_CALENDAR viene en GAAP para algunas empresas
+// aunque la barra de Polymarket sea non-GAAP (EBAY 1.11 vs barra 1.44, NET
+// 0.02 vs 0.35, DBX 0.44 vs 0.74, COUR 0.07 vs 0.18, MSTR 21.50 vs 8.34): eso
+// daba 3% falsos. Si el vigente se aleja más de 20% de la barra, o cambia de
+// signo, NO se usa: la fila queda `sin_vigente`, con el valor de AV aparte
+// como dato (`vigente_av`) y marcada `vigente_sospechoso`. No se usa el de
+// creación en su lugar.
+//
+// El umbral (0.20) se fijó el 24-oct, antes de que resolviera ningún mercado
+// del set v2.1. Con 0.20 también cae LLY (5.38 vs 7.01 = 23%), y está bien:
+// es justo el que no sabemos leer (IPR&D adentro o afuera).
+const UMBRAL_VIGENTE_VS_BARRA = 0.20;
+
+function vigenteSospechoso(vigente, barra, umbral = UMBRAL_VIGENTE_VS_BARRA) {
+  const v = num(vigente), b = num(barra);
+  if (v === null || b === null) return { sospechoso: false, motivo: null, distancia: null };
+  if (Math.sign(v) !== 0 && Math.sign(b) !== 0 && Math.sign(v) !== Math.sign(b)) {
+    return { sospechoso: true, motivo: 'cambia_signo', distancia: null };
+  }
+  if (b === 0) return { sospechoso: v !== 0, motivo: v !== 0 ? 'barra_cero' : null, distancia: null };
+  const distancia = redondea(Math.abs(v - b) / Math.abs(b));
+  return distancia > umbral
+    ? { sospechoso: true, motivo: 'lejos_de_la_barra', distancia }
+    : { sospechoso: false, motivo: null, distancia };
+}
 function vigenteDeSnapshots(snaps, { fecha, quarter_end }) {
   const f = isoDia(fecha), q = isoDia(quarter_end);
   if (!f || !q) return { valor: null, motivo: 'sin_fecha', snap_ts: null };
@@ -764,14 +791,15 @@ function tablaMdV21(filas) {
   const head = '| Símbolo | Fecha | Barra | Métrica | Consenso | Sorpresa med. 8T | Hist. | Brecha | Guía impl. | Est. A | Est. B | prob A | prob B | prob PM | d A | d B | Falta |';
   const sep = '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   const rows = filas.map((f) => {
-    const cons = f.consenso_vigente ?? f.consenso_creacion;
+    const cons = f.consenso_usado === 'vigente' ? f.consenso_vigente : f.consenso_usado === 'creacion' ? f.consenso_creacion : null;
+    const avAparte = f.vigente_sospechoso ? ` (AV ${n2(f.vigente_av)} ⚠)` : '';
     const guia = f.guia_q_implicita === null || f.guia_q_implicita === undefined ? '—'
       : `${n3(f.guia_q_min)}…${n3(f.guia_q_max)}${f.barra_vs_guia ? ` (barra ${f.barra_vs_guia})` : ''}`;
     const sorp = f.sorpresa_mediana_8t === null || f.sorpresa_mediana_8t === undefined ? '—'
       : `${f.sorpresa_mediana_8t > 0 ? '+' : ''}${f.sorpresa_mediana_8t.toFixed(2)}${f.sorpresa_metrica_match === null ? '‡' : f.sorpresa_metrica_match === false ? '*' : ''}`;
     const hist = !f.n_8t ? '—' : `${f.beats_8t}/${f.n_8t} ${f.fuente_hist === 'pm_v2_hist' ? 'AV' : 'PEAD'}`;
     const falta = f.faltante || (f.prob_pm_t24 === null ? 'sin_precio_pm' : '');
-    return `| ${f.symbol} | ${f.fecha} | ${n2(f.barra)} | ${f.metrica_barra || '—'} | ${n2(cons)}${f.consenso_usado === 'vigente' ? ' (vig.)' : ''} | ${sorp} | ${hist} | ${n2(f.brecha_aplicada)}${f.brechas_anunciadas_antes_de_creacion ? '§' : ''} | ${guia} | ${n2(f.estimado_A)} | ${n2(f.estimado_B)}${f.B_usa_guia || f.estimado_B === null ? '' : ' (=A)'} | ${pct(f.prob_A)}${f.std_fallback ? '†' : ''} | ${pct(f.prob_B)} | ${pct(f.prob_pm_t24)} | ${sgn(f.desacuerdo_A)} | ${sgn(f.desacuerdo_B)} | ${falta} |`;
+    return `| ${f.symbol} | ${f.fecha} | ${n2(f.barra)} | ${f.metrica_barra || '—'} | ${n2(cons)}${f.consenso_usado === 'vigente' ? ' (vig.)' : ''}${avAparte} | ${sorp} | ${hist} | ${n2(f.brecha_aplicada)}${f.brechas_anunciadas_antes_de_creacion ? '§' : ''} | ${guia} | ${n2(f.estimado_A)} | ${n2(f.estimado_B)}${f.B_usa_guia || f.estimado_B === null ? '' : ' (=A)'} | ${pct(f.prob_A)}${f.std_fallback ? '†' : ''} | ${pct(f.prob_B)} | ${pct(f.prob_pm_t24)} | ${sgn(f.desacuerdo_A)} | ${sgn(f.desacuerdo_B)} | ${falta} |`;
   });
   return [head, sep, ...rows].join('\n');
 }
@@ -801,7 +829,7 @@ function renderMdV21({ titulo, filas, veredicto = null, piloto = false, notas = 
     out.push(`Brier PM ${veredicto.brier_pm ?? '—'} · A: ${r(veredicto.A)} · B: ${r(veredicto.B)}`, '');
   }
   out.push(tablaMdV21(filas), '');
-  out.push('`‡` historial de Alpha Vantage para un símbolo fuera del universo PEAD: no se sabe si es GAAP o non-GAAP (sorpresa_metrica_match = null). `*` sorpresa ajustada contra barra GAAP. `†` std de respaldo. `(=A)` sin guía de la misma métrica: prob B = prob A. `§` el cargo se anunció ANTES de que naciera el mercado (dato; la brecha se aplica igual).', '');
+  out.push('`‡` historial de Alpha Vantage para un símbolo fuera del universo PEAD: no se sabe si es GAAP o non-GAAP (sorpresa_metrica_match = null). `*` sorpresa ajustada contra barra GAAP. `†` std de respaldo. `(=A)` sin guía de la misma métrica: prob B = prob A. `§` el cargo se anunció ANTES de que naciera el mercado (dato; la brecha se aplica igual). `⚠` vigente de AV a más de 20% de la barra o con otro signo: no se usa (fila `sin_vigente`), se muestra aparte.', '');
   const res = filas.filter((f) => f.outcome);
   if (res.length) out.push('## Resueltos', '', ...res.map(lineaResueltoV21), '');
   if (notas.length) out.push('## Notas', '', ...notas.map((n) => `- ${n}`), '');
@@ -813,6 +841,6 @@ export {
   metricaBarra, leeMetrica, oracionPrincipal, fechaDelSlug, eligeMercadoPiloto, leeMercado, sorpresaHistorica, trimestreDelReporte,
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
-  estimadoVigenteDeAv, parseCalendarioCsv, vigenteDeSnapshots,
+  estimadoVigenteDeAv, parseCalendarioCsv, vigenteDeSnapshots, vigenteSospechoso, UMBRAL_VIGENTE_VS_BARRA,
   SET_PILOTO, CRITERIOS_V21, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
 };
