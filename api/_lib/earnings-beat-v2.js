@@ -488,9 +488,13 @@ function estimadoB(estimado_A, guia_q_implicita, guia_metrica, metrica_barra) {
 // Se usa el ESTIMADO y no el reportado: el consenso se mueve suave, el
 // resultado real puede saltar de verdad. Con esta regla NET cae (0.25 → −0.05)
 // y EBAY no (su histórico es estable, aunque en otra base que la barra).
+// Ajuste pre-registrado del 25-oct: el salto de 50% solo cuenta si
+// |mediana de los 4 anteriores| ≥ 0.10 (un EPS chico que crece rápido, tipo
+// SOFI, no es métrica mixta). El cambio de signo aplica siempre.
 const UMBRAL_SALTO_HIST = 0.50;
+const PISO_SALTO_HIST = 0.10;
 
-function histMetricaMixta(historial, fecha, { n = CRITERIOS_V2.ventana_trimestres, previos = 4, umbral = UMBRAL_SALTO_HIST } = {}) {
+function histMetricaMixta(historial, fecha, { n = CRITERIOS_V2.ventana_trimestres, previos = 4, umbral = UMBRAL_SALTO_HIST, piso = PISO_SALTO_HIST } = {}) {
   const corte = isoDia(fecha);
   // Del más viejo al más nuevo, solo lo reportado antes del mercado: la misma
   // ventana que sorpresaHistorica, más los 4 previos al primero de ella.
@@ -506,7 +510,7 @@ function histMetricaMixta(historial, fecha, { n = CRITERIOS_V2.ventana_trimestre
     if (Math.sign(e) !== 0 && Math.sign(ref) !== 0 && Math.sign(e) !== Math.sign(ref)) {
       return { mixta: true, motivo: 'cambia_signo', trimestre: serie[i].d, estimado: e, mediana_previa: redondea(ref) };
     }
-    if (ref !== 0 && Math.abs(e - ref) / Math.abs(ref) > umbral) {
+    if (Math.abs(ref) >= piso && Math.abs(e - ref) / Math.abs(ref) > umbral) {
       return { mixta: true, motivo: 'salto', trimestre: serie[i].d, estimado: e, mediana_previa: redondea(ref) };
     }
   }
@@ -882,5 +886,5 @@ export {
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
   estimadoVigenteDeAv, parseCalendarioCsv, vigenteDeSnapshots, vigenteSospechoso, UMBRAL_VIGENTE_VS_BARRA,
-  SET_PILOTO, CRITERIOS_V21, histMetricaMixta, UMBRAL_SALTO_HIST, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
+  SET_PILOTO, CRITERIOS_V21, histMetricaMixta, UMBRAL_SALTO_HIST, PISO_SALTO_HIST, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
 };

@@ -155,7 +155,8 @@ Cuando el histórico queda cerca de la barra y el calendario lejos, la lectura e
 - **El efecto:** la fila sale `sin_historial`, con A y B sin número. Lleva el detalle (qué trimestre, el estimado y la mediana previa) y `(métrica mixta)` en el markdown.
 - **Por qué el estimado y no el reportado:** el consenso se mueve suave y el resultado real puede saltar de verdad. Es una lectura de la regla pedida ("|reported − estimated del trimestre anterior|"); se fijó así antes de correrla sobre el set.
 - **Casos:** NET cae (0.25 → −0.05, cambio de signo). EBAY no, porque su serie es estable.
-- **Efecto colateral conocido:** un EPS chico que crece rápido también cruza el 50%. Por ejemplo, una serie 0.04, 0.05, 0.06, 0.08 cae aunque no mezcle métricas. Queda anotado; si pasa en el set, se ve en `hist_metrica_mixta_detalle`.
+- **Efecto colateral detectado:** un EPS chico que crece rápido también cruzaba el 50%. Por ejemplo, la serie 0.04, 0.05, 0.06, 0.08 caía aunque no mezclara métricas.
+- **Ajuste pre-registrado (25-oct):** `PISO_SALTO_HIST = 0.10`. El salto de 50% solo cuenta si |mediana de los 4 anteriores| ≥ 0.10. El cambio de signo aplica siempre. Con eso NET sigue cayendo (cambio de signo) y un caso tipo SOFI (mediana 0.045) no.
 
 ### `pead_earnings` desactualizado (25-oct)
 
