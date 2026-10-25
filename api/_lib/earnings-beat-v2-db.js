@@ -193,6 +193,10 @@ async function upsertFeatures(filas) {
 async function upsertHist(symbol, events) {
   const filas = (events || []).filter((e) => e && e.fiscal_date_ending && e.reported_eps !== null && e.reported_eps !== undefined);
   if (!filas.length) return 0;
+  // Si AV ahora sí trae datos (un &forzar=1), el marcador de "sin datos" deja
+  // de contar. Se marca superado en vez de borrarlo: queda el rastro, y la
+  // regla del repo pide que todo DELETE de api/ pase por la allowlist.
+  await sql(`update pm_v2_hist set fuente = 'sin_datos_av_superado' where symbol = $1 and fuente = 'sin_datos_av'`, [symbol]);
   let n = 0;
   const values = [];
   const params = [];
@@ -213,6 +217,18 @@ async function upsertHist(symbol, events) {
     params
   );
   return rows.length;
+}
+
+// AV contestó `empty` para el símbolo (CFLT y EA: dos días seguidos, 4
+// llamadas tiradas). Se deja un marcador en pm_v2_hist (fuente =
+// 'sin_datos_av', trimestre centinela 1900-01-01, reported_date null: las
+// vistas lo ignoran) y ?job=hist no lo vuelve a pedir, salvo &forzar=1.
+async function marcaSinDatosAv(symbol) {
+  await sql(
+    `insert into pm_v2_hist (symbol, fiscal_quarter_end, fuente) values ($1, '1900-01-01', 'sin_datos_av')
+     on conflict (symbol, fiscal_quarter_end) do update set fuente = 'sin_datos_av', capturado_en = now()`,
+    [symbol]
+  );
 }
 
 // ─────────────────── v2.1: cosecha ───────────────────
@@ -301,5 +317,5 @@ async function guardaSnapshotConsenso(filas, { lote = 1000 } = {}) {
 
 export {
   SCHEMA_V2, ensureSchemaV2, upsertFeatures, COLS_FEATURES, guardaSnapshotConsenso,
-  upsertHist, upsertMercadosV2, COLS_V2,
+  upsertHist, marcaSinDatosAv, upsertMercadosV2, COLS_V2,
 };

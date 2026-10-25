@@ -12,6 +12,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ordenaColaHist, CONSULTAS } from '../api/earnings-beat-v2.js';
 import { SCHEMA_V2 } from '../api/_lib/earnings-beat-v2-db.js';
+import { readFileSync } from 'node:fs';
+import { puenteNeon, resFalsa } from './_neon-psql.mjs';
 import { SCHEMA as SCHEMA_V1 } from '../api/_lib/earnings-beat-db.js';
 import { levantaPostgres, binDePostgres, SIN_POSTGRES, FALTA_POSTGRES } from './_postgres.mjs';
 
@@ -54,4 +56,68 @@ test('la consulta de fechas, contra Postgres: abierto más cercano, ignora resue
   assert.equal(fechas.find((f) => f.symbol === 'WDFC').proxima, null);  // resuelto: no cuenta como próximo
   assert.ok(fechas.find((f) => f.symbol === 'TFX').proxima);      // abierto de ayer: reporta hoy, sigue en cola
   assert.deepEqual(ordenaColaHist(['XYZ', 'WDFC', 'YELP', 'TFX', 'HLT', 'SSNC'], fechas), ['TFX', 'HLT', 'YELP', 'WDFC', 'XYZ', 'SSNC']);
+});
+
+// ── 25-oct: un `empty` de AV marca el símbolo y lo saca de la cola ──
+test('?job=hist: tras un empty, CFLT queda sin_datos_av y no se vuelve a pedir (salvo &forzar=1)', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
+  const BIN = binDePostgres();
+  assert.ok(BIN, FALTA_POSTGRES);
+  const psql = levantaPostgres(t, { bin: BIN, puerto: 55442 });
+  for (const q of SCHEMA_V1) psql(q + ';');
+  psql(`create table if not exists pead_earnings (symbol text not null, fiscal_date_ending date not null,
+          reported_date date not null, reported_eps numeric, estimated_eps numeric, surprise numeric,
+          surprise_pct numeric, source text, ingested_at timestamptz default now(), primary key (symbol, reported_date));`);
+  for (const f of ['', '-1', '-2', '-3', '-4']) psql(readFileSync(`docs/sql/earnings-beat-v2${f}.sql`, 'utf8'));
+  psql('create table if not exists pead_api_budget (day date primary key, calls int not null default 0);');
+
+  let respuesta = {};   // lo que contesta AV: {} = empty
+  const llamadas = [];
+  const neon = puenteNeon(psql);
+  const fetchOriginal = globalThis.fetch;
+  const env = { ...process.env };
+  process.env.DATABASE_URL = 'postgres://u:p@ep-prueba.region.aws.neon.tech/db';
+  process.env.ALPHAVANTAGE_API_KEY = 'demo';
+  process.env.EARNINGS_V2_HIST_ENABLED = '1';
+  delete process.env.CRON_SECRET;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.startsWith('https://www.alphavantage.co/query')) {
+      llamadas.push(new URL(u).searchParams.get('symbol'));
+      return { ok: true, status: 200, json: async () => respuesta };
+    }
+    return neon(url, init);
+  };
+  const corre = async (query) => {
+    const { default: handler } = await import('../api/earnings-beat-v2.js');
+    const r = resFalsa();
+    await handler({ method: 'GET', query: { job: 'hist', ...query }, headers: {} }, r);
+    assert.equal(r.code, 200, JSON.stringify(r.cuerpo));
+    return r.cuerpo;
+  };
+  try {
+    const d1 = await corre({ symbols: 'CFLT' });
+    assert.deepEqual(llamadas, ['CFLT']);
+    assert.equal(d1.resultado[0].estado, 'sin_datos_av');
+    assert.equal(psql(`select fuente || '|' || fiscal_quarter_end || '|' || coalesce(reported_date::text, 'null') from pm_v2_hist where symbol = 'CFLT'`).trim(),
+      'sin_datos_av|1900-01-01|null');
+
+    // segundo día: no gasta llamada
+    const d2 = await corre({ symbols: 'CFLT' });
+    assert.deepEqual(llamadas, ['CFLT']);
+    assert.equal(d2.llamadas, 0);
+    assert.deepEqual(d2.frescos_sin_llamar, ['CFLT']);
+
+    // &forzar=1: vuelve a pedir; si AV ahora trae datos, el marcador se va
+    respuesta = { symbol: 'CFLT', quarterlyEarnings: [
+      { fiscalDateEnding: '2026-06-30', reportedDate: '2026-07-30', reportedEPS: '0.10', estimatedEPS: '0.08', surprise: '0.02', surprisePercentage: '25' },
+    ] };
+    const d3 = await corre({ symbols: 'CFLT', forzar: '1' });
+    assert.deepEqual(llamadas, ['CFLT', 'CFLT']);
+    assert.equal(d3.resultado[0].estado, 'ok');
+    assert.equal(psql(`select count(*) from pm_v2_hist where symbol = 'CFLT' and fuente = 'sin_datos_av'`).trim(), '0');
+    assert.equal(psql(`select count(*) from pm_v2_hist where symbol = 'CFLT' and reported_date is not null`).trim(), '1');
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    for (const k of ['DATABASE_URL', 'ALPHAVANTAGE_API_KEY', 'EARNINGS_V2_HIST_ENABLED']) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; }
+  }
 });
