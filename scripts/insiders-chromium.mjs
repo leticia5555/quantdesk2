@@ -222,6 +222,41 @@ const RELOJ_FIJO = `(() => {
   window.Date = Falso;
 })()`;
 
+// ── ¿SE VE DE VERDAD, O SÓLO EXISTE EN EL DOM? ───────────────────────
+// El 2026-10-25 esta pantalla pasó en verde con la etiqueta del plan 10b5-1
+// fuera de la caja visible: la tabla medía 1778 px dentro de 358 en celular y
+// 1837 dentro de 1034 en escritorio, sin barra de desplazamiento — el
+// contenedor recortaba y ya. A 390 px sólo quedaba la columna del ticker.
+//
+// Mis cinco comprobaciones de esa tanda miraban que la etiqueta EXISTIERA y
+// qué color tenía. Ninguna miraba dónde caía. Un elemento correcto fuera de
+// pantalla pasa en verde, y eso es peor que no tener la comprobación: afirma
+// algo que nadie puede ver.
+const DENTRO_DE_LA_CAJA = () => {
+  const cont = document.querySelector('#contenido');
+  const caja = cont.getBoundingClientRect();
+  const mide = (sel) => {
+    const e = document.querySelector(sel);
+    if (!e) return { hay: false };
+    const r = e.getBoundingClientRect();
+    return {
+      hay: true,
+      x: Math.round(r.x), derecha: Math.round(r.right),
+      // Visible de verdad: dentro de la caja que lo contiene Y dentro de la
+      // ventana. Las dos cosas, porque fallan por motivos distintos.
+      dentro: r.left >= caja.left - 0.5 && r.right <= caja.right + 0.5,
+      enPantalla: r.left >= -0.5 && r.right <= window.innerWidth + 0.5 && r.width > 0,
+    };
+  };
+  return {
+    cajaAncho: Math.round(caja.width),
+    tablaAncho: Math.round(document.querySelector('#contenido table').getBoundingClientRect().width),
+    plan: mide('.lupa.plan'),
+    combo: mide('.lupa.combo'),
+    valor: mide('td.c-valor'),
+  };
+};
+
 const fallos = []; const ok = [];
 function chequeo(nombre, cond, detalle) {
   (cond ? ok : fallos).push(detalle ? `${nombre} — ${detalle}` : nombre);
@@ -352,6 +387,48 @@ try {
   // afirmar. Si apareciera en gris, estaríamos diciendo que consta.
   chequeo('"sin dato" no se disfraza de programada',
     !/sin dato/.test(plan.etiqueta), plan.etiqueta);
+
+  // ── Y QUE SE VEA, NO SÓLO QUE EXISTA (390) ──────────────────────────
+  const visible390 = await p.evaluate(DENTRO_DE_LA_CAJA);
+  chequeo('celular: la tabla NO es más ancha que su caja (nada de scroll horizontal)',
+    visible390.tablaAncho <= visible390.cajaAncho + 1,
+    `tabla ${visible390.tablaAncho} vs caja ${visible390.cajaAncho}`);
+  chequeo('celular: la etiqueta del plan cae DENTRO de la caja y en pantalla',
+    visible390.plan.hay && visible390.plan.dentro && visible390.plan.enPantalla,
+    JSON.stringify(visible390.plan));
+  chequeo('celular: y el "cuánto" también — una tarjeta sin monto no informa',
+    visible390.valor.hay && visible390.valor.dentro, JSON.stringify(visible390.valor));
+
+  // ── LA TARJETA SE ABRE AL TOCARLA ───────────────────────────────────
+  const tarjeta = await p.evaluate(() => {
+    const tr = document.querySelector('#contenido tbody tr');
+    const vis = (sel) => { const e = tr.querySelector(sel); return !!e && getComputedStyle(e).display !== 'none'; };
+    return { alto: Math.round(tr.getBoundingClientRect().height),
+      cargoAntes: vis('td.c-cargo'), precioAntes: vis('td.c-precio') };
+  });
+  chequeo('celular: la tarjeta mide lo que mide un dedo', tarjeta.alto >= 44, String(tarjeta.alto));
+  chequeo('celular: el detalle empieza CERRADO',
+    !tarjeta.cargoAntes && !tarjeta.precioAntes, JSON.stringify(tarjeta));
+  await p.locator('#contenido tbody tr').first().tap();
+  const abierta = await p.evaluate(() => {
+    const tr = document.querySelector('#contenido tbody tr');
+    const vis = (sel) => { const e = tr.querySelector(sel); return !!e && getComputedStyle(e).display !== 'none'; };
+    const cont = document.querySelector('#contenido').getBoundingClientRect();
+    const dentro = (sel) => { const e = tr.querySelector(sel); if (!e) return false;
+      const r = e.getBoundingClientRect(); return r.left >= cont.left - 0.5 && r.right <= cont.right + 0.5; };
+    return { abierta: tr.classList.contains('abierta'),
+      cargo: vis('td.c-cargo'), precio: vis('td.c-precio'), acciones: vis('td.c-acciones'),
+      quedan: vis('td.c-quedan'), filing: vis('td.c-filing'),
+      todosDentro: ['td.c-cargo', 'td.c-precio', 'td.c-acciones', 'td.c-quedan', 'td.c-filing'].every(dentro) };
+  });
+  chequeo('celular: al tocarla se abren los cinco que faltaban',
+    abierta.abierta && abierta.cargo && abierta.precio && abierta.acciones && abierta.quedan && abierta.filing,
+    JSON.stringify(abierta));
+  chequeo('celular: y el detalle también cae dentro de la caja',
+    abierta.todosDentro, JSON.stringify(abierta));
+  await p.locator('#contenido tbody tr').first().tap();
+  chequeo('celular: y se vuelve a cerrar',
+    !(await p.evaluate(() => document.querySelector('#contenido tbody tr').classList.contains('abierta'))));
 
   await p.locator('#chips button[data-chip="compra"]').tap();
   await p.waitForFunction(() => location.search.includes('chips=compra'), null, { timeout: 2000 });
@@ -551,6 +628,27 @@ try {
   }));
   chequeo('dos columnas, con el lateral de 340 px', /340px/.test(caja.cols), caja.cols);
   chequeo('sin scroll horizontal', !caja.scrollH);
+
+  // ── LAS DIEZ COLUMNAS, Y QUE SE VEAN (1440) ─────────────────────────
+  const visible1440 = await d.evaluate(DENTRO_DE_LA_CAJA);
+  chequeo('escritorio: la tabla cabe en su caja',
+    visible1440.tablaAncho <= visible1440.cajaAncho + 1,
+    `tabla ${visible1440.tablaAncho} vs caja ${visible1440.cajaAncho}`);
+  chequeo('escritorio: la etiqueta del plan cae DENTRO de la caja y en pantalla',
+    visible1440.plan.hay && visible1440.plan.dentro && visible1440.plan.enPantalla,
+    JSON.stringify(visible1440.plan));
+  // El recorte de "Quién" y "Cargo" es lo que hizo que las diez entraran: se
+  // exige que recorten de verdad y que el nombre completo siga disponible.
+  const recorte = await d.evaluate(() => {
+    const td = document.querySelector('td.c-quien');
+    const cs = getComputedStyle(td);
+    return { ellipsis: cs.textOverflow, nowrap: cs.whiteSpace, title: td.getAttribute('title') || '',
+      columnas: document.querySelectorAll('#contenido thead th').length };
+  });
+  chequeo('escritorio: están las diez columnas', recorte.columnas === 10, String(recorte.columnas));
+  chequeo('escritorio: "Quién" se recorta con … y guarda el nombre entero',
+    recorte.ellipsis === 'ellipsis' && recorte.nowrap === 'nowrap' && recorte.title.length > 0,
+    JSON.stringify(recorte));
   chequeo('el lateral trae el top, las destacadas y el teaser de fondos',
     caja.top > 0 && caja.dest > 0 && caja.fondos > 0, JSON.stringify(caja));
 
