@@ -333,8 +333,24 @@ try {
   const esperado = topDeLaSemana(FILAS).grupos[0];
   chequeo('y el neto de la primera es el que calcula el módulo',
     top[0][0] === esperado.ticker, `${top[0][0]} vs ${esperado.ticker}`);
-  chequeo('la columna "vendió todo" nombra a la persona',
-    top.some((t) => /Ruiz Ana/.test(t[6])), JSON.stringify(top.map((t) => t[6])));
+  // ── "VENDIÓ TODO" YA NO SALE DE UNA LÍNEA EN CERO ──────────────────
+  // Esto exigía ver a "Ruiz Ana" porque UNA de sus líneas dejaba esa tenencia
+  // en cero. `sharesOwnedFollowingTransaction` es por TENENCIA, no por
+  // persona: con esa regla, alguien que vacía un fideicomiso y sigue con
+  // acciones en otros cuatro y con millones en opciones salía "vendió todo".
+  // Es lo que Lety vio en ATKR, y lo que el Form 4 real de Slootman confirma:
+  // le quedan 19.024 acciones y 3.836.655 opciones (2026-10-23).
+  //
+  // El fixture de este arnés deja tenencia después, así que la columna tiene
+  // que estar VACÍA. Que esté vacía es el resultado correcto, y por eso se
+  // comprueba contra el módulo en vez de contra un texto: si mañana el
+  // fixture cambia y alguien sí se sale del todo, los dos lados se mueven
+  // juntos.
+  const vendioTodoEsperado = topDeLaSemana(FILAS).grupos.flatMap((g) => g.vendio_todo);
+  chequeo('la columna "vendió todo" dice lo mismo que el módulo',
+    vendioTodoEsperado.every((q) => top.some((t) => t[6].includes(q)))
+      && (vendioTodoEsperado.length > 0 || top.every((t) => t[6] === '—')),
+    `módulo: ${JSON.stringify(vendioTodoEsperado)} · pantalla: ${JSON.stringify(top.map((t) => t[6]))}`);
 
   await p.locator('#barra-vistas button[data-vista="destacadas"]').tap();
   await p.waitForFunction(() => /Compras destacadas/.test(document.getElementById('titulo-tabla').textContent),
