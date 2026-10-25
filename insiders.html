@@ -85,6 +85,27 @@
   .barra input::placeholder{color:var(--apagado)}
   .chip-f{min-height:34px !important;border-radius:17px !important;font-size:12px !important}
 
+  /* ── LOS CHIPS, UNA SOLA TIRA QUE SE RECORRE DE LADO ────────────────
+     `#chips` es un `<span>` dentro de la barra flex, así que sus botones se
+     acomodaban como texto: a 390 px, con los siete que quedaron después de
+     separar "Entregó en fusión" y "Retención fiscal", ocupaban CINCO
+     renglones y empujaban la tabla fuera de la primera pantalla.
+     Ahora es su propia fila flex, con `flex:0 0 auto` en cada botón —que ya
+     lo traen de `.barra button`— y el recorrido horizontal acotado a ESTA
+     tira: la tabla no se recorre, son tarjetas (decisión de Lety,
+     2026-10-25). */
+  #chips{display:flex;gap:6px;align-items:center;min-width:0}
+  @media (max-width:999px){
+    #barra-chips{flex-wrap:wrap}
+    #barra-chips .et{flex:0 0 auto}
+    #chips{flex:1 1 0;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+      padding-bottom:2px}
+    #chips::-webkit-scrollbar{display:none}
+    /* El buscador baja a su propio renglón, completo: si se quedara en la
+       tira se iría con el recorrido y habría que arrastrar para encontrarlo. */
+    #barra-chips #q{flex:1 1 100%;min-width:0;margin-top:6px}
+  }
+
   main{padding:10px 16px 0}
   h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
     letter-spacing:.6px;text-transform:uppercase;margin:14px 0 7px}

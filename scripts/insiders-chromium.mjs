@@ -367,6 +367,36 @@ try {
   chequeo('y los chips se pueden tocar (≥34 px)',
     chips.every((c) => c.alto >= 34), JSON.stringify(chips.map((c) => c.alto)));
 
+  // ── LOS SIETE CHIPS, EN UNA SOLA TIRA ───────────────────────────────
+  // Con los siete que quedaron después de separar "Entregó en fusión" y
+  // "Retención fiscal", los botones se acomodaban como texto y ocupaban cinco
+  // renglones a 390 px, empujando la tabla fuera de la primera pantalla.
+  const tira = await p.evaluate(() => {
+    const c = document.getElementById('chips');
+    const bs = [...c.querySelectorAll('button')];
+    const ys = [...new Set(bs.map((b) => Math.round(b.getBoundingClientRect().y)))];
+    const cs = getComputedStyle(c);
+    const q = document.getElementById('q');
+    return {
+      renglones: ys.length,
+      seRecorre: c.scrollWidth > c.clientWidth && (cs.overflowX === 'auto' || cs.overflowX === 'scroll'),
+      alto: Math.round(c.getBoundingClientRect().height),
+      // El buscador NO puede irse con el recorrido: si estuviera dentro de la
+      // tira habría que arrastrar para encontrarlo.
+      buscadorEnLaTira: c.contains(q),
+      buscadorVisible: q ? q.getBoundingClientRect().width > 0 : false,
+      // Y la TABLA no se recorre: son tarjetas.
+      tablaSeRecorre: (() => { const t = document.querySelector('#contenido');
+        return t ? t.scrollWidth > t.clientWidth : null; })(),
+    };
+  });
+  chequeo('celular: los chips van en UN solo renglón', tira.renglones === 1, JSON.stringify(tira));
+  chequeo('celular: y esa tira se recorre de lado', tira.seRecorre === true, JSON.stringify(tira));
+  chequeo('celular: el buscador queda fuera de la tira y a la vista',
+    !tira.buscadorEnLaTira && tira.buscadorVisible, JSON.stringify(tira));
+  chequeo('celular: la TABLA sigue sin recorrerse (son tarjetas)',
+    tira.tablaSeRecorre === false, JSON.stringify(tira));
+
   // ── LO PROGRAMADO SE VE DISTINTO, Y DICE DESDE CUÁNDO ───────────────
   // Una venta bajo un plan 10b5-1 se fijó con meses de anticipación. En
   // verde o rojo se lee como una decisión de hoy, que es justo lo que no es.
