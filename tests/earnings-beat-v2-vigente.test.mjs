@@ -309,7 +309,7 @@ test('candado de punta a punta: EBAY queda sin_vigente con AV aparte; vigente_fu
 });
 
 // ═══════════ 25-oct: candado del historial (métrica mixta en pm_v2_hist) ═══════════
-import { histMetricaMixta, UMBRAL_SALTO_HIST } from '../api/_lib/earnings-beat-v2.js';
+import { histMetricaMixta, UMBRAL_SALTO_HIST, PISO_SALTO_HIST } from '../api/_lib/earnings-beat-v2.js';
 
 const FECHAS_8 = ['2024-08-01', '2024-11-01', '2025-02-10', '2025-05-08', '2025-08-07', '2025-11-06', '2026-02-12', '2026-05-07', '2026-08-06'];
 const serie = (estimados, reportados = estimados) => estimados.map((e, i) => ({ reported_date: FECHAS_8[i], estimated_eps: e, reported_eps: reportados[i] }));
@@ -329,12 +329,25 @@ test('candado historial: umbral 0.50 congelado; NET (non-GAAP → GAAP) cae, EBA
   assert.equal(histMetricaMixta(net.slice(-4), '2026-10-30').mixta, false);
 });
 
-test('candado historial: también cae un salto > 50% sin cambio de signo (y un EPS chico que crece rápido)', () => {
+test('candado historial: también cae un salto > 50% sin cambio de signo', () => {
   const salto = serie([0.50, 0.52, 0.51, 0.53, 0.52, 0.54, 0.53, 0.55, 1.10]);
   assert.equal(histMetricaMixta(salto, '2026-10-30').motivo, 'salto');
-  // ojo, documentado: un EPS chico que crece rápido también cruza 50% (0.08 vs mediana 0.045)
+});
+
+test('candado historial, ajuste 25-oct: el salto solo cuenta si |mediana previa| ≥ 0.10; el cambio de signo siempre', () => {
+  assert.equal(PISO_SALTO_HIST, 0.10);
+  // SOFI-like: EPS chico que crece rápido (0.08 vs mediana 0.045) ya NO cae
   const chico = serie([0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.09, 0.10, 0.12]);
-  assert.equal(histMetricaMixta(chico, '2026-10-30').mixta, true);
+  assert.equal(histMetricaMixta(chico, '2026-10-30').mixta, false);
+  // en el piso exacto (mediana 0.10) el salto sí cuenta
+  const enPiso = serie([0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.16]);
+  assert.equal(histMetricaMixta(enPiso, '2026-10-30').motivo, 'salto');
+  // debajo del piso, el cambio de signo sigue cayendo
+  const signoChico = serie([0.02, 0.03, 0.03, 0.04, 0.04, 0.05, 0.05, 0.06, -0.01]);
+  assert.equal(histMetricaMixta(signoChico, '2026-10-30').motivo, 'cambia_signo');
+  // NET sigue cayendo
+  const net = serie([0.16, 0.18, 0.19, 0.20, 0.21, 0.22, 0.24, 0.25, -0.05]);
+  assert.equal(histMetricaMixta(net, '2026-10-30').motivo, 'cambia_signo');
 });
 
 test('candado historial en la fila: solo pm_v2_hist; sale sin_historial con el detalle, A y B sin número', () => {
