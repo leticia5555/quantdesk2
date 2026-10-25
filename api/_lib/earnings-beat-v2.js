@@ -482,19 +482,14 @@ function estimadoB(estimado_A, guia_q_implicita, guia_metrica, metrica_barra) {
 //
 // Regla, solo para historial de pm_v2_hist (fuera de PEAD): en la ventana de
 // 8 trimestres anteriores al mercado, cada trimestre con al menos 4 previos se
-// compara con la MEDIANA del estimated_eps de esos 4. Si cambia de signo, o
-// salta más de 50% (|e − mediana| / |mediana| > 0.50), el símbolo queda
-// `hist_metrica_mixta` y la fila sale `sin_historial` (A y B sin número).
-// Se usa el ESTIMADO y no el reportado: el consenso se mueve suave, el
-// resultado real puede saltar de verdad. Con esta regla NET cae (0.25 → −0.05)
-// y EBAY no (su histórico es estable, aunque en otra base que la barra).
-// Ajuste pre-registrado del 25-oct: el salto de 50% solo cuenta si
-// |mediana de los 4 anteriores| ≥ 0.10 (un EPS chico que crece rápido, tipo
-// SOFI, no es métrica mixta). El cambio de signo aplica siempre.
-const UMBRAL_SALTO_HIST = 0.50;
-const PISO_SALTO_HIST = 0.10;
-
-function histMetricaMixta(historial, fecha, { n = CRITERIOS_V2.ventana_trimestres, previos = 4, umbral = UMBRAL_SALTO_HIST, piso = PISO_SALTO_HIST } = {}) {
+// compara con la MEDIANA del estimated_eps de esos 4. Si cambia de signo, el
+// símbolo queda `hist_metrica_mixta` y la fila sale `sin_historial` (A y B sin
+// número). Se usa el ESTIMADO y no el reportado: el consenso se mueve suave,
+// el resultado real puede saltar de verdad. NET cae (0.25 → −0.05) y EBAY no.
+// Solo el cambio de signo: el salto de 50% (con piso 0.10) se probó y se
+// retiró el 25-oct por falsos positivos (atrapó 25 símbolos, casi todos por
+// saltos legítimos: RCL 2.03→5.03, F 0.445→0.02, H, HOOD, RDDT…).
+function histMetricaMixta(historial, fecha, { n = CRITERIOS_V2.ventana_trimestres, previos = 4 } = {}) {
   const corte = isoDia(fecha);
   // Del más viejo al más nuevo, solo lo reportado antes del mercado: la misma
   // ventana que sorpresaHistorica, más los 4 previos al primero de ella.
@@ -509,9 +504,6 @@ function histMetricaMixta(historial, fecha, { n = CRITERIOS_V2.ventana_trimestre
     if (ref === null) continue;
     if (Math.sign(e) !== 0 && Math.sign(ref) !== 0 && Math.sign(e) !== Math.sign(ref)) {
       return { mixta: true, motivo: 'cambia_signo', trimestre: serie[i].d, estimado: e, mediana_previa: redondea(ref) };
-    }
-    if (Math.abs(ref) >= piso && Math.abs(e - ref) / Math.abs(ref) > umbral) {
-      return { mixta: true, motivo: 'salto', trimestre: serie[i].d, estimado: e, mediana_previa: redondea(ref) };
     }
   }
   return { mixta: false };
@@ -886,5 +878,5 @@ export {
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
   estimadoVigenteDeAv, parseCalendarioCsv, vigenteDeSnapshots, vigenteSospechoso, UMBRAL_VIGENTE_VS_BARRA,
-  SET_PILOTO, CRITERIOS_V21, histMetricaMixta, UMBRAL_SALTO_HIST, PISO_SALTO_HIST, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
+  SET_PILOTO, CRITERIOS_V21, histMetricaMixta, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
 };

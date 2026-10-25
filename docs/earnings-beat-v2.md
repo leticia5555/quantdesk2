@@ -149,14 +149,15 @@ Cuando el histórico queda cerca de la barra y el calendario lejos, la lectura e
 
 ### Candado del historial (pre-registrado el 25-oct)
 
-`histMetricaMixta`, `UMBRAL_SALTO_HIST = 0.50`. Aplica **solo al historial de `pm_v2_hist`** (fuera de PEAD).
+`histMetricaMixta`. Aplica **solo al historial de `pm_v2_hist`** (fuera de PEAD).
 
-- **La regla:** se toma la ventana de 8 trimestres anteriores al mercado. Cada trimestre que tenga al menos 4 previos se compara contra la **mediana del `estimated_eps` de esos 4**. Si cambia de signo o salta más de 50%, el símbolo queda `hist_metrica_mixta`.
+- **La regla:** se toma la ventana de 8 trimestres anteriores al mercado. Cada trimestre que tenga al menos 4 previos se compara contra la **mediana del `estimated_eps` de esos 4**. Si cambia de signo, el símbolo queda `hist_metrica_mixta`. Desde el 25-oct, **solo el cambio de signo** (ver abajo).
 - **El efecto:** la fila sale `sin_historial`, con A y B sin número. Lleva el detalle (qué trimestre, el estimado y la mediana previa) y `(métrica mixta)` en el markdown.
 - **Por qué el estimado y no el reportado:** el consenso se mueve suave y el resultado real puede saltar de verdad. Es una lectura de la regla pedida ("|reported − estimated del trimestre anterior|"); se fijó así antes de correrla sobre el set.
 - **Casos:** NET cae (0.25 → −0.05, cambio de signo). EBAY no, porque su serie es estable.
 - **Efecto colateral detectado:** un EPS chico que crece rápido también cruzaba el 50%. Por ejemplo, la serie 0.04, 0.05, 0.06, 0.08 caía aunque no mezclara métricas.
-- **Ajuste pre-registrado (25-oct):** `PISO_SALTO_HIST = 0.10`. El salto de 50% solo cuenta si |mediana de los 4 anteriores| ≥ 0.10. El cambio de signo aplica siempre. Con eso NET sigue cayendo (cambio de signo) y un caso tipo SOFI (mediana 0.045) no.
+- **Ajuste pre-registrado (25-oct):** `PISO_SALTO_HIST = 0.10`. El salto de 50% solo contaba si |mediana de los 4 anteriores| ≥ 0.10. El cambio de signo aplicaba siempre.
+- **Regla del salto retirada (pre-registrado el 25-oct, antes de que resuelva ningún mercado del set):** con el piso, el salto de 50% atrapó **25 símbolos** de `pm_v2_hist`, casi todos por saltos legítimos del consenso, no por mezcla de métricas. Ejemplos: RCL 2.03 → 5.03, F 0.445 → 0.02, H, HOOD, RDDT. Se eliminan el salto de 50% y su piso (`UMBRAL_SALTO_HIST`, `PISO_SALTO_HIST`). **Queda solo el cambio de signo.** NET sigue cayendo; RCL, F y los EPS chicos que crecen rápido, no.
 
 ### `pead_earnings` desactualizado (25-oct)
 
