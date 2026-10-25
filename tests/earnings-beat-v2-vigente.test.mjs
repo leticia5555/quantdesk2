@@ -309,13 +309,12 @@ test('candado de punta a punta: EBAY queda sin_vigente con AV aparte; vigente_fu
 });
 
 // ═══════════ 25-oct: candado del historial (métrica mixta en pm_v2_hist) ═══════════
-import { histMetricaMixta, UMBRAL_SALTO_HIST, PISO_SALTO_HIST } from '../api/_lib/earnings-beat-v2.js';
+import { histMetricaMixta } from '../api/_lib/earnings-beat-v2.js';
 
 const FECHAS_8 = ['2024-08-01', '2024-11-01', '2025-02-10', '2025-05-08', '2025-08-07', '2025-11-06', '2026-02-12', '2026-05-07', '2026-08-06'];
 const serie = (estimados, reportados = estimados) => estimados.map((e, i) => ({ reported_date: FECHAS_8[i], estimated_eps: e, reported_eps: reportados[i] }));
 
-test('candado historial: umbral 0.50 congelado; NET (non-GAAP → GAAP) cae, EBAY (estable) no', () => {
-  assert.equal(UMBRAL_SALTO_HIST, 0.50);
+test('candado historial: NET (non-GAAP → GAAP) cae, EBAY (estable) no', () => {
   // NET: non-GAAP hasta may-26 (0.25), GAAP en ago-26 (−0.05)
   const net = serie([0.16, 0.18, 0.19, 0.20, 0.21, 0.22, 0.24, 0.25, -0.05], [0.17, 0.20, 0.20, 0.21, 0.22, 0.24, 0.25, 0.23, -0.03]);
   const r = histMetricaMixta(net, '2026-10-30');
@@ -329,23 +328,18 @@ test('candado historial: umbral 0.50 congelado; NET (non-GAAP → GAAP) cae, EBA
   assert.equal(histMetricaMixta(net.slice(-4), '2026-10-30').mixta, false);
 });
 
-test('candado historial: también cae un salto > 50% sin cambio de signo', () => {
-  const salto = serie([0.50, 0.52, 0.51, 0.53, 0.52, 0.54, 0.53, 0.55, 1.10]);
-  assert.equal(histMetricaMixta(salto, '2026-10-30').motivo, 'salto');
-});
-
-test('candado historial, ajuste 25-oct: el salto solo cuenta si |mediana previa| ≥ 0.10; el cambio de signo siempre', () => {
-  assert.equal(PISO_SALTO_HIST, 0.10);
-  // SOFI-like: EPS chico que crece rápido (0.08 vs mediana 0.045) ya NO cae
+test('candado historial, 25-oct: solo el cambio de signo; el salto de 50% se retiró', () => {
+  // saltos legítimos, sin cambio de signo: ya no caen (RCL 2.03→5.03, F 0.445→0.02)
+  const rcl = serie([1.40, 1.55, 1.70, 1.85, 1.95, 2.00, 2.03, 2.03, 5.03]);
+  assert.equal(histMetricaMixta(rcl, '2026-10-30').mixta, false);
+  const f = serie([0.47, 0.49, 0.46, 0.44, 0.45, 0.44, 0.45, 0.445, 0.02]);
+  assert.equal(histMetricaMixta(f, '2026-10-30').mixta, false);
+  // EPS chico que crece rápido: tampoco
   const chico = serie([0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.09, 0.10, 0.12]);
   assert.equal(histMetricaMixta(chico, '2026-10-30').mixta, false);
-  // en el piso exacto (mediana 0.10) el salto sí cuenta
-  const enPiso = serie([0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.16]);
-  assert.equal(histMetricaMixta(enPiso, '2026-10-30').motivo, 'salto');
-  // debajo del piso, el cambio de signo sigue cayendo
+  // el cambio de signo sigue cayendo, también con mediana chica
   const signoChico = serie([0.02, 0.03, 0.03, 0.04, 0.04, 0.05, 0.05, 0.06, -0.01]);
   assert.equal(histMetricaMixta(signoChico, '2026-10-30').motivo, 'cambia_signo');
-  // NET sigue cayendo
   const net = serie([0.16, 0.18, 0.19, 0.20, 0.21, 0.22, 0.24, 0.25, -0.05]);
   assert.equal(histMetricaMixta(net, '2026-10-30').motivo, 'cambia_signo');
 });
