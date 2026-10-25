@@ -116,6 +116,16 @@
   td.todo{color:var(--rojo);font-weight:600}
   .tk{font-weight:600}
   .lupa{font-size:9px;color:var(--apagado)}
+  /* ── LO QUE CONSTA PROGRAMADO, EN GRIS ──────────────────────────────
+     Una venta bajo un plan 10b5-1 se fijó con meses de anticipación: el
+     verde o el rojo la leerían como una decisión de hoy. Se apaga el color
+     de la fila —NO se esconde la fila— y la etiqueta dice desde cuándo.
+     `!important` porque `tr.venta td` y `tr.compra td` pintan el fondo con
+     la misma especificidad y el orden del archivo no alcanza. */
+  tr.programada td{background:rgba(139,152,165,.07) !important;color:var(--tenue)}
+  tr.programada td.tk{color:var(--texto)}
+  .lupa.plan{color:var(--tenue);border:1px solid var(--linea);border-radius:3px;padding:0 3px;white-space:nowrap}
+  .lupa.combo{color:var(--ambar);white-space:nowrap}
 
   .lado{display:flex;flex-direction:column;gap:0}
   .fila-lado{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;
@@ -309,7 +319,8 @@
       var valor = Number.isFinite(f.valor)
         ? '<td>' + fmtUsd(f.valor) + '</td>'
         : '<td class="falta" title="' + esc(f.valor_motivo || '') + '">—</td>';
-      return '<tr class="' + esc(f.tipo) + '">'
+      return '<tr class="' + esc(f.tipo)
+        + (f.plan_estado === 'programada' ? ' programada' : '') + '">'
         + '<td class="izq tk">' + esc(f.ticker || f.emisora || '—') + '</td>'
         + '<td class="izq">' + esc(f.quien || '—')
           + (f.firmantes > 1 ? ' <span class="lupa">+' + (f.firmantes - 1) + '</span>' : '') + '</td>'
@@ -318,7 +329,8 @@
         + '<td>' + esc(f.fecha || '—') + '</td>'
         + '<td class="izq" title="' + esc(f.nombre || '') + '">' + esc(f.codigo || '—')
           + ' · ' + esc(f.tipo) + (f.derivada ? ' <span class="lupa">deriv.</span>' : '')
-          + (f.plan_10b5 ? ' <span class="lupa" title="venta programada por un plan 10b5-1">10b5-1</span>' : '')
+          + etiquetaPlan(f)
+          + (f.ejercio_y_vendio ? ' <span class="lupa combo" title="Ejerció opciones y vendió las mismas acciones el mismo día: no es vender acciones que ya tenía, es convertir opciones en efectivo">ejerció y vendió</span>' : '')
           + (f.indirecta ? ' <span class="lupa" title="' + esc(f.naturaleza || 'tenencia indirecta') + '">indir.</span>' : '')
           + '</td>'
         + '<td>' + (Number.isFinite(f.precio) ? f.precio.toFixed(2) : '—') + '</td>'
@@ -346,13 +358,33 @@
     return 'la ventana del feed de EDGAR no trajo transacciones';
   }
 
+  // ── LA ETIQUETA DEL PLAN ──────────────────────────────────────────
+  // Tres estados, no dos. `sin_dato` NO dice "no programada": el formulario
+  // anterior a abril de 2023 no tiene dónde declararlo, y callar no es negar.
+  // Lo único que se pinta en gris es lo que CONSTA programado.
+  function etiquetaPlan(f){
+    if(f.plan_estado === 'programada'){
+      var desde = f.plan_adoptado_en ? ' desde ' + f.plan_adoptado_en : '';
+      return ' <span class="lupa plan" title="Venta programada: salió de un plan 10b5-1'
+        + (f.plan_adoptado_en ? ' adoptado el ' + esc(f.plan_adoptado_en) : '')
+        + (f.plan_fuente ? ' (' + esc(f.plan_fuente) + ')' : '')
+        + '. La fecha se fijó con meses de anticipación, no es una decisión de hoy.">'
+        + 'programada · plan 10b5-1' + esc(desde) + '</span>';
+    }
+    if(f.plan_estado === 'sin_dato'){
+      return ' <span class="lupa falta" title="El formulario no trae la casilla de 10b5-1 (es anterior a abril de 2023) y ninguna nota la menciona. No sabemos si fue programada: eso NO quiere decir que no lo fuera.">plan: sin dato</span>';
+    }
+    return '';
+  }
+
   // ── TOP DE LA SEMANA (espejo de topDeLaSemana) ────────────────────
   function topDeLaSemana(filas, tope){
     var porTicker = {};
     (filas || []).forEach(function(f){
       var k = f.ticker || f.emisora || '—';
       if(!porTicker[k]) porTicker[k] = { ticker:f.ticker, emisora:f.emisora, neto:0, compras:0,
-        ventas:0, personas:{}, vendio_todo:[], con_valor:0 };
+        ventas:0, personas:{}, vendio_todo:[], con_valor:0,
+        programadas:0, no_programadas:0, sin_dato_plan:0, neto_programado:0 };
       var g = porTicker[k];
       g.personas[f.quien || '?'] = 1;
       if(f.tipo === 'compra') g.compras++;
@@ -362,14 +394,34 @@
         g.con_valor++;
       }
       if(f.salio_del_todo && f.quien && g.vendio_todo.indexOf(f.quien) < 0) g.vendio_todo.push(f.quien);
+      // Lo que CONSTA programado se cuenta aparte. `sin_dato` no: no sabemos
+      // qué fue, y ponerlo del lado de las decisiones sería afirmar por
+      // descarte. Espejo de `form4.js`.
+      if(f.tipo === 'compra' || f.tipo === 'venta'){
+        if(f.plan_estado === 'programada') g.programadas++;
+        else if(f.plan_estado === 'no_programada') g.no_programadas++;
+        else g.sin_dato_plan++;
+        if(Number.isFinite(f.valor) && f.plan_estado === 'programada'){
+          g.neto_programado += f.tipo === 'compra' ? f.valor : -f.valor;
+        }
+      }
     });
     return Object.keys(porTicker).map(function(k){
       var g = porTicker[k];
       return { ticker:g.ticker || k, emisora:g.emisora, compras:g.compras, ventas:g.ventas,
         personas:Object.keys(g.personas).length, vendio_todo:g.vendio_todo,
+        programadas:g.programadas, no_programadas:g.no_programadas, sin_dato_plan:g.sin_dato_plan,
+        neto_programado: g.neto_programado,
         neto: g.con_valor ? g.neto : null,
         neto_motivo: g.con_valor ? null : 'ninguna compra ni venta del periodo declaró precio' };
-    }).sort(function(a,b){ return Math.abs(b.neto||0) - Math.abs(a.neto||0); }).slice(0, tope || 8);
+    }).sort(function(a,b){
+      // PRIMERO LO QUE NO CONSTA PROGRAMADO. Una venta bajo un plan 10b5-1 se
+      // fijó con meses de anticipación: su tamaño ya estaba decidido.
+      var pa = Math.abs((a.neto||0) - (a.neto_programado||0));
+      var pb = Math.abs((b.neto||0) - (b.neto_programado||0));
+      if(pa !== pb) return pb - pa;
+      return Math.abs(b.neto||0) - Math.abs(a.neto||0);
+    }).slice(0, tope || 8);
   }
 
   function pintarTop(filas){

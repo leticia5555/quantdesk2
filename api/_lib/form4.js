@@ -206,12 +206,156 @@ export function form4Completo(xml) {
       cik: xval(ib, 'issuerCik') || null,
     },
     duenos: duenosDe(s),
-    plan_10b5: /^(1|true)$/i.test(xval(s, 'aff10b5One')),
+    plan: planDeForm4(s),
+    // Se conserva el booleano para quien ya lo leía, pero la pantalla usa
+    // `plan.estado`: `false` acá NO quiere decir "no programada".
+    plan_10b5: planDeForm4(s).estado === PLAN_10B5.PROGRAMADA,
     transacciones: [
       ...transaccionesDeBloques(noDeriv, false),
       ...transaccionesDeBloques(deriv, true),
     ],
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ¿FUE UNA VENTA PROGRAMADA? (plan 10b5-1)
+//
+// Un plan 10b5-1 se adopta con meses de anticipación y las ventas salen
+// solas, en fechas fijadas de antemano. Leerlas como "el CEO vendió" es leer
+// una decisión donde hubo un calendario. Slootman vendió $94.93 M el
+// 2026-10-19 bajo un plan que adoptó el 19 de septiembre de 2025 — trece
+// meses antes (Lety, 2026-10-23).
+//
+// TRES ESTADOS, NO DOS. `sin_dato` existe porque la casilla del encabezado
+// (`aff10b5One`) sólo aparece en los formularios desde abril de 2023: en uno
+// anterior, "no viene marcada" no quiere decir "no fue programada", quiere
+// decir que el formulario no tenía dónde decirlo. Un booleano convertía esa
+// ausencia en una afirmación — "no programada" por descarte, que es justo lo
+// que el encargo prohíbe.
+//
+// EL ORDEN DE LAS FUENTES, y por qué:
+//   1. la casilla marcada → programada. Es una declaración del firmante en
+//      el encabezado, bajo la misma firma que el resto del documento;
+//   2. la casilla SIN marcar, pero una nota al pie que menciona 10b5-1 →
+//      programada igual. La nota es una afirmación; la casilla vacía puede
+//      ser un descuido del que llenó el formulario, y entre un dato que
+//      AFIRMA y uno que CALLA, manda el que afirma;
+//   3. la casilla sin marcar y ninguna nota → no programada, y acá sí se
+//      puede decir: el formulario tenía dónde declararlo y no lo declaró;
+//   4. sin casilla en el documento y sin nota → `sin_dato`.
+// ═══════════════════════════════════════════════════════════════════════
+export const PLAN_10B5 = { PROGRAMADA: 'programada', NO: 'no_programada', SIN_DATO: 'sin_dato' };
+
+const MESES_EN = ['january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december'];
+
+/** "September 19, 2025" o "9/19/2025" → "2025-09-19". null si no se entiende. */
+export function fechaDeAdopcion(texto) {
+  const t = String(texto || '');
+  const m1 = new RegExp('(' + MESES_EN.join('|') + ')\\s+(\\d{1,2}),?\\s+(\\d{4})', 'i').exec(t);
+  if (m1) {
+    const mes = MESES_EN.indexOf(m1[1].toLowerCase()) + 1;
+    return `${m1[3]}-${String(mes).padStart(2, '0')}-${String(Number(m1[2])).padStart(2, '0')}`;
+  }
+  const m2 = /\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/.exec(t);
+  if (m2) return `${m2[3]}-${String(Number(m2[1])).padStart(2, '0')}-${String(Number(m2[2])).padStart(2, '0')}`;
+  return null;
+}
+
+export function planDeForm4(xml) {
+  const s = String(xml || '');
+  // ── ¿EXISTE LA ETIQUETA, O SÓLO ESTÁ VACÍA? ────────────────────────
+  // Hace falta distinguirlo: un documento SIN la casilla (anterior a abril de
+  // 2023) no es lo mismo que uno con la casilla en 0. `xtag` no sirve para
+  // preguntarlo —devuelve `''` tanto para "no está" como para "está vacía"—,
+  // así que se busca la etiqueta en el texto. Lo encontró la prueba del
+  // `sin_dato`: con `xtag(...) != null`, un filing sin casilla salía
+  // "no programada", que es la afirmación por descarte que el encargo
+  // prohíbe. El tipo de `xtag` me hizo creer que ya lo tenía resuelto.
+  const hayCasilla = /<(?:\w+:)?aff10b5One[\s>]/i.test(s);
+  const marcada = hayCasilla && /^(1|true)$/i.test(xval(s, 'aff10b5One'));
+
+  // `<footnote(\s…)?>` y NO `<footnote[^>]*>`: el segundo también casa con
+  // `<footnoteId id="F1"/>`, que es la REFERENCIA inline dentro de una
+  // transacción, no la nota. Con eso el "texto de la nota" salía siendo medio
+  // documento —precios, códigos y cantidades— y la fecha de adopción se
+  // sacaba de cualquier lado. Lo marcó el fixture real de SNOW.
+  const notas = (s.match(/<footnote(?:\s[^>]*)?>[\s\S]*?<\/footnote>/gi) || [])
+    .map((n) => desentidad(n.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim());
+  const nota = notas.find((n) => /10b5-?1/i.test(n)) || null;
+
+  if (marcada) {
+    return { estado: PLAN_10B5.PROGRAMADA, fuente: 'casilla del encabezado',
+      adoptado_en: nota ? fechaDeAdopcion(nota) : null, nota };
+  }
+  if (nota) {
+    return { estado: PLAN_10B5.PROGRAMADA,
+      fuente: hayCasilla ? 'nota al pie (la casilla no venía marcada)' : 'nota al pie',
+      adoptado_en: fechaDeAdopcion(nota), nota };
+  }
+  if (hayCasilla) {
+    return { estado: PLAN_10B5.NO, fuente: 'casilla del encabezado, sin marcar',
+      adoptado_en: null, nota: null };
+  }
+  return { estado: PLAN_10B5.SIN_DATO,
+    fuente: null, adoptado_en: null, nota: null,
+    motivo: 'el formulario no trae la casilla de 10b5-1 (es anterior a abril de 2023) y ninguna nota la menciona' }; /* date-lint-ok: la fecha en que la SEC agregó la casilla al Form 4, un hecho fijo — no es una referencia a "hoy" */
+}
+
+/**
+ * LO QUE LE QUEDA DESPUÉS DE TODO, para poder decir "vendió todo".
+ *
+ * `sharesOwnedFollowingTransaction` es POR TENENCIA, no por persona: una línea
+ * que deja un fideicomiso en cero decía "vendió todo" mientras el firmante
+ * seguía con acciones en otros cuatro y con millones en opciones. A Slootman
+ * le quedan 19.024 acciones directas y 3.836.655 opciones, y el Form 4 lo
+ * dice — pero había que sumarlo (Lety, 2026-10-23).
+ *
+ * Se agrupa por tenencia (título + directa/indirecta + naturaleza), se toma la
+ * ÚLTIMA línea de cada grupo y se suman. Derivadas aparte: vender todas las
+ * acciones y quedarse con las opciones no es salirse.
+ */
+export function tenenciaFinal(transacciones = []) {
+  const ultima = new Map();
+  for (const t of transacciones) {
+    const k = [t.derivada ? 'D' : 'N', t.titulo || '', t.indirecta ? 'I' : 'X', t.naturaleza || ''].join('|');
+    ultima.set(k, t);   // el orden del documento manda: la última gana
+  }
+  let acciones = 0, derivados = 0, sinDato = 0;
+  for (const t of ultima.values()) {
+    if (t.le_quedan == null) { sinDato++; continue; }
+    if (t.derivada) derivados += t.le_quedan; else acciones += t.le_quedan;
+  }
+  return {
+    acciones, derivados, tenencias: ultima.size, sin_dato: sinDato,
+    // Con una tenencia sin declarar NO se puede afirmar que no queda nada.
+    salio_del_todo: sinDato === 0 && acciones === 0 && derivados === 0,
+    motivo: sinDato ? `${sinDato} tenencia(s) no declararon lo que queda después` : null,
+  };
+}
+
+/**
+ * EJERCIÓ Y VENDIÓ EL MISMO DÍA.
+ *
+ * No es lo mismo que vender acciones que ya se tenían: es convertir opciones
+ * en efectivo sin pasar por tener la acción. En el Form 4 son dos filas (M y
+ * S) que la pantalla mostraba sueltas, como si fueran dos decisiones.
+ *
+ * Se compara por SUMA y no línea a línea: Slootman ejerció 300.000 en dos
+ * líneas y vendió 300.000 en diez. Ninguna pareja coincide; los totales sí.
+ */
+export function ejercicioYVenta(transacciones = []) {
+  const porFecha = new Map();
+  for (const t of transacciones) {
+    if (t.derivada || !t.fecha || t.acciones == null) continue;
+    if (t.codigo !== 'M' && t.codigo !== 'S') continue;
+    if (!porFecha.has(t.fecha)) porFecha.set(t.fecha, { M: 0, S: 0 });
+    porFecha.get(t.fecha)[t.codigo] += t.acciones;
+  }
+  for (const [fecha, g] of porFecha) {
+    if (g.M > 0 && g.M === g.S) return { hubo: true, fecha, acciones: g.M };
+  }
+  return { hubo: false, fecha: null, acciones: null };
 }
 
 /**
@@ -225,6 +369,8 @@ export function form4Completo(xml) {
 export function filasDeForm4(doc, meta = {}) {
   if (!doc) return [];
   const lider = doc.duenos.find((o) => o.es_oficial || o.es_director || o.es_duenio_10) || doc.duenos[0] || null;
+  const tenencia = tenenciaFinal(doc.transacciones);
+  const combo = ejercicioYVenta(doc.transacciones);
   return doc.transacciones.map((t, i) => ({
     id: `${meta.accession || 'sin-accession'}#${i}`,
     accession: meta.accession || null,
@@ -238,7 +384,25 @@ export function filasDeForm4(doc, meta = {}) {
     es_duenio_10: !!(lider && lider.es_duenio_10),
     firmantes: doc.duenos.length,
     plan_10b5: doc.plan_10b5,
+    // El plan completo, con sus tres estados y la fecha de adopción si la
+    // nota la trae. La pantalla ordena por esto.
+    plan_estado: (doc.plan || {}).estado || PLAN_10B5.SIN_DATO,
+    plan_adoptado_en: (doc.plan || {}).adoptado_en || null,
+    plan_fuente: (doc.plan || {}).fuente || null,
     ...t,
+    // ── DOS COSAS QUE SON DEL DOCUMENTO, NO DE LA LÍNEA ───────────────
+    // `salio_del_todo` venía de `le_quedan === 0` de ESA línea, y
+    // `sharesOwnedFollowingTransaction` es por TENENCIA: una línea que deja
+    // un fideicomiso en cero decía "vendió todo" con el firmante todavía
+    // adentro. Se recalcula sumando todas las tenencias del filing.
+    salio_del_todo: tenencia.salio_del_todo,
+    salio_del_todo_motivo: tenencia.motivo,
+    le_quedan_total: tenencia.acciones,
+    le_quedan_derivados: tenencia.derivados,
+    // Ejercer y vender el mismo día no es vender acciones que ya se tenían.
+    ejercio_y_vendio: combo.hubo && !t.derivada && (t.codigo === 'M' || t.codigo === 'S')
+      && t.fecha === combo.fecha,
+    ejercio_y_vendio_acciones: combo.hubo ? combo.acciones : null,
     // La hora de ACEPTACIÓN del filing, que es por lo que ordena la pantalla.
     // No es la fecha de la operación: entre una y otra hay hasta dos días
     // hábiles, y mezclarlas desordena la lista.
@@ -268,14 +432,32 @@ export function topDeLaSemana(filas, { tope = 8 } = {}) {
         ticker: f.ticker, emisora: f.emisora,
         neto_usd: 0, compras: 0, ventas: 0, personas: new Set(),
         vendio_todo: [], con_valor: 0, sin_valor: 0,
+        // ── PROGRAMADAS APARTE ────────────────────────────────────────
+        // Una venta bajo un plan 10b5-1 se fijó con meses de anticipación:
+        // leerla junto a una decisión de hoy es mezclar un calendario con
+        // una señal. No se esconde —sigue en el neto total— pero el orden lo
+        // decide lo NO programado (Lety, 2026-10-23).
+        neto_no_programado: 0, neto_programado: 0,
+        programadas: 0, no_programadas: 0, sin_dato_plan: 0,
       });
     }
     const g = porTicker.get(k);
     g.personas.add(f.quien || '?');
     if (f.tipo === 'compra') g.compras++;
     if (f.tipo === 'venta') g.ventas++;
+    if (f.tipo === 'compra' || f.tipo === 'venta') {
+      if (f.plan_estado === PLAN_10B5.PROGRAMADA) g.programadas++;
+      else if (f.plan_estado === PLAN_10B5.NO) g.no_programadas++;
+      else g.sin_dato_plan++;
+    }
     if (Number.isFinite(f.valor) && (f.tipo === 'compra' || f.tipo === 'venta')) {
-      g.neto_usd += f.tipo === 'compra' ? f.valor : -f.valor;
+      const firmado = f.tipo === 'compra' ? f.valor : -f.valor;
+      g.neto_usd += firmado;
+      // `sin_dato` NO cuenta como no programada: no sabemos qué fue, y
+      // meterlo del lado de las decisiones sería la misma afirmación por
+      // descarte que el encargo prohíbe.
+      if (f.plan_estado === PLAN_10B5.PROGRAMADA) g.neto_programado += firmado;
+      else if (f.plan_estado === PLAN_10B5.NO) g.neto_no_programado += firmado;
       g.con_valor++;
     } else if (f.tipo === 'compra' || f.tipo === 'venta') {
       g.sin_valor++; sinValor++;
@@ -288,7 +470,24 @@ export function topDeLaSemana(filas, { tope = 8 } = {}) {
     neto_usd: g.con_valor ? g.neto_usd : null,
     neto_motivo: g.con_valor ? null : 'ninguna compra ni venta del periodo declaró precio',
   }));
-  grupos.sort((a, b) => Math.abs(b.neto_usd || 0) - Math.abs(a.neto_usd || 0));
+  // ── PRIMERO LO QUE NO SABEMOS QUE ESTABA PROGRAMADO ──────────────────
+  // Un ticker cuyo movimiento entero salió de un plan adoptado hace un año no
+  // encabeza la semana por tamaño: el tamaño ya estaba decidido.
+  //
+  // Pero el criterio NO puede ser "primero las `no_programada`". Lo midió una
+  // prueba: con eso, un filing viejo —sin la casilla, o sea `sin_dato`— caía
+  // DEBAJO de cualquier otro con la casilla en blanco, por grande que fuera
+  // su neto. Enterrar un movimiento porque su formulario es anterior a 2023 es
+  // la misma afirmación por descarte que el encargo prohíbe, sólo que en el
+  // orden en vez de en la etiqueta.
+  //
+  // Así que se descuenta SÓLO lo que consta programado. `sin_dato` pesa como
+  // lo que es: algo que no sabemos, y que por lo tanto todavía puede importar.
+  const pesoDe = (g) => Math.abs((g.neto_usd || 0) - (g.neto_programado || 0));
+  grupos.sort((a, b) => {
+    const d = pesoDe(b) - pesoDe(a);
+    return d !== 0 ? d : Math.abs(b.neto_usd || 0) - Math.abs(a.neto_usd || 0);
+  });
   return { grupos: grupos.slice(0, tope), tickers: grupos.length, sin_valor: sinValor };
 }
 

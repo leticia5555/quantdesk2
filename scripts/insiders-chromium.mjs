@@ -313,10 +313,56 @@ try {
   chequeo('y los chips se pueden tocar (≥34 px)',
     chips.every((c) => c.alto >= 34), JSON.stringify(chips.map((c) => c.alto)));
 
+  // ── LO PROGRAMADO SE VE DISTINTO, Y DICE DESDE CUÁNDO ───────────────
+  // Una venta bajo un plan 10b5-1 se fijó con meses de anticipación. En
+  // verde o rojo se lee como una decisión de hoy, que es justo lo que no es.
+  // Se apaga —NO se esconde— y la etiqueta trae la fecha de adopción.
+  const plan = await p.evaluate(() => {
+    const trs = [...document.querySelectorAll('#contenido tbody tr')];
+    const prog = trs.filter((tr) => tr.classList.contains('programada'));
+    return {
+      total: trs.length,
+      programadas: prog.length,
+      etiqueta: prog.length ? (prog[0].querySelector('.lupa.plan') || {}).textContent || '' : '',
+      titulo: prog.length ? (prog[0].querySelector('.lupa.plan') || {}).title || '' : '',
+      // Apagada: el fondo de una fila programada NO puede ser el verde ni el
+      // rojo del tipo.
+      fondo: prog.length ? getComputedStyle(prog[0].querySelector('td')).backgroundColor : null,
+      fondoVenta: (() => { const v = trs.find((tr) => tr.classList.contains('venta') && !tr.classList.contains('programada'));
+        return v ? getComputedStyle(v.querySelector('td')).backgroundColor : null; })(),
+      combo: trs.some((tr) => (tr.textContent || '').includes('ejerció y vendió')),
+      sinDato: trs.some((tr) => (tr.textContent || '').includes('plan: sin dato')),
+    };
+  });
+  chequeo('las filas con plan 10b5-1 van marcadas', plan.programadas > 0, JSON.stringify(plan).slice(0, 160));
+  // La fecha de adopción sale de la NOTA al pie, y este fixture sólo trae la
+  // casilla del encabezado — así que acá la etiqueta va sin fecha, y eso es
+  // correcto: inventarla sería peor. Lo que se exige es que no quede un
+  // "desde" colgado sin nada detrás, y que CUANDO haya fecha, se pinte.
+  // El caso con fecha lo cubre `tests/insiders-10b51-snow.test.mjs` contra el
+  // Form 4 real de Slootman, que sí trae la nota (adoptado 2025-09-19).
+  chequeo('la etiqueta es exacta, con fecha o sin ella, y nunca con un "desde" vacío',
+    /^programada · plan 10b5-1( desde \d{4}-\d{2}-\d{2})?$/.test(plan.etiqueta.trim()),
+    plan.etiqueta);
+  chequeo('el título explica que la fecha se fijó con anticipación',
+    /no es una decisión de hoy/.test(plan.titulo), plan.titulo.slice(0, 90));
+  chequeo('su fondo está APAGADO, no en el color del tipo',
+    plan.fondo !== plan.fondoVenta, `${plan.fondo} vs ${plan.fondoVenta}`);
+  // `sin_dato` NO se pinta como programada: callar no es negar, y tampoco
+  // afirmar. Si apareciera en gris, estaríamos diciendo que consta.
+  chequeo('"sin dato" no se disfraza de programada',
+    !/sin dato/.test(plan.etiqueta), plan.etiqueta);
+
   await p.locator('#chips button[data-chip="compra"]').tap();
   await p.waitForFunction(() => location.search.includes('chips=compra'), null, { timeout: 2000 });
+  // La clase de la fila lleva el TIPO y, desde el 10b5-1, además `programada`
+  // cuando consta que salió de un plan. Comparar el `className` entero hacía
+  // que agregar una clase visual rompiera una comprobación sobre el FILTRO,
+  // que es otra cosa. Se mira el tipo, que es lo que el chip filtra.
   const soloCompras = await p.evaluate(() =>
-    [...document.querySelectorAll('#contenido tbody tr')].map((tr) => tr.className));
+    [...document.querySelectorAll('#contenido tbody tr')].map((tr) =>
+      ['compra', 'venta', 'opcion', 'impuesto', 'entrega_emisora', 'otorgado', 'regalo', 'otro']
+        .find((t) => tr.classList.contains(t)) || tr.className));
   chequeo('el chip de compras deja sólo compras',
     soloCompras.length > 0 && soloCompras.every((c) => c === 'compra'), JSON.stringify(soloCompras));
   await p.locator('#chips button[data-chip="compra"]').tap();
@@ -333,8 +379,24 @@ try {
   const esperado = topDeLaSemana(FILAS).grupos[0];
   chequeo('y el neto de la primera es el que calcula el módulo',
     top[0][0] === esperado.ticker, `${top[0][0]} vs ${esperado.ticker}`);
-  chequeo('la columna "vendió todo" nombra a la persona',
-    top.some((t) => /Ruiz Ana/.test(t[6])), JSON.stringify(top.map((t) => t[6])));
+  // ── "VENDIÓ TODO" YA NO SALE DE UNA LÍNEA EN CERO ──────────────────
+  // Esto exigía ver a "Ruiz Ana" porque UNA de sus líneas dejaba esa tenencia
+  // en cero. `sharesOwnedFollowingTransaction` es por TENENCIA, no por
+  // persona: con esa regla, alguien que vacía un fideicomiso y sigue con
+  // acciones en otros cuatro y con millones en opciones salía "vendió todo".
+  // Es lo que Lety vio en ATKR, y lo que el Form 4 real de Slootman confirma:
+  // le quedan 19.024 acciones y 3.836.655 opciones (2026-10-23).
+  //
+  // El fixture de este arnés deja tenencia después, así que la columna tiene
+  // que estar VACÍA. Que esté vacía es el resultado correcto, y por eso se
+  // comprueba contra el módulo en vez de contra un texto: si mañana el
+  // fixture cambia y alguien sí se sale del todo, los dos lados se mueven
+  // juntos.
+  const vendioTodoEsperado = topDeLaSemana(FILAS).grupos.flatMap((g) => g.vendio_todo);
+  chequeo('la columna "vendió todo" dice lo mismo que el módulo',
+    vendioTodoEsperado.every((q) => top.some((t) => t[6].includes(q)))
+      && (vendioTodoEsperado.length > 0 || top.every((t) => t[6] === '—')),
+    `módulo: ${JSON.stringify(vendioTodoEsperado)} · pantalla: ${JSON.stringify(top.map((t) => t[6]))}`);
 
   await p.locator('#barra-vistas button[data-vista="destacadas"]').tap();
   await p.waitForFunction(() => /Compras destacadas/.test(document.getElementById('titulo-tabla').textContent),

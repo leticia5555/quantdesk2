@@ -162,9 +162,21 @@ test('el neto suma compras y resta ventas, y sólo cuenta lo que tiene precio', 
   assert.equal(g.ventas, 1);
 });
 
-test('"vendió todo" es por PERSONA, no por ticker', () => {
+test('"vendió todo" ya no sale de UNA línea en cero', () => {
+  // Esta prueba afirmaba `['Ruiz Ana']` porque una de sus líneas dejaba esa
+  // TENENCIA en cero. `sharesOwnedFollowingTransaction` es por tenencia, no
+  // por persona: con eso, alguien que vacía un fideicomiso y sigue con
+  // acciones en otros cuatro y con millones en opciones salía "vendió todo".
+  // Es lo que Lety vio en ATKR y en Slootman (2026-10-23).
   const t = topDeLaSemana(filas);
-  assert.deepEqual(t.grupos[0].vendio_todo, ['Ruiz Ana']);
+  assert.deepEqual(t.grupos[0].vendio_todo, [],
+    'nadie se salió del todo: el fixture deja tenencia después');
+});
+
+test('y sí sale cuando NO queda nada, ni acciones ni derivados', () => {
+  // La otra mitad de la regla: si de verdad queda en cero, se dice.
+  const vacio = filas.map((f) => ({ ...f, salio_del_todo: true, quien: 'Ruiz Ana' }));
+  assert.deepEqual(topDeLaSemana(vacio).grupos[0].vendio_todo, ['Ruiz Ana']);
 });
 
 test('sin una sola operación con precio, el neto es null con su causa, no cero', () => {
@@ -174,11 +186,29 @@ test('sin una sola operación con precio, el neto es null con su causa, no cero'
   assert.match(t.grupos[0].neto_motivo, /ninguna compra ni venta/);
 });
 
-test('el top ordena por tamaño del neto en valor absoluto: una venta grande importa', () => {
+test('una venta PROGRAMADA no encabeza la semana, aunque sea la más grande', () => {
+  // Esta prueba pedía ACME primero porque su neto (−573.750) es mucho mayor
+  // que el de NSPC (+3.000). Pero el fixture de ACME trae `aff10b5One = 1`:
+  // esa venta se fijó con meses de anticipación, y el tamaño ya estaba
+  // decidido cuando se adoptó el plan. Leerla como la señal de la semana es
+  // leer una decisión donde hubo un calendario (Lety, 2026-10-23).
   const otras = filasDeForm4(form4Completo(FORM4_CON_NAMESPACE), { accession: 'x', updated: '2026-10-11T10:00:00Z' });
   const t = topDeLaSemana([...filas, ...otras]);
   assert.equal(t.tickers, 2);
-  assert.equal(t.grupos[0].ticker, 'ACME', 'el neto de −573,750 pesa más que el de +3,000');
+  assert.equal(t.grupos.find((g) => g.ticker === 'ACME').programadas > 0, true);
+  assert.equal(t.grupos[0].ticker, 'NSPC', 'lo no programado va primero, aunque sea más chico');
+  // Y ACME no desaparece ni pierde su número: sigue ahí, con el neto entero.
+  const acme = t.grupos.find((g) => g.ticker === 'ACME');
+  assert.equal(Math.round(acme.neto_usd), -573750);
+  assert.equal(Math.round(acme.neto_programado), -573750);
+});
+
+test('entre dos que NO constan programadas, sigue mandando el tamaño', () => {
+  // La mitad que no cambia: el orden sólo descuenta lo que CONSTA programado.
+  const sinPlan = (f) => ({ ...f, plan_estado: 'sin_dato', plan_adoptado_en: null });
+  const otras = filasDeForm4(form4Completo(FORM4_CON_NAMESPACE), { accession: 'x', updated: '2026-10-11T10:00:00Z' });
+  const t = topDeLaSemana([...filas, ...otras].map(sinPlan));
+  assert.equal(t.grupos[0].ticker, 'ACME', 'sin plan que descontar, el neto grande vuelve a encabezar');
 });
 
 // ── LOS CHIPS ────────────────────────────────────────────────────────
