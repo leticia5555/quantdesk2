@@ -163,7 +163,7 @@ Cuando el histórico queda cerca de la barra y el calendario lejos, la lectura e
 LLY trae ago-26 con `reported_eps` null.
 
 - **Qué la llena:** `pead_earnings` solo la llena `/api/pead-harvest?job=earnings`, el goteo de AV `EARNINGS`. Ese goteo está **apagado** desde el NO-GO del PEAD: no tiene schedule y `PEAD_HARVEST_ENABLED` está apagado (docs/wheel-fase0.md §4.3). `?job=refresh` re-encola los símbolos viejos sin gastar AV, pero solo el goteo los baja.
-- **Qué pasa con `?job=hist`:** no ayuda, porque salta todo símbolo que esté en `pead_earnings`.
+- **Qué pasa con `?job=hist`:** su cola salta todo símbolo que esté en `pead_earnings`; desde el 25-oct, el goteo PEAD de abajo los toma aparte.
 - **Costo:** una llamada a AV por símbolo, que trae todo el historial.
 
 Conteo y costo, sin escribir nada:
@@ -182,6 +182,17 @@ select count(*) filter (where reported_eps is null)                             
                           and symbol in (select symbol from abiertos))                    as llamadas_para_ponerlos_al_dia
   from ult;
 ```
+
+Resultado del 25-oct: `ultimo_sin_reportar` 3, `ultimo_viejo_95d` 52, `llamadas_para_ponerlos_al_dia` 6.
+
+### Goteo PEAD (decisión del 25-oct)
+
+- **Permanente:** al final de cada `?job=hist` (cron `50 22`), hasta **3 llamadas** de AV `EARNINGS` para símbolos de `pead_earnings` cuyo último trimestre (por `fiscal_date_ending`) tiene `reported_eps` null o `reported_date` de hace más de 95 días.
+- **Orden:** la misma cola que `hist`: mercado abierto más cercano primero, después los ya pasados y al final los que no tienen mercado.
+- **Mismo cupo y misma bandera:** `pead_api_budget` (25 al día) y `EARNINGS_V2_HIST_ENABLED=1`. No corre con `&symbols=` a mano.
+- **Sin tocar v1:** escribe con el mismo `upsertEarnings` de la cosecha PEAD; no toca `pead-harvest`, su ledger ni `PEAD_HARVEST_ENABLED`.
+- **Reintento:** un símbolo pedido hace menos de 7 días que sigue viejo no se vuelve a pedir: AV todavía no trae el trimestre nuevo.
+- **A mano:** `?job=pead_al_dia&max=6` corre lo mismo una vez, con tope de 6 llamadas.
 
 ### Historia: el diagnóstico del 25-oct (las 68 abiertas con `consenso_vigente` null)
 
@@ -221,7 +232,8 @@ Cambiar la captura a esa fuente es otro PR: cambia de dónde sale el dato, no la
 | `GET /api/earnings-beat-v2?validacion=1&format=md` | El piloto de 22, con A y B, **sin veredicto**. |
 | `GET /api/earnings-beat-v2?validacion=v21&format=md` | El set v2.1 y su veredicto (provisional hasta el 31-dic). |
 | `GET /api/earnings-beat-v2?job=mercados_v2` | Cron `20 22 * * *`, latido `earnings-beat:v2-mercados`. Cosecha sin universo. |
-| `GET /api/earnings-beat-v2?job=hist[&symbols=AAL,PCG]` | Cron `50 22 * * *`, latido `earnings-beat:v2-hist`. Historial de AV; apagado sin `EARNINGS_V2_HIST_ENABLED=1`. |
+| `GET /api/earnings-beat-v2?job=hist[&symbols=AAL,PCG]` | Cron `50 22 * * *`, latido `earnings-beat:v2-hist`. Historial de AV; apagado sin `EARNINGS_V2_HIST_ENABLED=1`. Al final, el goteo PEAD (≤ 3 llamadas). |
+| `GET /api/earnings-beat-v2?job=pead_al_dia[&max=6]` | Goteo PEAD a mano: default 3, tope 6 llamadas. Misma bandera y cupo que `hist`. |
 | `GET /api/earnings-beat-v2?job=vigente_diag&symbols=CL,VZ[&calendario=1]` | Diagnóstico del consenso vigente: qué trae AV `EARNINGS` (y `EARNINGS_CALENDAR`) para esos símbolos. Gasta una llamada por símbolo, más una por el calendario; no escribe nada. |
 | `GET /api/earnings-beat-v2?job=vigente_fuente&symbols=EBAY,NET,LLY` | Compara el `estimate` del calendario con el histórico de AV y la barra. Sin llamadas a AV; no escribe nada. |
 | `GET /api/earnings-beat-v2?job=diario` | Cron `55 23 * * *`, latido `earnings-beat:v2`. Primero el snapshot del día de `EARNINGS_CALENDAR` (1 llamada, con `EARNINGS_V2_VIGENTE_ENABLED=1`), después las features. |
