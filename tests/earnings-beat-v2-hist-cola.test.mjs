@@ -121,3 +121,72 @@ test('?job=hist: tras un empty, CFLT queda sin_datos_av y no se vuelve a pedir (
     for (const k of ['DATABASE_URL', 'ALPHAVANTAGE_API_KEY', 'EARNINGS_V2_HIST_ENABLED']) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; }
   }
 });
+
+// ── 25-oct: goteo PEAD (pead_earnings viejo o nulo, mercado abierto más cercano primero) ──
+import { maxPeadManual } from '../api/earnings-beat-v2.js';
+
+test('?job=pead_al_dia: &max default 3, tope 6', () => {
+  assert.equal(maxPeadManual(undefined), 3);
+  assert.equal(maxPeadManual('6'), 6);
+  assert.equal(maxPeadManual('25'), 6);
+  assert.equal(maxPeadManual('0'), 3);
+  assert.equal(maxPeadManual('x'), 3);
+});
+
+test('?job=pead_al_dia: pide solo PEAD viejo/nulo, en orden de mercado abierto, y escribe pead_earnings', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
+  const BIN = binDePostgres();
+  assert.ok(BIN, FALTA_POSTGRES);
+  const psql = levantaPostgres(t, { bin: BIN, puerto: 55443 });
+  for (const q of SCHEMA_V1) psql(q + ';');
+  psql(`create table if not exists pead_earnings (symbol text not null, fiscal_date_ending date not null,
+          reported_date date not null, reported_eps numeric, estimated_eps numeric, surprise numeric,
+          surprise_pct numeric, source text, ingested_at timestamptz default now(), primary key (symbol, reported_date));`);
+  for (const f of ['', '-1', '-2', '-3', '-4']) psql(readFileSync(`docs/sql/earnings-beat-v2${f}.sql`, 'utf8'));
+  psql('create table if not exists pead_api_budget (day date primary key, calls int not null default 0);');
+  const viejo = `now() - interval '30 days'`;
+  psql(`insert into pead_earnings (symbol, fiscal_date_ending, reported_date, reported_eps, estimated_eps, ingested_at) values
+    ('LLY',  current_date - 90,  current_date - 60,  null, 7.0, ${viejo}),   -- último sin reportar, mercado abierto en +4
+    ('AAPL', current_date - 150, current_date - 120, 1.5,  1.4, ${viejo}),   -- viejo, mercado abierto en +2
+    ('MSFT', current_date - 150, current_date - 120, 3.0,  2.9, ${viejo}),   -- viejo, sin mercado
+    ('KO',   current_date - 150, current_date - 120, 0.7,  0.7, ${viejo}),   -- viejo, mercado ya pasado
+    ('PG',   current_date - 60,  current_date - 30,  1.9,  1.8, ${viejo}),   -- al día: no se pide
+    ('XOM',  current_date - 150, current_date - 120, 1.8,  1.7, now() - interval '2 days');  -- pedido hace 2 días: no se repite`);
+  psql(`insert into pm_earnings_markets_v2 (market_id, symbol, filtro_motivo, resolved_date, outcome) values
+    ('l1', 'LLY',  'ok', current_date + 4,  null),
+    ('a1', 'AAPL', 'ok', current_date + 2,  null),
+    ('k1', 'KO',   'ok', current_date - 3,  'yes');`);
+
+  const llamadas = [];
+  const neon = puenteNeon(psql);
+  const fetchOriginal = globalThis.fetch;
+  const env = { ...process.env };
+  process.env.DATABASE_URL = 'postgres://u:p@ep-prueba.region.aws.neon.tech/db';
+  process.env.ALPHAVANTAGE_API_KEY = 'demo';
+  process.env.EARNINGS_V2_HIST_ENABLED = '1';
+  delete process.env.CRON_SECRET;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.startsWith('https://www.alphavantage.co/query')) {
+      const sym = new URL(u).searchParams.get('symbol');
+      llamadas.push(sym);
+      return { ok: true, status: 200, json: async () => ({ symbol: sym, quarterlyEarnings: [
+        { fiscalDateEnding: '2026-09-30', reportedDate: '2026-10-20', reportedEPS: '1.00', estimatedEPS: '0.90', surprise: '0.10', surprisePercentage: '11.1' },
+      ] }) };
+    }
+    return neon(url, init);
+  };
+  try {
+    const { default: handler } = await import('../api/earnings-beat-v2.js');
+    const r = resFalsa();
+    await handler({ method: 'GET', query: { job: 'pead_al_dia' }, headers: {} }, r);
+    assert.equal(r.code, 200, JSON.stringify(r.cuerpo));
+    // default 3: abierto más cercano primero (AAPL +2, LLY +4), después el ya pasado (KO); MSFT queda en cola
+    assert.deepEqual(llamadas, ['AAPL', 'LLY', 'KO']);
+    assert.deepEqual([r.cuerpo.max, r.cuerpo.llamadas, r.cuerpo.viejos, r.cuerpo.quedan_en_cola], [3, 3, 4, 1]);
+    assert.equal(psql(`select calls from pead_api_budget where day = current_date`).trim(), '3');
+    assert.equal(psql(`select count(*) from pead_earnings where symbol in ('AAPL','LLY','KO') and reported_date = '2026-10-20'`).trim(), '3'); /* date-lint-ok: dato de la respuesta falsa de AV */
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    for (const k of ['DATABASE_URL', 'ALPHAVANTAGE_API_KEY', 'EARNINGS_V2_HIST_ENABLED']) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; }
+  }
+});

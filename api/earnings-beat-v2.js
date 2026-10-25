@@ -14,6 +14,10 @@
 //   ?job=hist          historial AV para símbolos que NO están en
 //                      pead_earnings → pm_v2_hist. EARNINGS_V2_HIST_ENABLED=1.
 //                      &symbols=AAL,PCG para pedir unos en particular.
+//   ?job=pead_al_dia   goteo PEAD a mano: &max=N (default 3, tope 6) símbolos de
+//                      pead_earnings con el último trimestre viejo o nulo,
+//                      mercado abierto más cercano primero. Misma bandera que hist;
+//                      ?job=hist ya corre 3 de estos al final de cada corrida.
 //   ?job=diario        con EARNINGS_V2_VIGENTE_ENABLED=1, guarda el snapshot
 //                      del día de AV EARNINGS_CALENDAR (pm_v2_consenso_snap,
 //                      1 llamada); después recalcula pm_earnings_v2_features.
@@ -28,7 +32,8 @@
 // El cupo diario (25) es compartido y hoy es del wheel (docs/wheel-fase0.md
 // §4.3). Las dos capturas están APAGADAS por default; prendidas, respetan el
 // mismo guard pead_api_budget: el consenso vigente gasta 1 llamada al día
-// (EARNINGS_CALENDAR) y el historial ≤ 10 por corrida (EARNINGS).
+// (EARNINGS_CALENDAR), el historial ≤ 10 por corrida y el goteo PEAD ≤ 3
+// (EARNINGS).
 //
 // ENV VARS: DATABASE_URL · CRON_SECRET (opc) · ALPHAVANTAGE_API_KEY (opc) ·
 //           EARNINGS_V2_VIGENTE_ENABLED (opc) · EARNINGS_V2_HIST_ENABLED (opc)
@@ -44,7 +49,7 @@ import {
 import { descubrePorBusqueda, descubrePorSimbolo, precioDeUnMercado, CONCURRENCIA_CLOB } from './_lib/earnings-beat-descubrir.js';
 import { preparaFila } from './_lib/earnings-beat-db.js';
 import { fetchEarnings } from './_lib/av-earnings.js';
-import { budgetUsed, budgetAdd, ensurePeadSchema } from './_lib/pead-db.js';
+import { budgetUsed, budgetAdd, ensurePeadSchema, upsertEarnings } from './_lib/pead-db.js';
 import {
   VALIDACION_V2, CORTE_VALIDACION, CRITERIOS_V2, CRITERIOS_V21, SET_PILOTO, UNIVERSO,
   parseCalendarioCsv, vigenteDeSnapshots, vigenteSospechoso, UMBRAL_VIGENTE_VS_BARRA,
@@ -55,7 +60,7 @@ import {
 } from './_lib/earnings-beat-v2-db.js';
 
 export const maxDuration = 300;
-export { CONSULTAS, simbolosParaBuscar, ordenaColaHist };
+export { CONSULTAS, simbolosParaBuscar, ordenaColaHist, maxPeadManual };
 
 const AV_TOPE_DIARIO = 25;
 const AV_HIST_POR_CORRIDA = 10; // historial (encargo v2.1)
@@ -63,6 +68,13 @@ const AV_ESPACIO_MS = 11000;
 const PRESUPUESTO_MS = 240000;
 const PRESUPUESTO_DESCUBRIR_MS = 160000; // el resto queda para el precio a T-24h
 const HIST_FRESCO_DIAS = 80;    // un símbolo con historial más nuevo que esto no se vuelve a pedir
+// Goteo PEAD (25-oct): pead_earnings dejó de llenarse con el NO-GO del PEAD.
+// ?job=hist pide, además, hasta 3 símbolos PEAD con el último trimestre viejo
+// (> 95 días) o sin reportar; ?job=pead_al_dia&max=N lo corre a mano (tope 6).
+const AV_PEAD_POR_CORRIDA = 3;
+const AV_PEAD_TOPE_MANUAL = 6;
+const PEAD_VIEJO_DIAS = 95;
+const PEAD_REINTENTO_DIAS = 7;  // si se pidió hace menos y sigue viejo, AV todavía no lo trae
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ─────────────────── consultas ───────────────────
@@ -125,6 +137,15 @@ const CONSULTAS = {
   conPead: (n) => `select distinct symbol from pead_earnings where symbol in (${ph(n)})`,
   histFresco: (n) => `select symbol from pm_v2_hist where symbol in (${ph(n)})
       group by symbol having max(capturado_en) > now() - ($${n + 1})::int * interval '1 day' or bool_or(fuente = 'sin_datos_av')`,
+  // goteo PEAD: el último trimestre por símbolo (por fiscal_date_ending), viejo
+  // o sin reportar, y no pedido en los últimos $2 días.
+  peadViejos: () => `with ult as (
+        select distinct on (symbol) symbol, reported_date, reported_eps
+          from pead_earnings order by symbol, fiscal_date_ending desc
+      ), ing as (select symbol, max(ingested_at) as ing from pead_earnings group by symbol)
+      select u.symbol from ult u join ing i using (symbol)
+       where (u.reported_eps is null or u.reported_date < current_date - ($1)::int)
+         and i.ing < now() - ($2)::int * interval '1 day'`,
   simbolosCosechados: () => `select distinct symbol from pm_earnings_markets_v2 where symbol is not null`,
   // job hist: la fecha más cercana por símbolo, para ordenar la cola.
   // proxima: el mercado ABIERTO que resuelve antes (desde ayer, para no
@@ -469,11 +490,55 @@ async function jobHist(q) {
       if (r.status === 'rate_limited') break;   // AV dijo basta: seguir es tirar cupo
     }
   }
+  // Goteo PEAD, solo en la corrida de la cola (no con &symbols= a mano) y no
+  // si AV ya contestó rate_limited.
+  const limitado = resultado.some((r) => r.estado === 'rate_limited');
+  const pead = pedidos.length || limitado ? null : await goteoPead(apiKey, AV_PEAD_POR_CORRIDA);
   return {
-    job: 'hist', llamadas: resultado.length, orden: pedidos.length ? 'pedido' : 'fecha_mas_cercana', cupo_libre_antes: libres,
+    job: 'hist', llamadas: resultado.length, pead, orden: pedidos.length ? 'pedido' : 'fecha_mas_cercana', cupo_libre_antes: libres,
     en_pead_sin_llamar: [...enPead], frescos_sin_llamar: [...frescos],
     quedan_en_cola: cola.length - resultado.length, resultado,
   };
+}
+
+// ─────────────────── goteo PEAD (pead_earnings) ───────────────────
+// Escribe con el mismo upsertEarnings de la cosecha PEAD: no toca la lógica
+// de v1 ni el ledger. Mismo cupo (pead_api_budget) y misma bandera que hist.
+// Orden: la misma cola que hist (mercado abierto más cercano primero).
+async function goteoPead(apiKey, max) {
+  const viejos = (await sql(CONSULTAS.peadViejos(), [PEAD_VIEJO_DIAS, PEAD_REINTENTO_DIAS])).map((r) => r.symbol);
+  const cola = ordenaColaHist(viejos, await sql(CONSULTAS.fechasPorSimbolo()).catch(() => []));
+  const dia = new Date().toISOString().slice(0, 10);
+  const libres = AV_TOPE_DIARIO - (await budgetUsed(dia));
+  const tanda = cola.slice(0, Math.max(0, Math.min(max, libres)));
+  const resultado = [];
+  for (let i = 0; i < tanda.length; i++) {
+    if (i) await sleep(AV_ESPACIO_MS);
+    const s = tanda[i];
+    const r = await fetchEarnings(s, apiKey);
+    await budgetAdd(dia, 1);   // el cupo se gasta con la llamada, haya datos o no
+    if (r.status === 'ok') resultado.push({ symbol: s, estado: 'ok', trimestres: await upsertEarnings(s, r.events) });
+    else {
+      resultado.push({ symbol: s, estado: r.status, mensaje: r.message || null });
+      if (r.status === 'rate_limited') break;
+    }
+  }
+  return { llamadas: resultado.length, cupo_libre_antes: libres, viejos: viejos.length, quedan_en_cola: cola.length - resultado.length, resultado };
+}
+
+function maxPeadManual(v) {
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) && n > 0 ? Math.min(AV_PEAD_TOPE_MANUAL, n) : AV_PEAD_POR_CORRIDA;
+}
+
+async function jobPeadAlDia(q) {
+  if (process.env.EARNINGS_V2_HIST_ENABLED !== '1') return { job: 'pead_al_dia', apagado: true, nota: 'EARNINGS_V2_HIST_ENABLED != 1' };
+  const apiKey = process.env.ALPHAVANTAGE_API_KEY;
+  if (!apiKey) return { job: 'pead_al_dia', error: 'ALPHAVANTAGE_API_KEY no está' };
+  await ensureSchemaV2();
+  await ensurePeadSchema();
+  const max = maxPeadManual(q.max);
+  return { job: 'pead_al_dia', max, ...(await goteoPead(apiKey, max)) };
 }
 
 // ─────────────────── job: diario ───────────────────
@@ -672,13 +737,14 @@ export default async function handler(req, res) {
       const out = job === 'diario' ? await jobDiario() : job === 'mercados_v2' ? await jobMercadosV2(q) : await jobHist(q);
       // El latido de `diario` guarda QUÉ contestó AV (por estado + muestras):
       // sin esto, "consenso_vigente null en las 68" no se podía diagnosticar.
-      const detalle = job === 'hist' ? { llamadas: out.llamadas ?? 0 }
+      const detalle = job === 'hist' ? { llamadas: out.llamadas ?? 0, pead_llamadas: (out.pead && out.pead.llamadas) ?? 0 }
         : job === 'diario' ? { features: out.features_escritas, con_vigente: out.con_vigente, captura: out.captura } : null;
       await beat(LATIDO[job], out.apagado ? 'disabled' : 'ok', detalle);
       return res.status(200).json(out);
     }
 
     if (job === 'vigente_diag') return res.status(200).json(await jobVigenteDiag(q));
+    if (job === 'pead_al_dia') return res.status(200).json(await jobPeadAlDia(q));
     if (job === 'vigente_fuente') return res.status(200).json(await jobVigenteFuente(q));
 
     // Las vistas solo LEEN datos, pero aseguran que las tablas existan: antes
