@@ -47,7 +47,7 @@ import { fetchEarnings } from './_lib/av-earnings.js';
 import { budgetUsed, budgetAdd, ensurePeadSchema } from './_lib/pead-db.js';
 import {
   VALIDACION_V2, CORTE_VALIDACION, CRITERIOS_V2, CRITERIOS_V21, SET_PILOTO, UNIVERSO,
-  parseCalendarioCsv, vigenteDeSnapshots,
+  parseCalendarioCsv, vigenteDeSnapshots, vigenteSospechoso, UMBRAL_VIGENTE_VS_BARRA,
   leeMercado, eligeMercadoPiloto, filaV21, trimestreDelReporte, veredictoV21, enSetV21, acierto, renderMdV21, estimadoVigenteDeAv,
 } from './_lib/earnings-beat-v2.js';
 import {
@@ -102,6 +102,11 @@ const CONSULTAS = {
             to_char(capturado_en at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as capturado_en
        from pm_v2_consenso_snap
       where symbol in (${ph(n)}) and estimate is not null and capturado_en > now() - interval '200 days'`,
+  snapUltimo: (n) => `select distinct on (symbol, fiscal_date_ending) symbol,
+            to_char(fiscal_date_ending, 'YYYY-MM-DD') as fiscal_date_ending, to_char(report_date, 'YYYY-MM-DD') as report_date,
+            estimate, to_char(capturado_en at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as capturado_en
+       from pm_v2_consenso_snap where symbol in (${ph(n)})
+      order by symbol, fiscal_date_ending, capturado_en desc`,
   snapHoy: () => `select count(*)::int as n from pm_v2_consenso_snap where dia = current_date`,
   abiertos: () => `${SELECT_MERCADO}
      where outcome is null and fecha >= to_char(current_date, 'YYYY-MM-DD')
@@ -203,14 +208,19 @@ function construyeFilas(mercados, ctx, { exigeVigente = true } = {}) {
     // Consenso vigente: el snapshot de EARNINGS_CALENDAR más reciente antes
     // del T-24h de ESTE mercado (vigenteDeSnapshots). Congelado ahí.
     const v = vigenteDeSnapshots((ctx.snaps && ctx.snaps.get(m0.symbol)) || [], { fecha: m0.fecha, quarter_end: q });
-    const m = { ...m0, consenso_vigente: v.valor, vigente_snap_ts: v.snap_ts };
+    // Candado (24-oct): un vigente a > 20% de la barra o con otro signo no se
+    // usa; queda aparte como dato. Ver vigenteSospechoso.
+    const sosp = vigenteSospechoso(v.valor, m0.barra);
+    const m = { ...m0, consenso_vigente: sosp.sospechoso ? null : v.valor, vigente_snap_ts: v.snap_ts };
     const gaps = ctx.gaps.filter((g) => g.symbol === m.symbol && g.quarter_end === q);
     // La guía de la MISMA métrica que la barra, si la hay; si no, la que haya
     // (la columna se muestra igual; prob_B solo la usa si la métrica coincide).
     const guias = ctx.guias.filter((g) => g.symbol === m.symbol && g.quarter_end === q);
     const guia = guias.find((g) => g.metrica === m.metrica_barra) || guias[0] || null;
     const f = filaV21({ mercado: m, historial: ctx.hist.get(m.symbol) || [], fuenteHist: ctx.fuente.get(m.symbol) || null, gaps, guia, exigeVigente });
-    return { ...f, consenso_vigente_snap: v.snap_ts, prob_pm_fuente: m.prob_pm_fuente || null, cosecha: m.cosecha || null,
+    return { ...f, consenso_vigente_snap: v.snap_ts,
+      vigente_av: v.valor, vigente_sospechoso: sosp.sospechoso, vigente_sospechoso_motivo: sosp.motivo, vigente_vs_barra: sosp.distancia,
+      prob_pm_fuente: m.prob_pm_fuente || null, cosecha: m.cosecha || null,
       ...(m.piloto_cruce ? { piloto_cruce: m.piloto_cruce } : {}) };
   });
 }
@@ -579,6 +589,60 @@ async function jobVigenteDiag(q) {
   return { job: 'vigente_diag', escribe: false, llamadas: necesarias, cupo_libre_antes: libres, por_simbolo: porSimbolo, calendario };
 }
 
+// ─────────────────── job: vigente_fuente (solo lectura, sin AV) ───────────────────
+// ?job=vigente_fuente&symbols=EBAY,NET,LLY
+//
+// ¿El `estimate` de EARNINGS_CALENDAR está en la misma métrica que el
+// histórico de AV? Por símbolo, sin gastar llamadas y sin escribir: el último
+// snapshot del calendario, los últimos 4 trimestres reportados (pead_earnings
+// o pm_v2_hist: estimatedEPS y reportedEPS, que en AV son ajustados) y la
+// barra del mercado abierto. Si el histórico queda cerca de la barra y el
+// calendario lejos, lo más probable es que el calendario venga en otra
+// métrica (GAAP) para ese símbolo: es frontera de la fuente, no del modelo.
+async function jobVigenteFuente(q) {
+  const simbolos = [...new Set(String(q.symbols || '').toUpperCase().split(',').map((x) => x.trim()).filter(Boolean))].slice(0, 20);
+  if (!simbolos.length) return { job: 'vigente_fuente', error: 'falta &symbols=EBAY,NET,LLY' };
+  await ensureSchemaV2();
+  const [snaps, pead, av] = await Promise.all([
+    sql(CONSULTAS.snapUltimo(simbolos.length), simbolos).catch(() => []),
+    sql(CONSULTAS.historial(simbolos.length), simbolos).catch(() => []),
+    sql(CONSULTAS.historialV2(simbolos.length), simbolos).catch(() => []),
+  ]);
+  const abiertos = (await mercadosAbiertos()).filter((m) => simbolos.includes(m.symbol));
+  const rel = (a, b) => (a === null || b === null || b === 0 ? null : +(Math.abs(a - b) / Math.abs(b)).toFixed(3));
+  const n = (x) => (x === null || x === undefined ? null : Number(x));
+  return {
+    job: 'vigente_fuente', escribe: false, llamadas_av: 0, umbral: UMBRAL_VIGENTE_VS_BARRA,
+    por_simbolo: simbolos.map((sym) => {
+      const hist = (pead.some((h) => h.symbol === sym) ? pead : av).filter((h) => h.symbol === sym).slice(0, 4)
+        .map((h) => ({ reported_date: h.reported_date, estimated_eps: n(h.estimated_eps), reported_eps: n(h.reported_eps) }));
+      const ultimo = hist[0] || null;
+      const mercados = abiertos.filter((m) => m.symbol === sym).map((m) => {
+        const quarter_end = trimestreDelReporte(m.fecha);
+        const snap = snaps.filter((x) => x.symbol === sym)
+          .sort((a, b) => Math.abs(Date.parse(a.fiscal_date_ending) - Date.parse(quarter_end)) - Math.abs(Date.parse(b.fiscal_date_ending) - Date.parse(quarter_end)))[0] || null;
+        const estimate = snap ? n(snap.estimate) : null;
+        const barra = n(m.barra);
+        const calLejos = rel(estimate, barra) !== null && rel(estimate, barra) > UMBRAL_VIGENTE_VS_BARRA;
+        const histCerca = ultimo && rel(ultimo.estimated_eps, barra) !== null && rel(ultimo.estimated_eps, barra) <= UMBRAL_VIGENTE_VS_BARRA;
+        return {
+          market_id: m.market_id, fecha: m.fecha, metrica_barra: m.metrica_barra, barra, quarter_end, snapshot: snap,
+          calendario_vs_barra: rel(estimate, barra),
+          calendario_vs_ultimo_estimado: ultimo ? rel(estimate, ultimo.estimated_eps) : null,
+          calendario_vs_ultimo_reportado: ultimo ? rel(estimate, ultimo.reported_eps) : null,
+          ultimo_estimado_vs_barra: ultimo ? rel(ultimo.estimated_eps, barra) : null,
+          lectura: !snap ? 'sin_snapshot'
+            : calLejos && histCerca ? 'calendario_en_otra_metrica_probable'
+              : calLejos ? 'calendario_lejos_sin_explicacion'
+                : 'calendario_consistente',
+        };
+      });
+      return { symbol: sym, fuente_hist: pead.some((h) => h.symbol === sym) ? 'pead' : av.some((h) => h.symbol === sym) ? 'pm_v2_hist' : null,
+        hist_ultimos_4: hist, mercados };
+    }),
+  };
+}
+
 // ─────────────────── handler ───────────────────
 
 const LATIDO = { diario: 'earnings-beat:v2', mercados_v2: 'earnings-beat:v2-mercados', hist: 'earnings-beat:v2-hist' };
@@ -614,6 +678,7 @@ export default async function handler(req, res) {
     }
 
     if (job === 'vigente_diag') return res.status(200).json(await jobVigenteDiag(q));
+    if (job === 'vigente_fuente') return res.status(200).json(await jobVigenteFuente(q));
 
     // Las vistas solo LEEN datos, pero aseguran que las tablas existan: antes
     // de la primera cosecha v2.1, pm_earnings_markets_v2 no existe y la unión

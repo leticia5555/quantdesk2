@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseCalendarioCsv, estimadoVigenteDeAv, vigenteDeSnapshots, filaV21, trimestreDelReporte } from '../api/_lib/earnings-beat-v2.js';
+import { parseCalendarioCsv, estimadoVigenteDeAv, vigenteDeSnapshots, filaV21, trimestreDelReporte, vigenteSospechoso, UMBRAL_VIGENTE_VS_BARRA } from '../api/_lib/earnings-beat-v2.js';
 import { historia } from './fixtures/earnings-beat-v2-resueltos.mjs';
 import { descripcionPlantilla } from './fixtures/earnings-beat-v2-plantilla-oct26.mjs';
 import { SCHEMA as SCHEMA_V1 } from '../api/_lib/earnings-beat-db.js';
@@ -219,5 +219,91 @@ test('?job=diario: una llamada a EARNINGS_CALENDAR por día, snapshot completo, 
   } finally {
     globalThis.fetch = fetchOriginal;
     for (const k of ['DATABASE_URL', 'ALPHAVANTAGE_API_KEY', 'EARNINGS_V2_VIGENTE_ENABLED']) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k]; }
+  }
+});
+
+// ═══════════ 25-oct: candado del vigente (pre-registrado el 24-oct) ═══════════
+
+test('candado: umbral 0.20 congelado; los casos del 25-oct', () => {
+  assert.equal(UMBRAL_VIGENTE_VS_BARRA, 0.20);
+  const caso = (v, b) => vigenteSospechoso(v, b);
+  // GAAP del calendario contra barra non-GAAP: fuera
+  assert.equal(caso(1.11, 1.44).sospechoso, true);    // EBAY
+  assert.equal(caso(0.02, 0.35).sospechoso, true);    // NET
+  assert.equal(caso(0.44, 0.74).sospechoso, true);    // DBX
+  assert.equal(caso(0.07, 0.18).sospechoso, true);    // COUR
+  assert.equal(caso(21.50, 8.34).sospechoso, true);   // MSTR
+  assert.deepEqual(caso(5.38, 7.01), { sospechoso: true, motivo: 'lejos_de_la_barra', distancia: 0.2325 });   // LLY: el que no sabemos leer
+  // los que sí: adentro
+  assert.equal(caso(0.92, 0.96).sospechoso, false);   // CL
+  assert.equal(caso(1.20, 1.00).sospechoso, false);   // justo 20%: no es "más de"
+  // signo
+  assert.deepEqual(caso(-0.05, 0.10), { sospechoso: true, motivo: 'cambia_signo', distancia: null });
+  assert.equal(caso(-0.30, -0.34).sospechoso, false);
+  // sin dato: no hay nada que marcar
+  assert.equal(caso(null, 1).sospechoso, false);
+});
+
+test('candado de punta a punta: EBAY queda sin_vigente con AV aparte; vigente_fuente lo lee como otra métrica', { skip: SIN_POSTGRES && 'SIN_POSTGRES=1' }, async (t) => {
+  const BIN = binDePostgres();
+  assert.ok(BIN, FALTA_POSTGRES);
+  const psql = levantaPostgres(t, { bin: BIN, puerto: 55443 });
+  for (const q of SCHEMA_V1) psql(q + ';');
+  psql(`create table if not exists pead_earnings (symbol text not null, fiscal_date_ending date not null,
+          reported_date date not null, reported_eps numeric, estimated_eps numeric, surprise numeric,
+          surprise_pct numeric, source text, ingested_at timestamptz default now(), primary key (symbol, reported_date));`);
+  for (const f of ['', '-1', '-2', '-3', '-4']) psql(readFileSync(`docs/sql/earnings-beat-v2${f}.sql`, 'utf8'));
+
+  const fecha = psql(`select to_char(current_date + 6, 'YYYY-MM-DD');`).trim();
+  const q = trimestreDelReporte(fecha);
+  const raw = (id, empresa, monto) => JSON.stringify({ id, description: descripcionPlantilla({ empresa, fecha: 'October 28, 2026', monto }) }).replace(/'/g, "''");
+  psql(`insert into pm_earnings_markets_v2 (market_id, slug, question, symbol, filtro_motivo, resolved_date, raw) values
+    ('ebay1', 'ebay-quarterly-earnings-nongaap-eps-10-28-2026-1pt44', 'Will eBay (EBAY) beat quarterly earnings?', 'EBAY', 'ok', '${fecha}', '${raw('ebay1', 'eBay', '$1.44')}'::jsonb),
+    ('cl1', 'cl-quarterly-earnings-nongaap-eps-10-31-2026-0pt96', 'Will Colgate (CL) beat quarterly earnings?', 'CL', 'ok', '${fecha}', '${raw('cl1', 'Colgate', '$0.96')}'::jsonb);`);
+  // snapshot de ayer (antes del T-24h de los dos)
+  psql(`insert into pm_v2_consenso_snap (symbol, fiscal_date_ending, report_date, estimate, capturado_en, dia) values
+    ('EBAY', '${q}', '${fecha}', 1.11, now() - interval '1 day', current_date - 1),
+    ('CL',   '${q}', '${fecha}', 0.92, now() - interval '1 day', current_date - 1);`);
+  // histórico AV de EBAY (ajustado): estimados ~1.3–1.4
+  psql(`insert into pm_v2_hist (symbol, fiscal_quarter_end, reported_date, reported_eps, estimated_eps) values
+    ('EBAY', '2026-06-30', '2026-07-30', 1.40, 1.37), ('EBAY', '2026-03-31', '2026-04-29', 1.38, 1.34);`);
+
+  const neon = puenteNeon(psql);
+  const fetchOriginal = globalThis.fetch;
+  const env = { ...process.env };
+  process.env.DATABASE_URL = 'postgres://u:p@ep-prueba.region.aws.neon.tech/db';
+  delete process.env.CRON_SECRET;
+  globalThis.fetch = async (url, init) => {
+    assert.ok(!String(url).includes('alphavantage'), 'el diagnóstico no llama a AV');
+    return neon(url, init);
+  };
+  try {
+    const { default: handler } = await import('../api/earnings-beat-v2.js');
+    const r = resFalsa();
+    await handler({ method: 'GET', query: {}, headers: {} }, r);
+    const filas = new Map(r.cuerpo.filas.map((f) => [f.market_id, f]));
+    const ebay = filas.get('ebay1');
+    assert.deepEqual([ebay.consenso_vigente, ebay.vigente_av, ebay.vigente_sospechoso, ebay.faltante, ebay.prob_A],
+      [null, 1.11, true, 'sin_vigente', null]);
+    assert.equal(ebay.consenso_usado, null);            // tampoco cae al de creación
+    const cl = filas.get('cl1');
+    assert.deepEqual([cl.consenso_vigente, cl.vigente_sospechoso, cl.consenso_usado], [0.92, false, 'vigente']);
+
+    const md = resFalsa();
+    await handler({ method: 'GET', query: { format: 'md' }, headers: {} }, md);
+    assert.match(md.cuerpo, /\| EBAY \|[^\n]*\| — \(AV 1\.11 ⚠\) \|/);
+
+    const d = resFalsa();
+    await handler({ method: 'GET', query: { job: 'vigente_fuente', symbols: 'EBAY,CL' }, headers: {} }, d);
+    assert.equal(d.cuerpo.escribe, false);
+    assert.equal(d.cuerpo.llamadas_av, 0);
+    const e = d.cuerpo.por_simbolo.find((x) => x.symbol === 'EBAY');
+    assert.equal(e.fuente_hist, 'pm_v2_hist');
+    assert.equal(e.mercados[0].lectura, 'calendario_en_otra_metrica_probable');
+    assert.equal(e.mercados[0].calendario_vs_barra, 0.229);
+    assert.equal(d.cuerpo.por_simbolo.find((x) => x.symbol === 'CL').mercados[0].lectura, 'calendario_consistente');
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    if (env.DATABASE_URL === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = env.DATABASE_URL;
   }
 });

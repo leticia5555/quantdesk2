@@ -110,6 +110,38 @@ Una en particular: **META**. El encargo habla de un 8-K de agosto que pre-anunci
 
 **Frontera.** El primer snapshot es el del primer `?job=diario` con la bandera prendida después del merge. Los mercados cuyo T-24h cae antes de ese snapshot salen con A y B en `sin_vigente`; entre ellos, los que reportan el lunes 27-oct. El set v2.1 cuenta, en la práctica, desde el primer mercado con un snapshot válido antes de su T-24h. Ese conteo sale solo: un mercado sin vigente no tiene prob A ni prob B, así que no entra en los "completos" del veredicto. No se movió ningún criterio.
 
+### Candado del vigente (pre-registrado el 24-oct)
+
+El primer `?format=md` con vigente confirmó que la fuente funciona: CL pasó de 97% a 7%. Pero también mostró que el `estimate` de `EARNINGS_CALENDAR` viene en **GAAP para algunas empresas aunque la barra sea non-GAAP**, y eso producía 3% falsos:
+
+| Símbolo | estimate de AV | barra |
+|---|---|---|
+| EBAY | 1.11 | 1.44 |
+| NET | 0.02 | 0.35 |
+| DBX | 0.44 | 0.74 |
+| COUR | 0.07 | 0.18 |
+| MSTR | 21.50 | 8.34 |
+
+**Regla** (`vigenteSospechoso`, `UMBRAL_VIGENTE_VS_BARRA = 0.20`): el vigente no se usa si cumple cualquiera de estas dos condiciones:
+
+- `|vigente − barra| / |barra| > 0.20`;
+- el signo del vigente es distinto del de la barra.
+
+En ese caso:
+
+- `consenso_vigente` queda null y la fila sale `sin_vigente`.
+- El valor de AV se muestra aparte como dato: `vigente_av`, `vigente_sospechoso`, `vigente_sospechoso_motivo` y `vigente_vs_barra` en el JSON, y `(AV x ⚠)` en el markdown.
+- **No se usa el de creación en su lugar.**
+
+**El umbral se fijó el 24-oct, antes de que resolviera ningún mercado del set v2.1.** Con 0.20 también queda fuera LLY (5.38 vs 7.01, 23%), y está bien: es justo el que no sabemos leer, porque no sabemos si el consenso trae el IPR&D adentro o afuera.
+
+**Frontera de la fuente, a confirmar con datos.** Hipótesis: el histórico de AV (`estimatedEPS` y `reportedEPS` de `EARNINGS`) es ajustado, pero el `estimate` de `EARNINGS_CALENDAR` viene en GAAP para algunos símbolos. Para verificarlo símbolo por símbolo está `?job=vigente_fuente&symbols=EBAY,NET,LLY`, que no gasta llamadas a AV ni escribe nada. Compara el último snapshot del calendario con:
+
+- los últimos 4 trimestres reportados (`pead_earnings` o `pm_v2_hist`);
+- la barra del mercado abierto.
+
+Cuando el histórico queda cerca de la barra y el calendario lejos, la lectura es `calendario_en_otra_metrica_probable`: es frontera de la fuente, no del modelo. La fórmula no se toca: el candado solo decide si el número entra.
+
 ### Historia: el diagnóstico del 25-oct (las 68 abiertas con `consenso_vigente` null)
 
 Con la captura prendida desde el 24-oct, las 68 filas abiertas seguían sin consenso vigente. Sin esa columna, A queda en "barra + sorpresa", porque la barra es el consenso de creación. En nombres estables da ~97%. Es lo pre-registrado, no un error de fórmula, y no se toca.
@@ -150,6 +182,7 @@ Cambiar la captura a esa fuente es otro PR: cambia de dónde sale el dato, no la
 | `GET /api/earnings-beat-v2?job=mercados_v2` | Cron `20 22 * * *`, latido `earnings-beat:v2-mercados`. Cosecha sin universo. |
 | `GET /api/earnings-beat-v2?job=hist[&symbols=AAL,PCG]` | Cron `50 22 * * *`, latido `earnings-beat:v2-hist`. Historial de AV; apagado sin `EARNINGS_V2_HIST_ENABLED=1`. |
 | `GET /api/earnings-beat-v2?job=vigente_diag&symbols=CL,VZ[&calendario=1]` | Diagnóstico del consenso vigente: qué trae AV `EARNINGS` (y `EARNINGS_CALENDAR`) para esos símbolos. Gasta una llamada por símbolo, más una por el calendario; no escribe nada. |
+| `GET /api/earnings-beat-v2?job=vigente_fuente&symbols=EBAY,NET,LLY` | Compara el `estimate` del calendario con el histórico de AV y la barra. Sin llamadas a AV; no escribe nada. |
 | `GET /api/earnings-beat-v2?job=diario` | Cron `55 23 * * *`, latido `earnings-beat:v2`. Primero el snapshot del día de `EARNINGS_CALENDAR` (1 llamada, con `EARNINGS_V2_VIGENTE_ENABLED=1`), después las features. |
 
 Los mercados se leen de `pm_earnings_markets_v2` y, para lo que esa cosecha todavía no vio, de `pm_earnings_markets` (v1). En la vista de abiertos, `prob_pm` es el precio válido a T-24h si ya existe. Si no existe, es el último precio de Gamma, marcado `prob_pm_fuente = gamma_ahora`. Las vistas no escriben datos, pero sí crean las tablas si faltan (antes de la primera cosecha v2.1, la unión con v1 fallaría).
