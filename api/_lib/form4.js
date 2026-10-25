@@ -92,10 +92,21 @@ const num = (s) => { const n = parseFloat(s); return Number.isFinite(n) ? n : nu
  * agregar. "Adivinado por el signo" es como una compra de un plan de empleados
  * termina contada como compra de mercado abierto.
  */
+// ── SÓLO LA `S` ES UNA VENTA EN EL MERCADO ───────────────────────────
+// Acá `D` decía `tipo: 'venta'`, y por eso ATKR salía con 15 personas que
+// "vendieron todo", 38 ventas y −$60.81 M en la semana: era el cierre de una
+// fusión. `D` es una disposición A LA EMISORA (Rule 16b-3(e)) —lo que pasa
+// cuando una fusión paga en efectivo las acciones—, y `F` son acciones
+// retenidas para pagar impuestos de un vesting. En las dos el insider
+// entrega papel, pero NINGUNA es alguien decidiendo vender en el mercado,
+// que es lo único que esta pantalla viene a mostrar (Lety, 2026-10-23).
+//
+// No desaparecen: cambian de tipo, se cuentan aparte y tienen su chip. Lo que
+// no pueden es sumar al neto ni empujar un ticker al Top de la semana.
 export const CODIGOS = {
   P: { tipo: 'compra', nombre: 'Compra en mercado abierto' },
   S: { tipo: 'venta', nombre: 'Venta en mercado abierto' },
-  D: { tipo: 'venta', nombre: 'Venta a la emisora' },
+  D: { tipo: 'entrega_emisora', nombre: 'Entregó a la emisora (fusión o recompra forzada)' },
   A: { tipo: 'otorgado', nombre: 'Otorgamiento o premio' },
   M: { tipo: 'opcion', nombre: 'Ejercicio de opción' },
   X: { tipo: 'opcion', nombre: 'Ejercicio de opción en el dinero' },
@@ -286,6 +297,11 @@ export const CHIPS = [
   { id: 'compra', nombre: 'Compras', tipos: ['compra'] },
   { id: 'venta', nombre: 'Ventas', tipos: ['venta'] },
   { id: 'opcion', nombre: 'Opciones', tipos: ['opcion'] },
+  // Las dos que NO son decisiones de vender. Tienen chip propio para que se
+  // puedan ver, pero no entran al neto ni al Top: ver el comentario de
+  // `CODIGOS`.
+  { id: 'entrega_emisora', nombre: 'Entregó en fusión', tipos: ['entrega_emisora'] },
+  { id: 'impuesto', nombre: 'Retención fiscal', tipos: ['impuesto'] },
   // El Form 4 reporta lo que YA pasó. Una venta PROPUESTA es un Form 144,
   // que es otro documento y que hoy no cosechamos. El chip existe —está en
   // el artboard— y va punteado con su causa, como Cripto y ETFs en el mapa.

@@ -44,7 +44,10 @@ test('y la derivada (la opción) entra con su marca', () => {
 test('cada código dice qué fue, en español', () => {
   assert.equal(tipoDeCodigo('P').nombre, 'Compra en mercado abierto');
   assert.equal(tipoDeCodigo('F').tipo, 'impuesto');
-  assert.equal(tipoDeCodigo('D').tipo, 'venta', 'la venta a la emisora sigue siendo una venta');
+  // `D` ERA 'venta' y por eso ATKR salía con 15 "vendió todo" y −$60.81 M en
+  // la semana: era el cierre de una fusión. Entregar a la emisora no es
+  // decidir vender en el mercado (Lety, 2026-10-23).
+  assert.equal(tipoDeCodigo('D').tipo, 'entrega_emisora');
 });
 
 test('un código DESCONOCIDO se reporta como tal, no se adivina por el signo', () => {
@@ -179,9 +182,11 @@ test('el top ordena por tamaño del neto en valor absoluto: una venta grande imp
 });
 
 // ── LOS CHIPS ────────────────────────────────────────────────────────
-test('los cinco chips del artboard, y "Venta propuesta" declarada sin fuente', () => {
+test('los chips del artboard más los dos que NO son ventas, y "Venta propuesta" sin fuente', () => {
+  // Entran dos chips nuevos: `D` y `F` salieron de "Ventas" y necesitan dónde
+  // verse. Se agregan, no se esconden — la regla uno del encargo.
   assert.deepEqual(CHIPS.map((c) => c.id),
-    ['compra', 'venta', 'opcion', 'venta_propuesta', 'duenio_10']);
+    ['compra', 'venta', 'opcion', 'entrega_emisora', 'impuesto', 'venta_propuesta', 'duenio_10']);
   const vp = CHIPS.find((c) => c.id === 'venta_propuesta');
   assert.equal(vp.sin_fuente, true);
   // El Form 4 reporta lo que YA pasó; la venta propuesta es un Form 144.
