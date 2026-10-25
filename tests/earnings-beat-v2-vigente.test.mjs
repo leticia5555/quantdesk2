@@ -307,3 +307,43 @@ test('candado de punta a punta: EBAY queda sin_vigente con AV aparte; vigente_fu
     if (env.DATABASE_URL === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = env.DATABASE_URL;
   }
 });
+
+// ═══════════ 25-oct: candado del historial (métrica mixta en pm_v2_hist) ═══════════
+import { histMetricaMixta, UMBRAL_SALTO_HIST } from '../api/_lib/earnings-beat-v2.js';
+
+const FECHAS_8 = ['2024-08-01', '2024-11-01', '2025-02-10', '2025-05-08', '2025-08-07', '2025-11-06', '2026-02-12', '2026-05-07', '2026-08-06'];
+const serie = (estimados, reportados = estimados) => estimados.map((e, i) => ({ reported_date: FECHAS_8[i], estimated_eps: e, reported_eps: reportados[i] }));
+
+test('candado historial: umbral 0.50 congelado; NET (non-GAAP → GAAP) cae, EBAY (estable) no', () => {
+  assert.equal(UMBRAL_SALTO_HIST, 0.50);
+  // NET: non-GAAP hasta may-26 (0.25), GAAP en ago-26 (−0.05)
+  const net = serie([0.16, 0.18, 0.19, 0.20, 0.21, 0.22, 0.24, 0.25, -0.05], [0.17, 0.20, 0.20, 0.21, 0.22, 0.24, 0.25, 0.23, -0.03]);
+  const r = histMetricaMixta(net, '2026-10-30');
+  assert.deepEqual([r.mixta, r.motivo, r.trimestre, r.estimado], [true, 'cambia_signo', '2026-08-06', -0.05]);
+  // EBAY: el histórico de AV está en otra base que la barra (1.25 vs ~1.40), pero es ESTABLE: no cae acá
+  const ebay = serie([1.08, 1.12, 1.15, 1.18, 1.20, 1.22, 1.24, 1.25, 1.27]);
+  assert.equal(histMetricaMixta(ebay, '2026-10-28').mixta, false);
+  // lo que pasa después del mercado no cuenta (cero look-ahead)
+  assert.equal(histMetricaMixta(net, '2026-07-01').mixta, false);
+  // con menos de 5 trimestres no hay contra qué comparar
+  assert.equal(histMetricaMixta(net.slice(-4), '2026-10-30').mixta, false);
+});
+
+test('candado historial: también cae un salto > 50% sin cambio de signo (y un EPS chico que crece rápido)', () => {
+  const salto = serie([0.50, 0.52, 0.51, 0.53, 0.52, 0.54, 0.53, 0.55, 1.10]);
+  assert.equal(histMetricaMixta(salto, '2026-10-30').motivo, 'salto');
+  // ojo, documentado: un EPS chico que crece rápido también cruza 50% (0.08 vs mediana 0.045)
+  const chico = serie([0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.09, 0.10, 0.12]);
+  assert.equal(histMetricaMixta(chico, '2026-10-30').mixta, true);
+});
+
+test('candado historial en la fila: solo pm_v2_hist; sale sin_historial con el detalle, A y B sin número', () => {
+  const net = serie([0.16, 0.18, 0.19, 0.20, 0.21, 0.22, 0.24, 0.25, -0.05], [0.17, 0.20, 0.20, 0.21, 0.22, 0.24, 0.25, 0.23, -0.03]);
+  const mercado = { market_id: 'net1', symbol: 'NET', fecha: '2026-10-30', metrica_barra: 'NONGAAP', barra: 0.35, consenso_creacion: 0.35, consenso_vigente: 0.36 };
+  const f = filaV21({ mercado, historial: net, fuenteHist: 'pm_v2_hist', exigeVigente: true });
+  assert.deepEqual([f.prob_A, f.prob_B, f.faltante, f.hist_metrica_mixta, f.hist_metrica_mixta_detalle.motivo], [null, null, 'sin_historial', true, 'cambia_signo']);
+  // la misma serie desde pead_earnings: el candado NO aplica (pre-registrado solo para pm_v2_hist)
+  const pead = filaV21({ mercado, historial: net, fuenteHist: 'pead', exigeVigente: true });
+  assert.equal(pead.hist_metrica_mixta, false);
+  assert.notEqual(pead.prob_A, null);
+});

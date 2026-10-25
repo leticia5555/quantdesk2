@@ -475,14 +475,53 @@ function estimadoB(estimado_A, guia_q_implicita, guia_metrica, metrica_barra) {
 // pead_earnings para los 99, pm_v2_hist para el resto. fuenteHist dice de dónde
 // vino; con pm_v2_hist la métrica de la sorpresa NO se sabe (AV no distingue
 // GAAP de non-GAAP en reportedEPS) → sorpresa_metrica_match = null.
+// ── Candado del historial (pre-registrado el 25-oct) ──
+// AV mezcla métricas dentro del mismo símbolo: NET trae may-26 en non-GAAP
+// (0.23 reportado / 0.25 estimado) y ago-26 en GAAP (−0.03 / −0.05). Una
+// sorpresa mediana sobre esa serie mezcla dos cosas distintas.
+//
+// Regla, solo para historial de pm_v2_hist (fuera de PEAD): en la ventana de
+// 8 trimestres anteriores al mercado, cada trimestre con al menos 4 previos se
+// compara con la MEDIANA del estimated_eps de esos 4. Si cambia de signo, o
+// salta más de 50% (|e − mediana| / |mediana| > 0.50), el símbolo queda
+// `hist_metrica_mixta` y la fila sale `sin_historial` (A y B sin número).
+// Se usa el ESTIMADO y no el reportado: el consenso se mueve suave, el
+// resultado real puede saltar de verdad. Con esta regla NET cae (0.25 → −0.05)
+// y EBAY no (su histórico es estable, aunque en otra base que la barra).
+const UMBRAL_SALTO_HIST = 0.50;
+
+function histMetricaMixta(historial, fecha, { n = CRITERIOS_V2.ventana_trimestres, previos = 4, umbral = UMBRAL_SALTO_HIST } = {}) {
+  const corte = isoDia(fecha);
+  // Del más viejo al más nuevo, solo lo reportado antes del mercado: la misma
+  // ventana que sorpresaHistorica, más los 4 previos al primero de ella.
+  const serie = (historial || [])
+    .map((f) => ({ d: isoDia(f.reported_date), est: num(f.estimated_eps) }))
+    .filter((f) => f.d && corte && f.d < corte && f.est !== null)
+    .sort((a, b) => (a.d < b.d ? -1 : 1))
+    .slice(-(n + previos));
+  for (let i = Math.max(previos, serie.length - n); i < serie.length; i++) {
+    const ref = mediana(serie.slice(i - previos, i).map((x) => x.est));
+    const e = serie[i].est;
+    if (ref === null) continue;
+    if (Math.sign(e) !== 0 && Math.sign(ref) !== 0 && Math.sign(e) !== Math.sign(ref)) {
+      return { mixta: true, motivo: 'cambia_signo', trimestre: serie[i].d, estimado: e, mediana_previa: redondea(ref) };
+    }
+    if (ref !== 0 && Math.abs(e - ref) / Math.abs(ref) > umbral) {
+      return { mixta: true, motivo: 'salto', trimestre: serie[i].d, estimado: e, mediana_previa: redondea(ref) };
+    }
+  }
+  return { mixta: false };
+}
+
 function filaV21({ mercado, historial = [], fuenteHist = null, gaps = [], guia = null, universoPead = UNIVERSO, exigeVigente = false }) {
   const mk = mercado || {};
   const symbol = mk.symbol || null;
-  const base = filaV2({ mercado: mk, historial, gaps, guia, universo: new Set(symbol ? [symbol] : []), exigeVigente });
+  const mixta = fuenteHist === 'pm_v2_hist' ? histMetricaMixta(historial, mk.fecha) : { mixta: false };
+  const base = filaV2({ mercado: mk, historial: mixta.mixta ? [] : historial, gaps, guia, universo: new Set(symbol ? [symbol] : []), exigeVigente });
   const universo_pead = !!(symbol && universoPead.has(symbol));
   const sorpresa_metrica_match = fuenteHist === 'pm_v2_hist' ? null : base.sorpresa_metrica_match;
   const faltante = !symbol ? 'sin_simbolo'
-    : !fuenteHist && base.faltante === 'sin_historial_8t' ? 'sin_historial'
+    : (mixta.mixta || !fuenteHist) && base.faltante === 'sin_historial_8t' ? 'sin_historial'
       : base.faltante;
 
   const { estimado_B, usa_guia } = estimadoB(base.estimado_v2, base.guia_q_implicita, guia && guia.metrica, base.metrica_barra);
@@ -495,6 +534,7 @@ function filaV21({ mercado, historial = [], fuenteHist = null, gaps = [], guia =
     // impide el número si hay historial en pm_v2_hist.
     fuera_universo: !universo_pead,
     universo_pead, fuente_hist: fuenteHist, sorpresa_metrica_match, faltante,
+    hist_metrica_mixta: mixta.mixta, hist_metrica_mixta_detalle: mixta.mixta ? mixta : null,
     estimado_A: base.estimado_v2, margen_A: base.margen_v2, prob_A: base.prob_v2,
     estimado_B, margen_B, prob_B: prB.prob_v2, B_usa_guia: usa_guia,
     estimado_b: estimado_B, prob_b: prB.prob_v2,   // nombres de columna en pm_earnings_v2_features
@@ -798,7 +838,7 @@ function tablaMdV21(filas) {
     const sorp = f.sorpresa_mediana_8t === null || f.sorpresa_mediana_8t === undefined ? '—'
       : `${f.sorpresa_mediana_8t > 0 ? '+' : ''}${f.sorpresa_mediana_8t.toFixed(2)}${f.sorpresa_metrica_match === null ? '‡' : f.sorpresa_metrica_match === false ? '*' : ''}`;
     const hist = !f.n_8t ? '—' : `${f.beats_8t}/${f.n_8t} ${f.fuente_hist === 'pm_v2_hist' ? 'AV' : 'PEAD'}`;
-    const falta = f.faltante || (f.prob_pm_t24 === null ? 'sin_precio_pm' : '');
+    const falta = (f.faltante || (f.prob_pm_t24 === null ? 'sin_precio_pm' : '')) + (f.hist_metrica_mixta ? ' (métrica mixta)' : '');
     return `| ${f.symbol} | ${f.fecha} | ${n2(f.barra)} | ${f.metrica_barra || '—'} | ${n2(cons)}${f.consenso_usado === 'vigente' ? ' (vig.)' : ''}${avAparte} | ${sorp} | ${hist} | ${n2(f.brecha_aplicada)}${f.brechas_anunciadas_antes_de_creacion ? '§' : ''} | ${guia} | ${n2(f.estimado_A)} | ${n2(f.estimado_B)}${f.B_usa_guia || f.estimado_B === null ? '' : ' (=A)'} | ${pct(f.prob_A)}${f.std_fallback ? '†' : ''} | ${pct(f.prob_B)} | ${pct(f.prob_pm_t24)} | ${sgn(f.desacuerdo_A)} | ${sgn(f.desacuerdo_B)} | ${falta} |`;
   });
   return [head, sep, ...rows].join('\n');
@@ -842,5 +882,5 @@ export {
   brechaConocida, guiaImplicita, barraVsGuia, estimadoV2, normalCdf, probV2,
   filaV2, acierto, brier, veredictoV2, tablaMd, lineaResuelto, renderMd, mediana, desvio,
   estimadoVigenteDeAv, parseCalendarioCsv, vigenteDeSnapshots, vigenteSospechoso, UMBRAL_VIGENTE_VS_BARRA,
-  SET_PILOTO, CRITERIOS_V21, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
+  SET_PILOTO, CRITERIOS_V21, histMetricaMixta, UMBRAL_SALTO_HIST, enSetV21, estimadoB, filaV21, veredictoV21, tablaMdV21, lineaResueltoV21, renderMdV21,
 };
