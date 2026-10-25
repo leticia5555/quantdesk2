@@ -142,6 +142,46 @@ En ese caso:
 
 Cuando el histórico queda cerca de la barra y el calendario lejos, la lectura es `calendario_en_otra_metrica_probable`: es frontera de la fuente, no del modelo. La fórmula no se toca: el candado solo decide si el número entra.
 
+### Frontera de la fuente, confirmada con `?job=vigente_fuente` (25-oct)
+
+- **EBAY:** el histórico de Alpha Vantage también viene en otra base. AV reportó 1.25 en agosto, contra ~1.40 non-GAAP de la empresa. No es solo el calendario: toda la serie de AV para EBAY está en una base distinta de la barra. El histórico es estable, así que el candado de abajo no lo marca. Lo deja fuera el candado del vigente (calendario 1.11 contra barra 1.44, 23%).
+- **NET:** AV mezcla métricas dentro del mismo símbolo. May-26 viene en non-GAAP (0.23 reportado, 0.25 estimado) y ago-26 en GAAP (−0.03, −0.05). Una sorpresa mediana sobre esa serie mezcla dos cosas distintas.
+
+### Candado del historial (pre-registrado el 25-oct)
+
+`histMetricaMixta`, `UMBRAL_SALTO_HIST = 0.50`. Aplica **solo al historial de `pm_v2_hist`** (fuera de PEAD).
+
+- **La regla:** se toma la ventana de 8 trimestres anteriores al mercado. Cada trimestre que tenga al menos 4 previos se compara contra la **mediana del `estimated_eps` de esos 4**. Si cambia de signo o salta más de 50%, el símbolo queda `hist_metrica_mixta`.
+- **El efecto:** la fila sale `sin_historial`, con A y B sin número. Lleva el detalle (qué trimestre, el estimado y la mediana previa) y `(métrica mixta)` en el markdown.
+- **Por qué el estimado y no el reportado:** el consenso se mueve suave y el resultado real puede saltar de verdad. Es una lectura de la regla pedida ("|reported − estimated del trimestre anterior|"); se fijó así antes de correrla sobre el set.
+- **Casos:** NET cae (0.25 → −0.05, cambio de signo). EBAY no, porque su serie es estable.
+- **Efecto colateral conocido:** un EPS chico que crece rápido también cruza el 50%. Por ejemplo, una serie 0.04, 0.05, 0.06, 0.08 cae aunque no mezcle métricas. Queda anotado; si pasa en el set, se ve en `hist_metrica_mixta_detalle`.
+
+### `pead_earnings` desactualizado (25-oct)
+
+LLY trae ago-26 con `reported_eps` null.
+
+- **Qué la llena:** `pead_earnings` solo la llena `/api/pead-harvest?job=earnings`, el goteo de AV `EARNINGS`. Ese goteo está **apagado** desde el NO-GO del PEAD: no tiene schedule y `PEAD_HARVEST_ENABLED` está apagado (docs/wheel-fase0.md §4.3). `?job=refresh` re-encola los símbolos viejos sin gastar AV, pero solo el goteo los baja.
+- **Qué pasa con `?job=hist`:** no ayuda, porque salta todo símbolo que esté en `pead_earnings`.
+- **Costo:** una llamada a AV por símbolo, que trae todo el historial.
+
+Conteo y costo, sin escribir nada:
+
+```sql
+with ult as (
+  select distinct on (symbol) symbol, fiscal_date_ending, reported_date, reported_eps
+    from pead_earnings order by symbol, fiscal_date_ending desc
+), abiertos as (
+  select distinct symbol from pm_earnings_markets_v2
+   where outcome is null and coalesce(report_date, resolved_date) >= current_date
+)
+select count(*) filter (where reported_eps is null)                                       as ultimo_sin_reportar,
+       count(*) filter (where reported_date < current_date - 95)                          as ultimo_viejo_95d,
+       count(*) filter (where (reported_eps is null or reported_date < current_date - 95)
+                          and symbol in (select symbol from abiertos))                    as llamadas_para_ponerlos_al_dia
+  from ult;
+```
+
 ### Historia: el diagnóstico del 25-oct (las 68 abiertas con `consenso_vigente` null)
 
 Con la captura prendida desde el 24-oct, las 68 filas abiertas seguían sin consenso vigente. Sin esa columna, A queda en "barra + sorpresa", porque la barra es el consenso de creación. En nombres estables da ~97%. Es lo pre-registrado, no un error de fórmula, y no se toca.
