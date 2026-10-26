@@ -407,9 +407,26 @@ export function filasDeForm4(doc, meta = {}) {
     // No es la fecha de la operación: entre una y otra hay hasta dos días
     // hábiles, y mezclarlas desordena la lista.
     filing_en: meta.updated || null,
-    filing_fecha: meta.updated ? String(meta.updated).slice(0, 10) : null,
-    link: meta.link || null,
+    // El cron del índice no trae hora, sólo el DÍA del filing (`fecha`): se
+    // guarda ese día en vez de dejarlo vacío.
+    filing_fecha: meta.updated ? String(meta.updated).slice(0, 10) : (meta.fecha || null),
+    // El cron tampoco trae link —el feed Atom sí—, y por eso las 400 filas de
+    // producción llegaban con `link: null` y sin ningún camino a sec.gov
+    // (Lety, 2026-10-26). Con el accession y un CIK el link se arma solo.
+    link: meta.link || linkDeFiling(meta.accession, meta.cik || doc.emisora.cik),
   }));
+}
+
+/**
+ * El índice del filing en EDGAR, armado con el accession y el CIK de
+ * cualquiera de las partes (emisora o firmante: EDGAR lo archiva bajo las
+ * dos). Es la página que lista el documento y sus adjuntos.
+ */
+export function linkDeFiling(accession, cik) {
+  const acc = String(accession || '').trim();
+  const n = Number(String(cik || '').replace(/\D/g, ''));
+  if (!/^\d{10}-\d{2}-\d{6}$/.test(acc) || !n) return null;
+  return `https://www.sec.gov/Archives/edgar/data/${n}/${acc.replace(/-/g, '')}/${acc}-index.htm`;
 }
 
 /**
@@ -466,6 +483,8 @@ export function completaFilasViejas(filas = []) {
       ejercio_y_vendio: f.ejercio_y_vendio != null ? f.ejercio_y_vendio
         : (combo.hubo && !f.derivada && (f.codigo === 'M' || f.codigo === 'S') && f.fecha === combo.fecha),
       ejercio_y_vendio_acciones: combo.hubo ? combo.acciones : null,
+      // Las filas que guardó el cron antes de que se armara el link.
+      link: f.link || linkDeFiling(f.accession, f.emisora_cik || f.quien_cik),
     };
   });
 }

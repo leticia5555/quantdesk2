@@ -63,6 +63,23 @@ const FILAS = [
     accession: '0000000111-26-000222', updated: '2026-10-19T09:30:00-04:00',
     link: 'https://www.sec.gov/Archives/edgar/data/111/y.html' }),
 ];
+// ── UN FILING COMO LO GUARDA EL CRON DEL ÍNDICE ──────────────────────
+// Los dos de arriba traen `updated` y `link` porque así los da el feed Atom.
+// El cron NO: le pasa a `filasDeForm4` sólo `{ accession, cik, fecha }`, y en
+// producción las 400 filas llegaban sin link y la columna Filing decía "—" en
+// todas (Lety, 2026-10-26). Este arnés no lo veía porque sólo probaba el
+// camino del Atom. Ahora prueba los dos.
+FILAS.push(...filasDeForm4(form4Completo(FORM4_COMPLETO), {
+  accession: '0000320193-26-000444', cik: '320193', fecha: '2026-10-15' }));
+// Un precio debajo del centavo (NMHI a $0.0006): "0.00" lo borraba.
+FILAS.push({
+  ...FILAS[0], id: 'centavo#0', accession: '0002160363-26-000004', ticker: 'NMHI',
+  emisora: "Nature's Miracle Holding Inc.", emisora_cik: '0001947861', quien: 'Adair Kathleen Theresa',
+  cargo: 'Dueño del 10%', codigo: 'P', tipo: 'compra', nombre: 'Compra en mercado abierto',
+  acciones: 1000000, precio: 0.0006, valor: 600, le_quedan: 103000000, le_quedan_motivo: null,
+  salio_del_todo: false, fecha: '2026-10-06', filing_en: null, filing_fecha: '2026-10-07', link: null,
+  firmantes: 1, es_duenio_10: true, plan_10b5: false, plan_estado: 'sin_dato',
+});
 // Una compra grande, para que "compras destacadas" tenga qué mostrar.
 FILAS.push({
   ...FILAS[0], id: 'grande#0', accession: '0000999-26-000333', ticker: 'BIGC',
@@ -290,7 +307,7 @@ function chromePath() {
   const base = '/opt/pw-browsers';
   const dirs = existsSync(base) ? readdirSync(base).filter((d) => d.startsWith('chromium')) : [];
   for (const d of dirs.sort().reverse()) {
-    for (const rel of ['chrome-linux/chrome', 'chrome-linux/headless_shell']) {
+    for (const rel of ['chrome-linux/chrome', 'chrome-linux64/chrome', 'chrome-linux/headless_shell']) {
       const f = join(base, d, rel);
       if (existsSync(f)) return f;
     }
@@ -312,7 +329,9 @@ try {
   p.on('console', (m) => {
     if (m.type() !== 'error') return;
     const u = (m.location && m.location().url) || '';
-    if (esFuente(u) || /ERR_CERT_AUTHORITY_INVALID/.test(m.text())) return;
+    // El favicon lo pide Chromium por su cuenta y el servidor de este arnés no
+    // lo sirve: ese 404 no es de la página.
+    if (esFuente(u) || /\/favicon\.ico$/.test(u) || /ERR_CERT_AUTHORITY_INVALID/.test(m.text())) return;
     errores.push(m.text());
   });
 
@@ -349,6 +368,34 @@ try {
   chequeo('el otorgamiento sin precio va "—" con su causa, no en cero',
     otorg && otorg.celdas[7] === '—' && /no declaró precio/.test(otorg.titulos[7]),
     otorg ? `${otorg.celdas[7]} · ${otorg.titulos[7]}` : 'no está');
+
+  // ── CADA FILA LLEVA AL DOCUMENTO EN LA SEC ──────────────────────────
+  // Lo que Lety vio en producción: "—" en todas las filas y ni un link. Se
+  // exige un link a sec.gov en CADA fila, incluidas las del cron (sin hora
+  // ni link de origen), y que el de esas apunte al índice del accession.
+  const links = await p.evaluate(() => [...document.querySelectorAll('#contenido tbody tr')].map((tr) => {
+    const a = tr.querySelector('td.c-filing a[href]');
+    return { href: a ? a.getAttribute('href') : null, txt: tr.querySelector('td.c-filing').textContent.trim() };
+  }));
+  const sinLink = links.filter((l) => !l.href || !/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/\d+\//.test(l.href));
+  chequeo('cada fila tiene link al filing en sec.gov',
+    links.length === FILAS.length && sinLink.length === 0,
+    `${links.length - sinLink.length} de ${links.length}` + (sinLink.length ? ' · sin link: ' + JSON.stringify(sinLink.slice(0, 2)) : ''));
+  const delCron = links.find((l) => (l.href || '').includes('000032019326000444'));
+  chequeo('y la fila que guardó el cron apunta al índice de su accession, con su día',
+    !!delCron && delCron.href.endsWith('/0000320193-26-000444-index.htm') && /2026-10-15/.test(delCron.txt),
+    JSON.stringify(delCron || null));
+  chequeo('ninguna celda Filing dice "—"',
+    links.every((l) => l.txt && !/^—/.test(l.txt)), JSON.stringify(links.map((l) => l.txt).slice(0, 6)));
+
+  // ── EL MONTO VA EN DÓLARES Y EL PRECIO NO SE BORRA ──────────────────
+  chequeo('el valor va con "$" (o "—" con su causa), nunca un número suelto',
+    filas.every((f) => f.celdas[7] === '—' || /^\$/.test(f.celdas[7])),
+    JSON.stringify(filas.map((f) => f.celdas[7]).slice(0, 6)));
+  const centavo = filas.find((f) => f.celdas[0] === 'NMHI');
+  chequeo('un precio debajo del centavo muestra sus decimales, no "0.00"',
+    !!centavo && centavo.celdas[5] === '0.0006' && centavo.celdas[7] === '$600',
+    centavo ? `${centavo.celdas[5]} · ${centavo.celdas[7]}` : 'no está');
 
   // ── LOS CHIPS ───────────────────────────────────────────────────────
   const chips = await p.evaluate(() => [...document.querySelectorAll('#chips button')].map((b) => ({

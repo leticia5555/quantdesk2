@@ -357,7 +357,7 @@
    */
   function porHoraDeFiling(filas){
     return (filas || []).slice().sort(function(a, b){
-      return String(b.filing_en || '').localeCompare(String(a.filing_en || ''));
+      return String(b.filing_en || b.filing_fecha || '').localeCompare(String(a.filing_en || a.filing_fecha || ''));
     });
   }
 
@@ -379,13 +379,33 @@
     });
   }
 
+  // Con "$" siempre: en la tarjeta un "600" suelto no decía si eran acciones
+  // o dólares (Lety, 2026-10-26, NMHI). El signo va antes del "$".
   function fmtUsd(v){
     if(!Number.isFinite(v)) return '—';
+    var a = Math.abs(v), s = v < 0 ? '−$' : '$';
+    if(a >= 1e9) return s + (a/1e9).toFixed(2) + ' mil M';
+    if(a >= 1e6) return s + (a/1e6).toFixed(2) + ' M';
+    if(a >= 1e3) return s + Math.round(a/1e3) + ' mil';
+    return s + Math.round(a);
+  }
+  // Dos decimales, salvo debajo de un centavo: ahí "0.00" borraba el precio
+  // (NMHI a $0.0006). Se muestran los decimales que hagan falta para dos
+  // cifras significativas, sin ceros de cola.
+  function fmtPrecio(v){
+    if(!Number.isFinite(v)) return '—';
     var a = Math.abs(v);
-    if(a >= 1e9) return (v/1e9).toFixed(2) + ' mil M';
-    if(a >= 1e6) return (v/1e6).toFixed(2) + ' M';
-    if(a >= 1e3) return Math.round(v/1e3) + ' mil';
-    return String(Math.round(v));
+    if(a === 0 || a >= 0.01) return v.toFixed(2);
+    var d = Math.min(10, 1 - Math.floor(Math.log10(a)));
+    return v.toFixed(d).replace(/0+$/, '');
+  }
+  // El índice del filing en EDGAR. El endpoint ya lo manda; esto es por si
+  // llega una fila sin `link` (las guardadas por el cron antes del arreglo).
+  function linkDeFiling(f){
+    if(f.link) return f.link;
+    var acc = String(f.accession || ''), cik = Number(String(f.emisora_cik || f.quien_cik || '').replace(/\D/g, ''));
+    if(!/^\d{10}-\d{2}-\d{6}$/.test(acc) || !cik) return null;
+    return 'https://www.sec.gov/Archives/edgar/data/' + cik + '/' + acc.replace(/-/g, '') + '/' + acc + '-index.htm';
   }
   function fmtNum(v){
     return Number.isFinite(v) ? v.toLocaleString('es-MX', { maximumFractionDigits:0 }) : '—';
@@ -446,16 +466,22 @@
           + (f.ejercio_y_vendio ? ' <span class="lupa combo" title="Ejerció opciones y vendió las mismas acciones el mismo día: no es vender acciones que ya tenía, es convertir opciones en efectivo">ejerció y vendió</span>' : '')
           + (f.indirecta ? ' <span class="lupa" title="' + esc(f.naturaleza || 'tenencia indirecta') + '">indir.</span>' : '')
           + '</td>'
-        + '<td class="c-precio">' + (Number.isFinite(f.precio) ? f.precio.toFixed(2) : '—') + '</td>'
+        + '<td class="c-precio">' + fmtPrecio(f.precio) + '</td>'
         + '<td class="c-acciones">' + fmtNum(f.acciones) + '</td>'
         + valor + quedan
         // La celda muestra la hora corta y GUARDA la marca completa: el
         // lector la ve al pasar el cursor (la corta no trae año ni zona) y la
         // comprobación de Chromium puede leer el orden sin que la pantalla
         // tenga que publicar nada sólo para la prueba.
-        + '<td class="c-filing" data-filing="' + esc(f.filing_en || '') + '" title="' + esc(f.filing_en || 'sin hora de filing') + '">'
-          + (f.link ? '<a href="' + esc(f.link) + '" target="_blank" rel="noopener noreferrer">'
-            + esc(hora(f.filing_en)) + '</a>' : esc(hora(f.filing_en))) + '</td>'
+        // Sin hora (las filas del cron sólo traen el día) se muestra el día;
+        // sin día, "Form 4". El link al documento va siempre que haya accession.
+        + '<td class="c-filing" data-filing="' + esc(f.filing_en || f.filing_fecha || '') + '" title="'
+          + esc((f.filing_en || f.filing_fecha || 'sin fecha de filing') + (f.accession ? ' · accession ' + f.accession : '')) + '">'
+          + (function(){
+              var txt = f.filing_en ? hora(f.filing_en) : (f.filing_fecha || 'Form 4');
+              var url = linkDeFiling(f);
+              return url ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(txt) + ' ↗</a>' : esc(txt);
+            })() + '</td>'
         + '</tr>';
     }).join('');
     return html + '</tbody></table></div>';

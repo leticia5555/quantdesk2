@@ -1351,7 +1351,7 @@ async function buildForm4() {
   let errorNeon = null;
   try {
     deNeon = await sql(`
-      select accession, filas
+      select accession, filing_fecha::text as filing_fecha, filas
         from mercado_form4_tx
        order by filing_fecha desc, accession desc
        limit 600`, []);
@@ -1367,7 +1367,9 @@ async function buildForm4() {
   const porAccession = new Map();
   for (const r of deNeon) {
     const fs = Array.isArray(r.filas) ? r.filas : [];
-    if (fs.length) porAccession.set(r.accession, fs);
+    // Las filas del cron se guardaron sin día de filing; la tabla sí lo tiene.
+    if (fs.length) porAccession.set(r.accession,
+      fs.map((f) => (f.filing_fecha ? f : { ...f, filing_fecha: r.filing_fecha || null })));
   }
   for (const [acc, fs] of form4Accum) if (!porAccession.has(acc)) porAccession.set(acc, fs);
 
@@ -1375,7 +1377,7 @@ async function buildForm4() {
     // Por HORA de aceptación del filing, no por fecha de la operación: es lo
     // que pide el encargo ("orden por hora de filing ↓") y es lo que hace que
     // "lo último" signifique algo.
-    .sort((a, b) => String(b.filing_en || '').localeCompare(String(a.filing_en || '')))
+    .sort((a, b) => String(b.filing_en || b.filing_fecha || '').localeCompare(String(a.filing_en || a.filing_fecha || '')))
     .slice(0, 400);
   const diag = ultimoEscaneo || {};
 
