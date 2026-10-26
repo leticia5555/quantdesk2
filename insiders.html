@@ -85,6 +85,27 @@
   .barra input::placeholder{color:var(--apagado)}
   .chip-f{min-height:34px !important;border-radius:17px !important;font-size:12px !important}
 
+  /* ── LOS CHIPS, UNA SOLA TIRA QUE SE RECORRE DE LADO ────────────────
+     `#chips` es un `<span>` dentro de la barra flex, así que sus botones se
+     acomodaban como texto: a 390 px, con los siete que quedaron después de
+     separar "Entregó en fusión" y "Retención fiscal", ocupaban CINCO
+     renglones y empujaban la tabla fuera de la primera pantalla.
+     Ahora es su propia fila flex, con `flex:0 0 auto` en cada botón —que ya
+     lo traen de `.barra button`— y el recorrido horizontal acotado a ESTA
+     tira: la tabla no se recorre, son tarjetas (decisión de Lety,
+     2026-10-25). */
+  #chips{display:flex;gap:6px;align-items:center;min-width:0}
+  @media (max-width:999px){
+    #barra-chips{flex-wrap:wrap}
+    #barra-chips .et{flex:0 0 auto}
+    #chips{flex:1 1 0;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+      padding-bottom:2px}
+    #chips::-webkit-scrollbar{display:none}
+    /* El buscador baja a su propio renglón, completo: si se quedara en la
+       tira se iría con el recorrido y habría que arrastrar para encontrarlo. */
+    #barra-chips #q{flex:1 1 100%;min-width:0;margin-top:6px}
+  }
+
   main{padding:10px 16px 0}
   h2{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--tenue);
     letter-spacing:.6px;text-transform:uppercase;margin:14px 0 7px}
@@ -126,6 +147,82 @@
   tr.programada td.tk{color:var(--texto)}
   .lupa.plan{color:var(--tenue);border:1px solid var(--linea);border-radius:3px;padding:0 3px;white-space:nowrap}
   .lupa.combo{color:var(--ambar);white-space:nowrap}
+
+  /* ══ ESCRITORIO: LAS DIEZ COLUMNAS, RECORTANDO NOMBRE Y CARGO ══════
+     La tabla medía 1837 px dentro de una caja de 1034: de "Tipo" en
+     adelante —el código, la etiqueta del plan, precio, acciones, valor y
+     "le quedan"— no se veía NADA, y nadie lo notó porque no hay barra de
+     desplazamiento: el contenedor recorta y ya. Lo que se desbordaba eran
+     "Quién" (401 px) y "Cargo" (232): nombres completos sin recortar.
+     Se recortan con "…" y el nombre entero vive en el `title`. */
+  @media (min-width:1000px){
+    /* `table-layout:fixed` SIN anchos declarados reparte en partes iguales, y
+       entonces la celda de "Tipo" —que ahora lleva el código, la etiqueta del
+       plan y "ejerció y vendió"— se desbordaba ENCIMA de "Precio": se leía
+       "plan: sin dato10.00". El ancho se declara por columna, y "Tipo" se
+       queda con lo que sobra porque es la única que crece. */
+    .tabla table{table-layout:fixed;width:100%}
+    .tabla th.izq:first-child,.tabla td.c-tk{width:64px}
+    .tabla td.c-quien{width:150px}
+    .tabla td.c-cargo{width:115px}
+    .tabla td.c-fecha{width:92px}
+    .tabla td.c-precio{width:64px}
+    .tabla td.c-acciones{width:82px}
+    .tabla td.c-valor{width:76px}
+    .tabla td.c-quedan{width:88px}
+    .tabla td.c-filing{width:92px}
+    td.c-quien,td.c-cargo{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    /* "Tipo" se queda con el resto y ENVUELVE: las etiquetas no se recortan
+       ni pisan la columna de al lado, se van a un segundo renglón. */
+    td.c-tipo{white-space:normal;line-height:1.5}
+    /* La etiqueta NO puede ir `nowrap` acá: es más ancha que la columna, y
+       con `nowrap` la celda la recortaba — se leía "programada · plan" y el
+       "10b5-1 desde AAAA-MM-DD" se perdía. En la tarjeta de celular sí va
+       `nowrap`, porque ahí tiene el renglón entero. */
+    .lupa.plan,.lupa.combo{white-space:normal}
+  }
+
+  /* ══ CELULAR: CADA FILA ES UNA TARJETA ════════════════════════════
+     A 390 px la tabla dejaba ver SÓLO la columna del ticker: una lista de
+     símbolos sin quién, sin cuánto y sin cuándo. Nada de scroll horizontal
+     —decisión de Lety, 2026-10-25—: la fila se vuelve tarjeta.
+     Arriba lo que se lee de un vistazo: ticker + quién, qué hizo con su
+     etiqueta, cuánto y cuándo. Al tocar se abre el resto. */
+  @media (max-width:999px){
+    .tabla table,.tabla tbody,.tabla tr,.tabla td{display:block;width:auto}
+    .tabla thead{display:none}
+    .tabla tr{
+      border-bottom:1px solid var(--linea);padding:9px 12px;
+      display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;
+      /* El tap: la tarjeta entera abre el detalle, así que tiene que medir
+         lo que mide un dedo. */
+      min-height:var(--tap,44px);align-content:center;cursor:pointer}
+    .tabla tr td{padding:0;border:0;background:none !important}
+    .tabla td.c-tk{grid-column:1;font-weight:600;font-size:13px}
+    .tabla td.c-valor{grid-column:2;grid-row:1;text-align:right;font-variant-numeric:tabular-nums}
+    .tabla td.c-quien{grid-column:1;grid-row:2;color:var(--tenue);font-size:12px;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .tabla td.c-fecha{grid-column:2;grid-row:2;text-align:right;color:var(--tenue);font-size:11px}
+    .tabla td.c-tipo{grid-column:1/-1;grid-row:3;font-size:11px}
+    /* El resto espera al toque. `display:none` y no `visibility`: no puede
+       ocupar alto ni quedar fuera de la caja. */
+    .tabla td.c-cargo,.tabla td.c-precio,.tabla td.c-acciones,
+    .tabla td.c-quedan,.tabla td.c-filing{display:none}
+    .tabla tr.abierta td.c-cargo,.tabla tr.abierta td.c-precio,
+    .tabla tr.abierta td.c-acciones,.tabla tr.abierta td.c-quedan,
+    .tabla tr.abierta td.c-filing{display:block;grid-column:1/-1;
+      font-size:11px;color:var(--tenue);padding-top:2px}
+    .tabla tr.abierta td.c-cargo::before{content:'cargo · '}
+    .tabla tr.abierta td.c-precio::before{content:'precio · '}
+    .tabla tr.abierta td.c-acciones::before{content:'acciones · '}
+    .tabla tr.abierta td.c-quedan::before{content:'le quedan · '}
+    .tabla tr.abierta td.c-filing::before{content:'filing · '}
+    /* El color del tipo se conserva en el borde izquierdo: el fondo de la
+       tarjeta queda limpio pero la compra/venta se sigue distinguiendo. */
+    .tabla tr.compra{border-left:3px solid var(--verde)}
+    .tabla tr.venta{border-left:3px solid var(--rojo)}
+    .tabla tr.programada{border-left-color:var(--apagado)}
+  }
 
   .lado{display:flex;flex-direction:column;gap:0}
   .fila-lado{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;
@@ -260,7 +357,7 @@
    */
   function porHoraDeFiling(filas){
     return (filas || []).slice().sort(function(a, b){
-      return String(b.filing_en || '').localeCompare(String(a.filing_en || ''));
+      return String(b.filing_en || b.filing_fecha || '').localeCompare(String(a.filing_en || a.filing_fecha || ''));
     });
   }
 
@@ -282,13 +379,33 @@
     });
   }
 
+  // Con "$" siempre: en la tarjeta un "600" suelto no decía si eran acciones
+  // o dólares (Lety, 2026-10-26, NMHI). El signo va antes del "$".
   function fmtUsd(v){
     if(!Number.isFinite(v)) return '—';
+    var a = Math.abs(v), s = v < 0 ? '−$' : '$';
+    if(a >= 1e9) return s + (a/1e9).toFixed(2) + ' mil M';
+    if(a >= 1e6) return s + (a/1e6).toFixed(2) + ' M';
+    if(a >= 1e3) return s + Math.round(a/1e3) + ' mil';
+    return s + Math.round(a);
+  }
+  // Dos decimales, salvo debajo de un centavo: ahí "0.00" borraba el precio
+  // (NMHI a $0.0006). Se muestran los decimales que hagan falta para dos
+  // cifras significativas, sin ceros de cola.
+  function fmtPrecio(v){
+    if(!Number.isFinite(v)) return '—';
     var a = Math.abs(v);
-    if(a >= 1e9) return (v/1e9).toFixed(2) + ' mil M';
-    if(a >= 1e6) return (v/1e6).toFixed(2) + ' M';
-    if(a >= 1e3) return Math.round(v/1e3) + ' mil';
-    return String(Math.round(v));
+    if(a === 0 || a >= 0.01) return v.toFixed(2);
+    var d = Math.min(10, 1 - Math.floor(Math.log10(a)));
+    return v.toFixed(d).replace(/0+$/, '');
+  }
+  // El índice del filing en EDGAR. El endpoint ya lo manda; esto es por si
+  // llega una fila sin `link` (las guardadas por el cron antes del arreglo).
+  function linkDeFiling(f){
+    if(f.link) return f.link;
+    var acc = String(f.accession || ''), cik = Number(String(f.emisora_cik || f.quien_cik || '').replace(/\D/g, ''));
+    if(!/^\d{10}-\d{2}-\d{6}$/.test(acc) || !cik) return null;
+    return 'https://www.sec.gov/Archives/edgar/data/' + cik + '/' + acc.replace(/-/g, '') + '/' + acc + '-index.htm';
   }
   function fmtNum(v){
     return Number.isFinite(v) ? v.toLocaleString('es-MX', { maximumFractionDigits:0 }) : '—';
@@ -301,6 +418,20 @@
     }catch(e){ return String(iso).slice(0,16).replace('T',' '); }
   }
 
+  // ── EL TOQUE QUE ABRE LA TARJETA (sólo en celular) ────────────────
+  // Delegado en el contenedor y no fila por fila: las filas se repintan en
+  // cada cambio de vista o de filtro, y un listener por fila se perdería en
+  // el primer repintado. En escritorio no hace nada: ahí están las diez
+  // columnas y no hay nada que abrir.
+  document.addEventListener('click', function(e){
+    if(!window.matchMedia('(max-width:999px)').matches) return;
+    var tr = e.target && e.target.closest ? e.target.closest('#contenido tbody tr') : null;
+    if(!tr) return;
+    // Un link del filing abre el filing, no la tarjeta.
+    if(e.target.closest('a')) return;
+    tr.classList.toggle('abierta');
+  });
+
   // ── LA TABLA DE TODAS LAS TRANSACCIONES ───────────────────────────
   function tablaDeFilas(filas){
     if(!filas.length) return '<div class="vacio">' + esc(motivoVacio()) + '</div>';
@@ -312,37 +443,45 @@
       // "Le quedan" en CERO es la afirmación más fuerte de la pantalla: se
       // marca. En null es "—" con su causa en el title, nunca un cero.
       var quedan = f.le_quedan == null
-        ? '<td class="falta" title="' + esc(f.le_quedan_motivo || '') + '">—</td>'
+        ? '<td class="falta c-quedan" title="' + esc(f.le_quedan_motivo || '') + '">—</td>'
         : (f.le_quedan === 0
-          ? '<td class="todo" title="vendió o entregó todo lo que tenía de esta clase">0 · todo</td>'
-          : '<td>' + fmtNum(f.le_quedan) + '</td>');
+          ? '<td class="todo c-quedan" title="vendió o entregó todo lo que tenía de esta clase">0 · todo</td>'
+          : '<td class="c-quedan">' + fmtNum(f.le_quedan) + '</td>');
       var valor = Number.isFinite(f.valor)
-        ? '<td>' + fmtUsd(f.valor) + '</td>'
-        : '<td class="falta" title="' + esc(f.valor_motivo || '') + '">—</td>';
+        ? '<td class="c-valor">' + fmtUsd(f.valor) + '</td>'
+        : '<td class="falta c-valor" title="' + esc(f.valor_motivo || '') + '">—</td>';
       return '<tr class="' + esc(f.tipo)
         + ((f.plan_estado === 'programada' || (!f.plan_estado && f.plan_10b5 === true)) ? ' programada' : '') + '">'
-        + '<td class="izq tk">' + esc(f.ticker || f.emisora || '—') + '</td>'
-        + '<td class="izq">' + esc(f.quien || '—')
+        + '<td class="izq tk c-tk">' + esc(f.ticker || f.emisora || '—') + '</td>'
+        // El nombre completo va en `title`: en escritorio la columna se recorta
+        // con "…" y se lee al pasar el mouse, sin ensanchar la tabla.
+        + '<td class="izq c-quien" title="' + esc(f.quien || '') + '">' + esc(f.quien || '—')
           + (f.firmantes > 1 ? ' <span class="lupa">+' + (f.firmantes - 1) + '</span>' : '') + '</td>'
-        + '<td class="izq">' + esc(f.cargo || '—')
+        + '<td class="izq c-cargo" title="' + esc(f.cargo || f.cargo_motivo || '') + '">' + esc(f.cargo || '—')
           + (f.cargo ? '' : '<span class="lupa" title="' + esc(f.cargo_motivo || '') + '"> ?</span>') + '</td>'
-        + '<td>' + esc(f.fecha || '—') + '</td>'
-        + '<td class="izq" title="' + esc(f.nombre || '') + '">' + esc(f.codigo || '—')
+        + '<td class="c-fecha">' + esc(f.fecha || '—') + '</td>'
+        + '<td class="izq c-tipo" title="' + esc(f.nombre || '') + '">' + esc(f.codigo || '—')
           + ' · ' + esc(f.tipo) + (f.derivada ? ' <span class="lupa">deriv.</span>' : '')
           + etiquetaPlan(f)
           + (f.ejercio_y_vendio ? ' <span class="lupa combo" title="Ejerció opciones y vendió las mismas acciones el mismo día: no es vender acciones que ya tenía, es convertir opciones en efectivo">ejerció y vendió</span>' : '')
           + (f.indirecta ? ' <span class="lupa" title="' + esc(f.naturaleza || 'tenencia indirecta') + '">indir.</span>' : '')
           + '</td>'
-        + '<td>' + (Number.isFinite(f.precio) ? f.precio.toFixed(2) : '—') + '</td>'
-        + '<td>' + fmtNum(f.acciones) + '</td>'
+        + '<td class="c-precio">' + fmtPrecio(f.precio) + '</td>'
+        + '<td class="c-acciones">' + fmtNum(f.acciones) + '</td>'
         + valor + quedan
         // La celda muestra la hora corta y GUARDA la marca completa: el
         // lector la ve al pasar el cursor (la corta no trae año ni zona) y la
         // comprobación de Chromium puede leer el orden sin que la pantalla
         // tenga que publicar nada sólo para la prueba.
-        + '<td data-filing="' + esc(f.filing_en || '') + '" title="' + esc(f.filing_en || 'sin hora de filing') + '">'
-          + (f.link ? '<a href="' + esc(f.link) + '" target="_blank" rel="noopener noreferrer">'
-            + esc(hora(f.filing_en)) + '</a>' : esc(hora(f.filing_en))) + '</td>'
+        // Sin hora (las filas del cron sólo traen el día) se muestra el día;
+        // sin día, "Form 4". El link al documento va siempre que haya accession.
+        + '<td class="c-filing" data-filing="' + esc(f.filing_en || f.filing_fecha || '') + '" title="'
+          + esc((f.filing_en || f.filing_fecha || 'sin fecha de filing') + (f.accession ? ' · accession ' + f.accession : '')) + '">'
+          + (function(){
+              var txt = f.filing_en ? hora(f.filing_en) : (f.filing_fecha || 'Form 4');
+              var url = linkDeFiling(f);
+              return url ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(txt) + ' ↗</a>' : esc(txt);
+            })() + '</td>'
         + '</tr>';
     }).join('');
     return html + '</tbody></table></div>';

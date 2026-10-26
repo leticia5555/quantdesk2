@@ -63,6 +63,23 @@ const FILAS = [
     accession: '0000000111-26-000222', updated: '2026-10-19T09:30:00-04:00',
     link: 'https://www.sec.gov/Archives/edgar/data/111/y.html' }),
 ];
+// ── UN FILING COMO LO GUARDA EL CRON DEL ÍNDICE ──────────────────────
+// Los dos de arriba traen `updated` y `link` porque así los da el feed Atom.
+// El cron NO: le pasa a `filasDeForm4` sólo `{ accession, cik, fecha }`, y en
+// producción las 400 filas llegaban sin link y la columna Filing decía "—" en
+// todas (Lety, 2026-10-26). Este arnés no lo veía porque sólo probaba el
+// camino del Atom. Ahora prueba los dos.
+FILAS.push(...filasDeForm4(form4Completo(FORM4_COMPLETO), {
+  accession: '0000320193-26-000444', cik: '320193', fecha: '2026-10-15' }));
+// Un precio debajo del centavo (NMHI a $0.0006): "0.00" lo borraba.
+FILAS.push({
+  ...FILAS[0], id: 'centavo#0', accession: '0002160363-26-000004', ticker: 'NMHI',
+  emisora: "Nature's Miracle Holding Inc.", emisora_cik: '0001947861', quien: 'Adair Kathleen Theresa',
+  cargo: 'Dueño del 10%', codigo: 'P', tipo: 'compra', nombre: 'Compra en mercado abierto',
+  acciones: 1000000, precio: 0.0006, valor: 600, le_quedan: 103000000, le_quedan_motivo: null,
+  salio_del_todo: false, fecha: '2026-10-06', filing_en: null, filing_fecha: '2026-10-07', link: null,
+  firmantes: 1, es_duenio_10: true, plan_10b5: false, plan_estado: 'sin_dato',
+});
 // Una compra grande, para que "compras destacadas" tenga qué mostrar.
 FILAS.push({
   ...FILAS[0], id: 'grande#0', accession: '0000999-26-000333', ticker: 'BIGC',
@@ -222,6 +239,60 @@ const RELOJ_FIJO = `(() => {
   window.Date = Falso;
 })()`;
 
+// ── ¿SE VE DE VERDAD, O SÓLO EXISTE EN EL DOM? ───────────────────────
+// El 2026-10-25 esta pantalla pasó en verde con la etiqueta del plan 10b5-1
+// fuera de la caja visible: la tabla medía 1778 px dentro de 358 en celular y
+// 1837 dentro de 1034 en escritorio, sin barra de desplazamiento — el
+// contenedor recortaba y ya. A 390 px sólo quedaba la columna del ticker.
+//
+// Mis cinco comprobaciones de esa tanda miraban que la etiqueta EXISTIERA y
+// qué color tenía. Ninguna miraba dónde caía. Un elemento correcto fuera de
+// pantalla pasa en verde, y eso es peor que no tener la comprobación: afirma
+// algo que nadie puede ver.
+const DENTRO_DE_LA_CAJA = () => {
+  const cont = document.querySelector('#contenido');
+  const caja = cont.getBoundingClientRect();
+  const mide = (sel) => {
+    const e = document.querySelector(sel);
+    if (!e) return { hay: false };
+    const r = e.getBoundingClientRect();
+    // ── CONTRA TODO ANCESTRO QUE RECORTE, NO SÓLO CONTRA `#contenido` ──
+    // La primera versión comparaba únicamente con el contenedor de afuera, y
+    // por eso dio verde con la etiqueta recortada por SU PROPIA CELDA: se
+    // leía "programada · plan" y el "10b5-1 desde AAAA-MM-DD" se perdía. El
+    // rectángulo de un elemento recortado sigue midiendo lo que mide; quien
+    // lo tapa es un ancestro con `overflow` distinto de `visible`.
+    let cortado = null;
+    for (let a = e.parentElement; a; a = a.parentElement) {
+      const cs = getComputedStyle(a);
+      if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+      const ar = a.getBoundingClientRect();
+      if (r.right > ar.right + 0.5 || r.left < ar.left - 0.5
+        || r.bottom > ar.bottom + 0.5 || r.top < ar.top - 0.5) {
+        cortado = a.className || a.tagName;
+        break;
+      }
+    }
+    return {
+      hay: true,
+      x: Math.round(r.x), derecha: Math.round(r.right),
+      // Visible de verdad: dentro de la caja que lo contiene, dentro de la
+      // ventana, y sin que ningún ancestro lo recorte. Las tres, porque
+      // fallan por motivos distintos y cada una me pasó por separado.
+      dentro: r.left >= caja.left - 0.5 && r.right <= caja.right + 0.5,
+      enPantalla: r.left >= -0.5 && r.right <= window.innerWidth + 0.5 && r.width > 0,
+      cortadoPor: cortado,
+    };
+  };
+  return {
+    cajaAncho: Math.round(caja.width),
+    tablaAncho: Math.round(document.querySelector('#contenido table').getBoundingClientRect().width),
+    plan: mide('.lupa.plan'),
+    combo: mide('.lupa.combo'),
+    valor: mide('td.c-valor'),
+  };
+};
+
 const fallos = []; const ok = [];
 function chequeo(nombre, cond, detalle) {
   (cond ? ok : fallos).push(detalle ? `${nombre} — ${detalle}` : nombre);
@@ -236,7 +307,7 @@ function chromePath() {
   const base = '/opt/pw-browsers';
   const dirs = existsSync(base) ? readdirSync(base).filter((d) => d.startsWith('chromium')) : [];
   for (const d of dirs.sort().reverse()) {
-    for (const rel of ['chrome-linux/chrome', 'chrome-linux/headless_shell']) {
+    for (const rel of ['chrome-linux/chrome', 'chrome-linux64/chrome', 'chrome-linux/headless_shell']) {
       const f = join(base, d, rel);
       if (existsSync(f)) return f;
     }
@@ -258,7 +329,9 @@ try {
   p.on('console', (m) => {
     if (m.type() !== 'error') return;
     const u = (m.location && m.location().url) || '';
-    if (esFuente(u) || /ERR_CERT_AUTHORITY_INVALID/.test(m.text())) return;
+    // El favicon lo pide Chromium por su cuenta y el servidor de este arnés no
+    // lo sirve: ese 404 no es de la página.
+    if (esFuente(u) || /\/favicon\.ico$/.test(u) || /ERR_CERT_AUTHORITY_INVALID/.test(m.text())) return;
     errores.push(m.text());
   });
 
@@ -296,6 +369,34 @@ try {
     otorg && otorg.celdas[7] === '—' && /no declaró precio/.test(otorg.titulos[7]),
     otorg ? `${otorg.celdas[7]} · ${otorg.titulos[7]}` : 'no está');
 
+  // ── CADA FILA LLEVA AL DOCUMENTO EN LA SEC ──────────────────────────
+  // Lo que Lety vio en producción: "—" en todas las filas y ni un link. Se
+  // exige un link a sec.gov en CADA fila, incluidas las del cron (sin hora
+  // ni link de origen), y que el de esas apunte al índice del accession.
+  const links = await p.evaluate(() => [...document.querySelectorAll('#contenido tbody tr')].map((tr) => {
+    const a = tr.querySelector('td.c-filing a[href]');
+    return { href: a ? a.getAttribute('href') : null, txt: tr.querySelector('td.c-filing').textContent.trim() };
+  }));
+  const sinLink = links.filter((l) => !l.href || !/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/\d+\//.test(l.href));
+  chequeo('cada fila tiene link al filing en sec.gov',
+    links.length === FILAS.length && sinLink.length === 0,
+    `${links.length - sinLink.length} de ${links.length}` + (sinLink.length ? ' · sin link: ' + JSON.stringify(sinLink.slice(0, 2)) : ''));
+  const delCron = links.find((l) => (l.href || '').includes('000032019326000444'));
+  chequeo('y la fila que guardó el cron apunta al índice de su accession, con su día',
+    !!delCron && delCron.href.endsWith('/0000320193-26-000444-index.htm') && /2026-10-15/.test(delCron.txt),
+    JSON.stringify(delCron || null));
+  chequeo('ninguna celda Filing dice "—"',
+    links.every((l) => l.txt && !/^—/.test(l.txt)), JSON.stringify(links.map((l) => l.txt).slice(0, 6)));
+
+  // ── EL MONTO VA EN DÓLARES Y EL PRECIO NO SE BORRA ──────────────────
+  chequeo('el valor va con "$" (o "—" con su causa), nunca un número suelto',
+    filas.every((f) => f.celdas[7] === '—' || /^\$/.test(f.celdas[7])),
+    JSON.stringify(filas.map((f) => f.celdas[7]).slice(0, 6)));
+  const centavo = filas.find((f) => f.celdas[0] === 'NMHI');
+  chequeo('un precio debajo del centavo muestra sus decimales, no "0.00"',
+    !!centavo && centavo.celdas[5] === '0.0006' && centavo.celdas[7] === '$600',
+    centavo ? `${centavo.celdas[5]} · ${centavo.celdas[7]}` : 'no está');
+
   // ── LOS CHIPS ───────────────────────────────────────────────────────
   const chips = await p.evaluate(() => [...document.querySelectorAll('#chips button')].map((b) => ({
     id: b.dataset.chip, off: b.disabled, txt: b.textContent.trim(), titulo: b.getAttribute('title') || '',
@@ -312,6 +413,36 @@ try {
     vp.off && /pronto/.test(vp.txt) && /Form 144/.test(vp.titulo), vp.titulo);
   chequeo('y los chips se pueden tocar (≥34 px)',
     chips.every((c) => c.alto >= 34), JSON.stringify(chips.map((c) => c.alto)));
+
+  // ── LOS SIETE CHIPS, EN UNA SOLA TIRA ───────────────────────────────
+  // Con los siete que quedaron después de separar "Entregó en fusión" y
+  // "Retención fiscal", los botones se acomodaban como texto y ocupaban cinco
+  // renglones a 390 px, empujando la tabla fuera de la primera pantalla.
+  const tira = await p.evaluate(() => {
+    const c = document.getElementById('chips');
+    const bs = [...c.querySelectorAll('button')];
+    const ys = [...new Set(bs.map((b) => Math.round(b.getBoundingClientRect().y)))];
+    const cs = getComputedStyle(c);
+    const q = document.getElementById('q');
+    return {
+      renglones: ys.length,
+      seRecorre: c.scrollWidth > c.clientWidth && (cs.overflowX === 'auto' || cs.overflowX === 'scroll'),
+      alto: Math.round(c.getBoundingClientRect().height),
+      // El buscador NO puede irse con el recorrido: si estuviera dentro de la
+      // tira habría que arrastrar para encontrarlo.
+      buscadorEnLaTira: c.contains(q),
+      buscadorVisible: q ? q.getBoundingClientRect().width > 0 : false,
+      // Y la TABLA no se recorre: son tarjetas.
+      tablaSeRecorre: (() => { const t = document.querySelector('#contenido');
+        return t ? t.scrollWidth > t.clientWidth : null; })(),
+    };
+  });
+  chequeo('celular: los chips van en UN solo renglón', tira.renglones === 1, JSON.stringify(tira));
+  chequeo('celular: y esa tira se recorre de lado', tira.seRecorre === true, JSON.stringify(tira));
+  chequeo('celular: el buscador queda fuera de la tira y a la vista',
+    !tira.buscadorEnLaTira && tira.buscadorVisible, JSON.stringify(tira));
+  chequeo('celular: la TABLA sigue sin recorrerse (son tarjetas)',
+    tira.tablaSeRecorre === false, JSON.stringify(tira));
 
   // ── LO PROGRAMADO SE VE DISTINTO, Y DICE DESDE CUÁNDO ───────────────
   // Una venta bajo un plan 10b5-1 se fijó con meses de anticipación. En
@@ -352,6 +483,49 @@ try {
   // afirmar. Si apareciera en gris, estaríamos diciendo que consta.
   chequeo('"sin dato" no se disfraza de programada',
     !/sin dato/.test(plan.etiqueta), plan.etiqueta);
+
+  // ── Y QUE SE VEA, NO SÓLO QUE EXISTA (390) ──────────────────────────
+  const visible390 = await p.evaluate(DENTRO_DE_LA_CAJA);
+  chequeo('celular: la tabla NO es más ancha que su caja (nada de scroll horizontal)',
+    visible390.tablaAncho <= visible390.cajaAncho + 1,
+    `tabla ${visible390.tablaAncho} vs caja ${visible390.cajaAncho}`);
+  chequeo('celular: la etiqueta del plan cae DENTRO de la caja, en pantalla y SIN recortar',
+    visible390.plan.hay && visible390.plan.dentro && visible390.plan.enPantalla
+      && !visible390.plan.cortadoPor,
+    JSON.stringify(visible390.plan));
+  chequeo('celular: y el "cuánto" también — una tarjeta sin monto no informa',
+    visible390.valor.hay && visible390.valor.dentro, JSON.stringify(visible390.valor));
+
+  // ── LA TARJETA SE ABRE AL TOCARLA ───────────────────────────────────
+  const tarjeta = await p.evaluate(() => {
+    const tr = document.querySelector('#contenido tbody tr');
+    const vis = (sel) => { const e = tr.querySelector(sel); return !!e && getComputedStyle(e).display !== 'none'; };
+    return { alto: Math.round(tr.getBoundingClientRect().height),
+      cargoAntes: vis('td.c-cargo'), precioAntes: vis('td.c-precio') };
+  });
+  chequeo('celular: la tarjeta mide lo que mide un dedo', tarjeta.alto >= 44, String(tarjeta.alto));
+  chequeo('celular: el detalle empieza CERRADO',
+    !tarjeta.cargoAntes && !tarjeta.precioAntes, JSON.stringify(tarjeta));
+  await p.locator('#contenido tbody tr').first().tap();
+  const abierta = await p.evaluate(() => {
+    const tr = document.querySelector('#contenido tbody tr');
+    const vis = (sel) => { const e = tr.querySelector(sel); return !!e && getComputedStyle(e).display !== 'none'; };
+    const cont = document.querySelector('#contenido').getBoundingClientRect();
+    const dentro = (sel) => { const e = tr.querySelector(sel); if (!e) return false;
+      const r = e.getBoundingClientRect(); return r.left >= cont.left - 0.5 && r.right <= cont.right + 0.5; };
+    return { abierta: tr.classList.contains('abierta'),
+      cargo: vis('td.c-cargo'), precio: vis('td.c-precio'), acciones: vis('td.c-acciones'),
+      quedan: vis('td.c-quedan'), filing: vis('td.c-filing'),
+      todosDentro: ['td.c-cargo', 'td.c-precio', 'td.c-acciones', 'td.c-quedan', 'td.c-filing'].every(dentro) };
+  });
+  chequeo('celular: al tocarla se abren los cinco que faltaban',
+    abierta.abierta && abierta.cargo && abierta.precio && abierta.acciones && abierta.quedan && abierta.filing,
+    JSON.stringify(abierta));
+  chequeo('celular: y el detalle también cae dentro de la caja',
+    abierta.todosDentro, JSON.stringify(abierta));
+  await p.locator('#contenido tbody tr').first().tap();
+  chequeo('celular: y se vuelve a cerrar',
+    !(await p.evaluate(() => document.querySelector('#contenido tbody tr').classList.contains('abierta'))));
 
   await p.locator('#chips button[data-chip="compra"]').tap();
   await p.waitForFunction(() => location.search.includes('chips=compra'), null, { timeout: 2000 });
@@ -551,6 +725,28 @@ try {
   }));
   chequeo('dos columnas, con el lateral de 340 px', /340px/.test(caja.cols), caja.cols);
   chequeo('sin scroll horizontal', !caja.scrollH);
+
+  // ── LAS DIEZ COLUMNAS, Y QUE SE VEAN (1440) ─────────────────────────
+  const visible1440 = await d.evaluate(DENTRO_DE_LA_CAJA);
+  chequeo('escritorio: la tabla cabe en su caja',
+    visible1440.tablaAncho <= visible1440.cajaAncho + 1,
+    `tabla ${visible1440.tablaAncho} vs caja ${visible1440.cajaAncho}`);
+  chequeo('escritorio: la etiqueta del plan cae DENTRO de la caja, en pantalla y SIN recortar',
+    visible1440.plan.hay && visible1440.plan.dentro && visible1440.plan.enPantalla
+      && !visible1440.plan.cortadoPor,
+    JSON.stringify(visible1440.plan));
+  // El recorte de "Quién" y "Cargo" es lo que hizo que las diez entraran: se
+  // exige que recorten de verdad y que el nombre completo siga disponible.
+  const recorte = await d.evaluate(() => {
+    const td = document.querySelector('td.c-quien');
+    const cs = getComputedStyle(td);
+    return { ellipsis: cs.textOverflow, nowrap: cs.whiteSpace, title: td.getAttribute('title') || '',
+      columnas: document.querySelectorAll('#contenido thead th').length };
+  });
+  chequeo('escritorio: están las diez columnas', recorte.columnas === 10, String(recorte.columnas));
+  chequeo('escritorio: "Quién" se recorta con … y guarda el nombre entero',
+    recorte.ellipsis === 'ellipsis' && recorte.nowrap === 'nowrap' && recorte.title.length > 0,
+    JSON.stringify(recorte));
   chequeo('el lateral trae el top, las destacadas y el teaser de fondos',
     caja.top > 0 && caja.dest > 0 && caja.fondos > 0, JSON.stringify(caja));
 
@@ -565,6 +761,28 @@ try {
 
   await d.screenshot({ path: join(OUT, 'insiders-1440.png') });
   console.log(`  → ${join(OUT, 'insiders-1440.png')}`);
+  // ── Y LA TABLA SOLA, HASTA LA FILA 15 ───────────────────────────────
+  // La página entera son ~11.700 px y lo que hay que mirar está arriba.
+  // El recorte se calcula del DOM y no a ojo: con un número de píxeles fijo,
+  // el día que cambie el alto de una fila la captura muestra otra cosa.
+  const corte = await d.evaluate(() => {
+    const tabla = document.querySelector('#contenido table');
+    const filas = [...document.querySelectorAll('#contenido tbody tr')];
+    if (!tabla || !filas.length) return null;
+    const r = tabla.getBoundingClientRect();
+    const ult = filas[Math.min(14, filas.length - 1)].getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.round(r.x) - 8), y: Math.max(0, Math.round(r.y) - 8),
+      width: Math.min(Math.round(r.width) + 16, window.innerWidth),
+      height: Math.round(ult.bottom - r.y) + 16,
+      filas: Math.min(15, filas.length),
+    };
+  });
+  if (corte) {
+    await d.screenshot({ path: join(OUT, 'insiders-1440-tabla15.png'),
+      clip: { x: corte.x, y: corte.y, width: corte.width, height: corte.height } });
+    console.log(`  → ${join(OUT, 'insiders-1440-tabla15.png')} (${corte.filas} filas)`);
+  }
   await esc2.close();
 // ── NINGUNA ENTIDAD XML LLEGA A LA PANTALLA ──────────────────────────────
 // Lety, contra producción (2026-10-20): el cargo salía "EVP, CFO &amp; COO".

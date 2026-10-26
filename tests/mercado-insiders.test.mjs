@@ -18,7 +18,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   form4Completo, filasDeForm4, duenosDe, tipoDeCodigo, topDeLaSemana,
-  filtraFilas, CHIPS, CODIGOS,
+  filtraFilas, CHIPS, CODIGOS, linkDeFiling, completaFilasViejas,
 } from '../api/_lib/form4.js';
 import { FORM4_COMPLETO, FORM4_CON_NAMESPACE } from './fixtures/form4.mjs';
 
@@ -246,4 +246,31 @@ test('la búsqueda alcanza ticker, emisora, quién y cargo', () => {
   assert.equal(filtraFilas(filas, { q: 'ruiz' }).length, 5);
   assert.equal(filtraFilas(filas, { q: 'financial' }).length, 5);
   assert.equal(filtraFilas(filas, { q: 'zzz' }).length, 0);
+});
+
+// ── EL LINK AL FILING, TAMBIÉN EN EL CAMINO DEL CRON ─────────────────
+// El cron del índice llama a `filasDeForm4` con `{ accession, cik, fecha }`:
+// sin `updated` ni `link`. Así llegaron las 400 filas de producción, todas
+// con la columna Filing en "—" y sin camino a sec.gov (Lety, 2026-10-26).
+test('el link al filing se arma con el accession cuando no viene', () => {
+  assert.equal(linkDeFiling('0002160363-26-000004', '0001947861'),
+    'https://www.sec.gov/Archives/edgar/data/1947861/000216036326000004/0002160363-26-000004-index.htm');
+  assert.equal(linkDeFiling('no-es-accession', '1947861'), null);
+  assert.equal(linkDeFiling('0002160363-26-000004', null), null);
+});
+
+test('las filas del cron traen link y el día del filing', () => {
+  const delCron = filasDeForm4(doc, { accession: '0000320193-26-000444', cik: '320193', fecha: '2026-10-15' });
+  for (const f of delCron) {
+    assert.equal(f.link, 'https://www.sec.gov/Archives/edgar/data/320193/000032019326000444/0000320193-26-000444-index.htm');
+    assert.equal(f.filing_fecha, '2026-10-15');
+    assert.equal(f.filing_en, null, 'sin hora no se inventa hora');
+  }
+  // El link de origen, cuando lo hay, gana.
+  assert.equal(filas[0].link, META.link);
+});
+
+test('y las que ya se guardaron sin link lo reciben al servirse', () => {
+  const vieja = { ...filas[0], link: null, accession: '0002160363-26-000004', emisora_cik: '0001947861' };
+  assert.match(completaFilasViejas([vieja])[0].link, /\/1947861\/000216036326000004\/0002160363-26-000004-index\.htm$/);
 });
