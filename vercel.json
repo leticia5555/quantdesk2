@@ -42,6 +42,9 @@
     "api/fuga-analyze.js": {
       "maxDuration": 300
     },
+    "api/pm-drift-analyze.js": {
+      "maxDuration": 300
+    },
     "api/pead-harvest.js": {
       "maxDuration": 300
     },
