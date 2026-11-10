@@ -24,7 +24,11 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const FILES = [
   'app.html',
-  'index.html',
+  // La calculadora: era `index.html` hasta el PR 5 de R9. Un archivo que no
+  // existe se salta EN SILENCIO más abajo, así que el nombre viejo habría
+  // dejado a la calculadora fuera del lint sin que nada se pusiera rojo.
+  'inicio.html',
+  'portada.html',
   ...readdirSync(join(ROOT, 'api')).filter((f) => f.endsWith('.js')).map((f) => 'api/' + f),
   ...readdirSync(join(ROOT, 'api/_lib')).filter((f) => f.endsWith('.js')).map((f) => 'api/_lib/' + f),
 ];

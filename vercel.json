@@ -103,15 +103,19 @@
   "rewrites": [
     {
       "source": "/",
-      "destination": "/mercado.html"
+      "destination": "/portada.html"
     },
     {
       "source": "/inicio",
-      "destination": "/index.html"
+      "destination": "/inicio.html"
     },
     {
       "source": "/calcula",
-      "destination": "/index.html"
+      "destination": "/inicio.html"
+    },
+    {
+      "source": "/index.html",
+      "destination": "/inicio.html"
     },
     {
       "source": "/app",

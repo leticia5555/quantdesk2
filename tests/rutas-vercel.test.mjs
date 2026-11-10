@@ -85,8 +85,12 @@ const RUTAS = [
   { url: '/app', archivo: 'app.html' },
   { url: '/liga', archivo: 'leaderboard.html' },
   { url: '/mercado', archivo: 'mercado.html' },
-  { url: '/calcula', archivo: 'index.html' },
-  { url: '/inicio', archivo: 'index.html' },
+  { url: '/', archivo: 'portada.html' },
+  { url: '/calcula', archivo: 'inicio.html' },
+  { url: '/inicio', archivo: 'inicio.html' },
+  // La dirección vieja del archivo: quien la tenga guardada sigue llegando a
+  // la calculadora, que es lo que había ahí.
+  { url: '/index.html', archivo: 'inicio.html' },
   { url: '/mercado/noticias', archivo: 'noticias.html' },
   { url: '/mercado/insiders', archivo: 'insiders.html' },
   { url: '/liga/libros', archivo: 'libros.html' },
@@ -117,8 +121,8 @@ test('/calcula y /inicio sirven LA MISMA calculadora, las dos vivas', async () =
 test('la calculadora no se le cambió nada: /calcula es un rewrite, no una copia', async () => {
   // *"pasa a su propia ruta, por ejemplo /calcula, SIN CAMBIARLE NADA"*. Dos
   // archivos iguales se separan al primer arreglo que se haga en uno.
-  const fuentes = (vercel.rewrites || []).filter((x) => x.destination === '/index.html').map((x) => x.source);
-  assert.deepEqual(fuentes.sort(), ['/calcula', '/inicio']);
+  const fuentes = (vercel.rewrites || []).filter((x) => x.destination === '/inicio.html').map((x) => x.source);
+  assert.deepEqual(fuentes.sort(), ['/calcula', '/index.html', '/inicio']);
   assert.ok(!existsSync(join(ROOT, 'calcula.html')),
     'no hay un calcula.html: sería una copia que se separa del original');
 });
@@ -127,13 +131,13 @@ test('la calculadora no se le cambió nada: /calcula es un rewrite, no una copia
 // EL DEFECTO QUE NADIE PODÍA VER: UN ARCHIVO QUE TAPA UN REWRITE
 // ═════════════════════════════════════════════════════════════════════════
 
-// `/` es el caso conocido y PENDIENTE: `index.html` en la raíz le gana al
-// rewrite de R8, así que `/` sirve la calculadora y no el mapa. Se arregla en
-// el PR 5 de R9, renombrando el archivo. Hasta entonces va declarado acá, con
-// su número, para que no se confunda con un descubrimiento nuevo.
-const TAPADOS_CONOCIDOS = ['/'];
+// `/` FUE el caso: `index.html` en la raíz le ganaba al rewrite de R8, así que
+// `/` sirvió la calculadora durante días mientras `vercel.json` prometía el
+// mapa. Se arregló en el PR 5 de R9 renombrando el archivo a `inicio.html`.
+// La lista queda VACÍA y así se tiene que quedar.
+const TAPADOS_CONOCIDOS = [];
 
-test('ningún rewrite queda tapado por un archivo de la raíz, salvo los declarados', async () => {
+test('ningún rewrite queda tapado por un archivo de la raíz', async () => {
   const tapados = [];
   for (const r of vercel.rewrites || []) {
     if (r.source.includes(':')) continue;           // las dinámicas no matchean archivo
@@ -149,20 +153,25 @@ test('ningún rewrite queda tapado por un archivo de la raíz, salvo los declara
 
 test('la lista de tapados conocidos no crece en silencio', () => {
   // Si alguien agrega uno a la lista para poner la prueba en verde, esto
-  // también se pone rojo. El `/` sale de la lista cuando entre el PR 5.
-  assert.deepEqual(TAPADOS_CONOCIDOS, ['/'],
-    'el único tapado aceptado es `/`, y se arregla en el PR 5 de R9');
+  // también se pone rojo.
+  assert.deepEqual(TAPADOS_CONOCIDOS, [],
+    'desde el PR 5 de R9 no hay ningún tapado aceptado');
 });
 
-test('`/` hoy sirve la calculadora, y eso es el defecto, no el diseño', async () => {
-  // Esta prueba FIJA EL DEFECTO para que el PR 5 tenga algo que poner en
-  // verde: cuando `/` sirva la portada nueva, esta prueba falla y se cambia
-  // junto con el arreglo. Es la forma de que el bug no se nos olvide.
+test('no hay un `index.html` en la raíz: es lo que tapaba a `/`', () => {
+  // Vercel sirve `index.html` para `/` ANTES de mirar los rewrites. Si
+  // alguien vuelve a crear uno, `/` deja de ser la portada sin que
+  // `vercel.json` cambie una letra.
+  assert.ok(!existsSync(join(ROOT, 'index.html')),
+    'un index.html en la raíz le gana al rewrite de `/`');
+});
+
+test('`/` sirve la portada, y es lo que vercel.json dice', async () => {
   const res = await fetch(`${BASE}/`);
+  assert.equal(res.headers.get('x-archivo'), 'portada.html');
   const txt = await res.text();
-  assert.match(txt, /Empieza a entender invirtiendo/,
-    'si esto falla es porque `/` ya cambió: actualizá esta prueba con el PR 5');
+  assert.doesNotMatch(txt, /Empieza a entender invirtiendo/, '`/` ya no es la calculadora');
+  assert.match(txt, /id="lienzo"/, 'la portada lleva el mapa');
   const rw = (vercel.rewrites || []).find((x) => x.source === '/');
-  assert.equal(rw.destination, '/mercado.html',
-    'y vercel.json sigue prometiendo otra cosa, que es justo el problema');
+  assert.equal(rw.destination, '/portada.html');
 });
