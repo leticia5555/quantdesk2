@@ -53,6 +53,16 @@ test('y lo que no está en la barra de abajo SÍ está en el pie de la hoja', ()
   }
 });
 
+test('la calculadora cuelga de Herramientas: en el pie, y sin ser una sexta pestaña', () => {
+  // Hasta el PR 5 de R9 la calculadora era lo que salía en `/`. Al mudarse la
+  // portada, en el teléfono su puerta es el pie de la hoja, junto a
+  // "Herramientas".
+  const pie = NAV.qdNavHtmlHojaPie();
+  assert.ok(pie.includes('href="/calcula"'), 'la calculadora no tiene puerta en el teléfono');
+  assert.ok(pie.indexOf('href="/app"') < pie.indexOf('href="/calcula"'), 'va después de su pestaña');
+  assert.equal(NAV.QD_NAV_TABS.length, 5, 'y no es una pestaña más');
+});
+
 test('el pie sale de QD_NAV_TABS, no de una lista aparte', () => {
   // Si mañana una pestaña entra o sale de la barra de abajo, el pie se tiene
   // que acomodar solo. Se comprueba moviendo "Herramientas" a `movil:true` y
@@ -110,7 +120,10 @@ test('la query y el hash no cambian qué pestaña se enciende', () => {
 
 test('una ruta desconocida no enciende ninguna, en vez de adivinar', () => {
   assert.equal(NAV.qdNavActivo('/nada-de-esto'), null);
-  assert.equal(NAV.qdNavActivo(''), 'mercado', 'vacío cae en la portada');
+  // La portada no es ninguna de las cinco: desde el PR 5 de R9 `/` ya no es
+  // el mapa, y encender "Mercado" ahí sería decir que ya se está en `/mercado`.
+  assert.equal(NAV.qdNavActivo(''), null, 'vacío es la portada, que no enciende ninguna');
+  assert.equal(NAV.qdNavActivo('/'), null, 'la portada no enciende ninguna');
 });
 
 test('el buscador manda a la ficha de /analiza, en mayúsculas', () => {

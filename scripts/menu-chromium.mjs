@@ -52,6 +52,9 @@ function chromePath() {
 // Las rutas tal como las sirve `vercel.json`, y las que el encargo manda NO
 // borrar. Si una deja de responder, esta lista lo dice por su nombre.
 const RUTAS = [
+  // La portada no es ninguna de las cinco pestañas: `tab: null` exige que NO
+  // haya ninguna encendida, que es tan comprobable como exigir una.
+  { url: '/', archivo: 'portada.html', tab: null },
   { url: '/mercado', archivo: 'mercado.html', tab: 'mercado' },
   { url: '/mercado/noticias', archivo: 'noticias.html', tab: 'noticias' },
   { url: '/mercado/insiders', archivo: 'insiders.html', tab: 'insiders' },
@@ -67,7 +70,7 @@ const RUTAS = [
   // El encargo manda mudarla "sin cambiarle nada", así que acá se DECLARA en
   // vez de esconderse: se exige que su desborde sea exactamente el conocido.
   // Si crece, esto se pone rojo.
-  { url: '/inicio', archivo: 'index.html', tab: 'herramientas', desbordePreexistente: true },
+  { url: '/inicio', archivo: 'inicio.html', tab: 'herramientas', desbordePreexistente: true },
   { url: '/historia', archivo: 'historia.html', tab: 'herramientas' },
 ];
 
@@ -225,8 +228,9 @@ try {
         m.tabs.length === 5 && NAV.QD_NAV_TABS.every((t) => m.tabs.some((x) => x.id === t.id)),
         JSON.stringify(m.tabs.map((t) => t.id)));
       // La pestaña encendida es la que le toca a ESA ruta, y es una sola.
-      chequeo(`${r.url}: la pestaña activa es "${r.tab}", y sólo una`,
-        m.activo === r.tab && m.tabs.filter((t) => t.activo).length === 1,
+      chequeo(r.tab ? `${r.url}: la pestaña activa es "${r.tab}", y sólo una`
+        : `${r.url}: no enciende ninguna pestaña`,
+        m.activo === r.tab && m.tabs.filter((t) => t.activo).length === (r.tab ? 1 : 0),
         `${m.activo} · ${m.tabs.filter((t) => t.activo).length}`);
       // El hueco del menú fijo: la página no puede empezar debajo de él.
       chequeo(`${r.url}: la página deja el hueco del menú`,

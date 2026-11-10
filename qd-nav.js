@@ -50,7 +50,16 @@ var QD_NAV_TABS = [
   { id: 'insiders', texto: 'Insiders', href: '/mercado/insiders', movil: true,
     icono: '<circle cx="10" cy="7" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 18c0-3.3 2.7-6 6-6s6 2.7 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' },
   { id: 'herramientas', texto: 'Herramientas', href: '/app', movil: false,
-    icono: '<path d="M4 7h12M4 11h12M4 15h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' },
+    icono: '<path d="M4 7h12M4 11h12M4 15h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    // LO QUE CUELGA DE HERRAMIENTAS sin ser una pestaña. La calculadora vivía
+    // en `/` hasta el PR 5 de R9; al mudarse la portada, ésta es su puerta en
+    // el teléfono (el pie de la hoja del buscador). En escritorio la puerta
+    // está en la propia terminal y al pie de la portada. No es una sexta
+    // pestaña: el encargo fija cinco.
+    hijas: [
+      { texto: 'Calculadora', href: '/calcula',
+        icono: '<rect x="4" y="3" width="12" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 7h6M7 11h1M10 11h1M13 11h0M7 14h1M10 14h1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' },
+    ] },
 ];
 
 /**
@@ -70,7 +79,10 @@ function qdNavActivo(ruta) {
   // prefijo no lo diga. Ninguna página se borra (regla uno del encargo), así
   // que todas tienen que poder encender su pestaña.
   var alias = {
-    '/': 'mercado', '/hoy': 'mercado', '/terminal': 'herramientas',
+    // `/` NO está: desde el PR 5 de R9 es la portada, que no es ninguna de las
+    // cinco. Encender "Mercado" ahí diría que ya se está en `/mercado`, y el
+    // ícono de abajo llevaría a "otra" página estando ya prendido.
+    '/hoy': 'mercado', '/terminal': 'herramientas',
     '/leaderboard': 'liga', '/libros': 'liga', '/historia': 'herramientas',
     '/analiza': 'mercado', '/calcula': 'herramientas', '/inicio': 'herramientas',
   };
@@ -349,8 +361,14 @@ function qdNavHtmlHojaPie() {
   var fuera = QD_NAV_TABS.filter(function (t) { return !t.movil; });
   if (!fuera.length) return '';
   return '<div class="qdnav-hoja-pie">' + fuera.map(function (t) {
+    // Las hijas van con su pestaña: si "Herramientas" sube a la barra de
+    // abajo, salen del pie con ella y hay que darles otra puerta.
     return '<a href="' + t.href + '" data-tab="' + t.id + '">'
-      + qdNavSvg(t.icono) + '<span>' + t.texto + '</span></a>';
+      + qdNavSvg(t.icono) + '<span>' + t.texto + '</span></a>'
+      + (t.hijas || []).map(function (h) {
+        return '<a href="' + h.href + '" data-hija-de="' + t.id + '">'
+          + qdNavSvg(h.icono) + '<span>' + h.texto + '</span></a>';
+      }).join('');
   }).join('') + '</div>';
 }
 

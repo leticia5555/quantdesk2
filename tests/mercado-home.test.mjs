@@ -27,10 +27,13 @@ const rw = vercel.rewrites || [];
 const red = vercel.redirects || [];
 const porFuente = (lista, s) => lista.find((r) => r.source === s);
 
-test('la raíz sirve el mapa', () => {
+test('la raíz sirve la portada, y la portada abre con el mapa', () => {
+  // R8 puso el mapa en `/`. El PR 5 de R9 lo cambia por la portada: el mapa
+  // de calor arriba y tres tarjetas. `/mercado` sigue siendo el mapa entero.
   const r = porFuente(rw, '/');
   assert.ok(r, 'no hay rewrite para /');
-  assert.equal(r.destination, '/mercado.html');
+  assert.equal(r.destination, '/portada.html');
+  assert.equal(porFuente(rw, '/mercado').destination, '/mercado.html');
 });
 
 test('y la landing NO se borra: sigue alcanzable en /inicio', () => {
@@ -38,7 +41,7 @@ test('y la landing NO se borra: sigue alcanzable en /inicio', () => {
   // puerta, no deja de existir.
   const r = porFuente(rw, '/inicio');
   assert.ok(r, 'la landing se quedó sin ruta');
-  assert.equal(r.destination, '/index.html');
+  assert.equal(r.destination, '/inicio.html');
 });
 
 test('/hoy redirige al mapa, y el redirect es TEMPORAL', () => {

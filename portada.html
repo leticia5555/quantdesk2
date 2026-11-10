@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>QuantDesk — el mercado de hoy, La Liga, noticias e insiders</title>
+<meta name="description" content="El mapa de calor del mercado, la tabla de La Liga, las noticias del día y quién compra y quién vende entre los insiders.">
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  / — LA PORTADA (R9, PR 5).
+
+  QUÉ ES: el mapa de calor arriba y tres tarjetas —La Liga, Noticias y
+  "Quién compra, quién vende"—. Cada pieza es la PUERTA de su pantalla, no
+  una copia: el mapa abre `/mercado`, y cada tarjeta termina en la liga a su
+  página entera.
+
+  DE DÓNDE SALE CADA COSA. Ningún endpoint nuevo:
+    · el mapa           /api/mercado-mapa?map=us     (el mismo de /mercado)
+    · La Liga           /api/leaderboard             (la temporada actual)
+    · Noticias          /api/noticias?limite=30      (la MISMA URL que usa
+                        /mercado: la revista la elige el servidor, así que
+                        las tres pantallas destacan las mismas notas)
+    · Insiders          /api/stock-tracker?cat=form4 (el de /mercado/insiders)
+
+  LAS REGLAS DE /mercado VALEN ACÁ:
+    1. Todo % pasa por `qdPeriodChange` + `qdPctTag` o, en los cuadros, por
+       el mismo redondeo de /mercado sobre el número de `qdPeriodChange`.
+       Los de La Liga NO se calculan: los trae el leaderboard.
+    2. Dato que falta es "—" con su causa. Una tarjeta que no pudo leer lo
+       dice; nunca se queda en "cargando…" ni se pinta vacía.
+    3. Una tarjeta que falla no se lleva a las otras: cada una pide lo suyo.
+
+  LO QUE EL MAPA DE ACÁ NO HACE, a propósito: ni zoom, ni periodos, ni
+  moneda, ni hoja de detalle. Eso es `/mercado`, y duplicarlo acá sería
+  mantener dos mapas. Éste dibuja el MISMO reparto (mismas funciones de
+  `qd-treemap.js`: mismas áreas, mismos colores, mismas etiquetas) y manda
+  cada toque a la pantalla que sí lo sabe abrir.
+  ═══════════════════════════════════════════════════════════════════
+-->
+<meta property="og:type" content="website">
+<meta property="og:title" content="QuantDesk">
+<meta property="og:description" content="El mapa de calor del mercado, La Liga, las noticias del día y quién compra y quién vende.">
+<meta name="theme-color" content="#0b0f14">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap">
+<style>
+  /* La paleta del §4, la misma de /mercado. Los grises de texto son tokens
+     porque el piso de contraste (AA, 4.5) se prueba contra ellos. */
+  :root{
+    --bg:#0b0f14; --panel:#0e141b; --linea:#161c24; --linea2:#232c37;
+    --texto:#e6edf3; --tenue:#8b98a5; --apagado:#7d8793;
+    --verde:#00c97d; --rojo:#ff5d5d; --ambar:#e8d48a;
+    --sans:"IBM Plex Sans Condensed","IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --tap:44px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--texto);
+    font-family:var(--sans);-webkit-text-size-adjust:100%}
+  a{color:inherit;text-decoration:none}
+  .portada{max-width:1600px;margin:0 auto;padding:12px 16px 24px}
+
+  /* ── EL MAPA ───────────────────────────────────────────────────────
+     Un alto fijo por tramo, NO "lo que sobre": acá el mapa es la cabeza de
+     una página que se recorre, y las tarjetas tienen que asomar debajo para
+     que se sepa que hay más. En el teléfono son ~45% del alto; en
+     escritorio, casi la mitad. */
+  .mapa-cab{display:flex;align-items:center;gap:10px;min-height:var(--tap)}
+  .mapa-cab h1{margin:0;font:600 15px var(--mono);letter-spacing:.3px;white-space:nowrap}
+  .mapa-cab h1 small{font-weight:400;font-size:12px;color:var(--tenue);margin-left:6px}
+  .chip{font-family:var(--mono);font-size:10px;color:var(--tenue);
+    border:1px solid var(--linea);border-radius:3px;padding:3px 7px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .chip.abierto{color:var(--verde)}
+  .ir{margin-left:auto;flex:0 0 auto;min-height:var(--tap);display:inline-flex;align-items:center;
+    font-family:var(--mono);font-size:12px;color:var(--verde);white-space:nowrap}
+  .ir:hover,.ver:hover{text-decoration:underline}
+  /* En el teléfono el estado del mercado no cabe entre el título y la liga
+     (se quedaba en "○…"): baja a su propio renglón, entero. */
+  @media (max-width:599px){
+    .mapa-cab{flex-wrap:wrap;row-gap:0}
+    .mapa-cab .chip{order:3;flex:0 1 auto;margin-bottom:8px}
+  }
+  #lienzo{position:relative;overflow:hidden;border-radius:4px;background:var(--panel);
+    height:clamp(260px,45vh,400px);height:clamp(260px,45dvh,400px)}
+  @media (min-width:1000px){
+    #lienzo{height:clamp(320px,48vh,560px);height:clamp(320px,48dvh,560px)}
+  }
+  .cuadro{position:absolute;overflow:hidden;border:1px solid #0b0f14;border-radius:2px;
+    display:flex;flex-direction:column;justify-content:center;align-items:center;
+    cursor:pointer;-webkit-tap-highlight-color:transparent;padding:2px}
+  .cuadro .sym{font-family:var(--mono);font-weight:600;line-height:1.05;
+    color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+  .cuadro .val{font-family:var(--mono);line-height:1.05;color:rgba(255,255,255,.92)}
+  .cuadro.punteado{border:1px dashed #555}
+  .cabecera{position:absolute;display:flex;align-items:center;padding:0 6px;
+    background:#10171f;border:1px solid #0b0f14;color:#cfcfcf;
+    font-family:var(--mono);font-size:11px;letter-spacing:.3px;
+    cursor:pointer;overflow:hidden;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+  @media (pointer:fine){ .cuadro:hover{outline:1px solid rgba(255,255,255,.55);outline-offset:-1px} }
+  .aviso-mapa{padding:24px;color:var(--tenue);font:12px/1.5 var(--mono)}
+  .mapa-pie{padding:6px 0 0;font:10px/1.5 var(--mono);color:var(--tenue)}
+
+  /* ── LAS TRES TARJETAS ─────────────────────────────────────────────
+     Una columna en el teléfono, tres en escritorio. `minmax(0,1fr)` y no
+     `1fr`: con `1fr` a secas una columna crece hasta el ancho de su titular
+     más largo y la rejilla se sale de la pantalla. */
+  .tarjetas{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;margin-top:16px}
+  @media (min-width:1000px){ .tarjetas{grid-template-columns:repeat(3,minmax(0,1fr));gap:16px} }
+  .tarjeta{background:var(--panel);border:1px solid var(--linea);border-radius:8px;
+    display:flex;flex-direction:column;min-width:0}
+  .tarjeta > header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+    padding:12px 14px 10px;border-bottom:1px solid var(--linea)}
+  .tarjeta h2{margin:0;font:700 17px var(--sans);letter-spacing:.2px}
+  .tarjeta .sub{font:11px var(--mono);color:var(--tenue)}
+  .cuerpo{flex:1 1 auto;min-width:0}
+  .vacio{padding:18px 14px;font:12px/1.5 var(--mono);color:var(--tenue)}
+  .nota{margin:0;padding:8px 14px 0;font:11px/1.5 var(--mono);color:var(--ambar)}
+  .ver{display:flex;align-items:center;min-height:var(--tap);padding:0 14px;
+    border-top:1px solid var(--linea);font:12px var(--mono);color:var(--verde)}
+  .fuente{padding:0 14px 10px;font:10px/1.5 var(--mono);color:var(--apagado)}
+
+  /* Una fila: lo que es a la izquierda, el número a la derecha. */
+  .fila{display:flex;align-items:center;gap:10px;min-height:var(--tap);padding:6px 14px;
+    border-bottom:1px solid var(--linea)}
+  .fila:last-child{border-bottom:0}
+  a.fila:hover{background:#111922}
+  .fila .puesto{flex:0 0 18px;font:12px var(--mono);color:var(--apagado);text-align:right}
+  .fila .que{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+  .fila .que b{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fila .que small{font:11px var(--mono);color:var(--tenue);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fila .val{flex:0 0 auto;font:600 13px var(--mono);text-align:right;white-space:nowrap}
+  .fila .falta{font-weight:400;color:var(--apagado)}
+  .fila.sin-datos .que b{font-weight:400;color:var(--tenue)}
+  .fila.indice{border-top:1px dashed var(--linea2)}
+  .fila.indice .que b{font-weight:400;color:var(--tenue)}
+  .qd-pct-per{font-weight:400;font-size:10px;color:var(--apagado);margin-left:4px}
+  .pos{color:var(--verde)} .neg{color:var(--rojo)}
+  .marca-plan{font:10px var(--mono);color:var(--ambar);border:1px solid #5a4a00;border-radius:3px;padding:0 4px;margin-left:6px}
+
+  /* Noticias: la de portada con foto, el resto en lista. */
+  .nota-portada{display:block;border-bottom:1px solid var(--linea)}
+  .nota-portada img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#10171f}
+  .nota-portada .txt{padding:10px 14px 12px}
+  .nota-portada .tit{font-weight:700;font-size:17px;line-height:1.25}
+  .nota-fila{display:block;padding:10px 14px;border-bottom:1px solid var(--linea);min-height:var(--tap)}
+  .nota-fila:last-child{border-bottom:0}
+  .nota-fila:hover,.nota-portada:hover{background:#111922}
+  .nota-fila .tit{font-size:14px;line-height:1.3}
+  .meta{margin-top:4px;font:11px var(--mono);color:var(--tenue)}
+  .meta b{font-weight:400;color:var(--texto)}
+
+  /* Insiders: dos bandos. Lado a lado sólo cuando hay sitio. */
+  .bando h3{margin:0;padding:10px 14px 4px;font:600 11px var(--mono);letter-spacing:.6px;text-transform:uppercase}
+  .bando h3 span{font-weight:400;color:var(--tenue);text-transform:none;letter-spacing:0}
+  .bando + .bando{border-top:1px solid var(--linea)}
+
+  .pie-portada{margin-top:18px;padding-top:12px;border-top:1px solid var(--linea);
+    display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;font:12px var(--mono);color:var(--tenue)}
+  .pie-portada a{min-height:var(--tap);display:inline-flex;align-items:center;color:var(--texto)}
+  .pie-portada a:hover{color:var(--verde)}
+</style>
+</head>
+<body>
+<main class="portada">
+
+  <section aria-labelledby="mapa-titulo">
+    <div class="mapa-cab">
+      <h1 id="mapa-titulo">Mapa de calor<small>EE.UU. · 1D</small></h1>
+      <span class="chip" id="chip">—</span>
+      <a class="ir" id="ir-mapa" href="/mercado">abrir el mapa →</a>
+    </div>
+    <div id="lienzo" role="img" aria-label="Mapa de calor de EE.UU.: área por capitalización, color por el cambio del día"><div class="aviso-mapa">cargando el mapa…</div></div>
+    <div class="mapa-pie" id="mapa-pie"></div>
+  </section>
+
+  <div class="tarjetas">
+    <article class="tarjeta" id="t-liga" aria-labelledby="liga-titulo">
+      <header><h2 id="liga-titulo">La Liga</h2><span class="sub" id="liga-sub"></span></header>
+      <div class="cuerpo" id="liga-cuerpo"><div class="vacio">cargando…</div></div>
+      <a class="ver" href="/liga">ver la tabla completa →</a>
+    </article>
+
+    <article class="tarjeta" id="t-noticias" aria-labelledby="noticias-titulo">
+      <header><h2 id="noticias-titulo">Noticias</h2><span class="sub" id="noticias-sub"></span></header>
+      <div class="cuerpo" id="noticias-cuerpo"><div class="vacio">cargando…</div></div>
+      <a class="ver" href="/mercado/noticias">ver todas las noticias →</a>
+    </article>
+
+    <article class="tarjeta" id="t-insiders" aria-labelledby="insiders-titulo">
+      <header><h2 id="insiders-titulo">Quién compra, quién vende</h2><span class="sub" id="insiders-sub"></span></header>
+      <div class="cuerpo" id="insiders-cuerpo"><div class="vacio">cargando…</div></div>
+      <a class="ver" href="/mercado/insiders">ver todos los insiders →</a>
+    </article>
+  </div>
+
+  <!-- HERRAMIENTAS. La calculadora que vivía en `/` se mudó a `/calcula` y
+       no se borró: acá queda a un toque desde la portada, igual que en el
+       menú (en el teléfono, el pie de la hoja del buscador). -->
+  <nav class="pie-portada" aria-label="Herramientas">
+    <span>Herramientas:</span>
+    <a href="/app">Terminal completa</a>
+    <a href="/calcula" id="ir-calculadora">Calculadora</a>
+    <a href="/historia">Historia</a>
+  </nav>
+</main>
+
+<script src="/qd-periods.js"></script>
+<script src="/qd-treemap.js"></script>
+<script src="/qd-mercados.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  var SECTORES = {
+    XLK:'Tecnología', XLF:'Finanzas', XLV:'Salud', XLY:'Consumo discrecional',
+    XLP:'Consumo básico', XLE:'Energía', XLI:'Industriales', XLB:'Materiales',
+    XLU:'Servicios públicos', XLRE:'Inmobiliario', XLC:'Comunicaciones'
+  };
+  var PERIODO = '1D';
+  var ALTO_CABECERA = 14, ANCHO_MOVIL = 600, PISO_CUADRO = 6;
+  var $ = function(id){ return document.getElementById(id); };
+
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; });
+  }
+  // Una lectura que falla dice POR QUÉ: el estado HTTP o el error de red.
+  function pide(url){
+    return fetch(url).then(function(r){
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // EL MAPA
+  // ═════════════════════════════════════════════════════════════════
+  var mapa = null;
+
+  function pctTexto(pct){
+    if(!Number.isFinite(pct)) return '—';
+    var r1 = Math.round(pct * 10) / 10;
+    return r1 === 0 ? '0.0%' : ((r1 > 0 ? '+' : '') + r1.toFixed(1) + '%');
+  }
+  function itemsDe(lista){
+    return lista.map(function(c){
+      // ÚNICA vía del %: `qdPeriodChange`, sobre la serie que ya viajó.
+      var x = qdPeriodChange(c.serie || [], PERIODO);
+      return { key:c.symbol, value:c.area, cuadro:c, pct:x.pct,
+               motivo: x.motivo || (x.pct == null ? 'la serie no alcanza para este periodo' : null),
+               cap_verificada:c.cap_verificada };
+    });
+  }
+  function destinoDeCuadro(sym){
+    return '/mercado?mapa=us&periodo=' + PERIODO + '&symbol=' + encodeURIComponent(sym);
+  }
+  function destinoDeSector(sector){
+    return '/mercado?mapa=us&periodo=' + PERIODO + '&sector=' + encodeURIComponent(sector);
+  }
+
+  function pintarMapa(){
+    var l = $('lienzo');
+    var d = mapa;
+    if(!d) return;
+    var caja = l.getBoundingClientRect();
+    // Hacia abajo, como en /mercado: `floor` nunca se pasa del borde.
+    var W = Math.floor(caja.width), H = Math.floor(caja.height);
+    if(!W || !H){ requestAnimationFrame(pintarMapa); return; }
+    var cs = (d.cuadros || []).filter(esDibujable);
+    if(!cs.length){
+      // ROTO Y VACÍO NO SON LO MISMO: se dice cuál de los dos.
+      l.innerHTML = '<div class="aviso-mapa"' + (d.error ? ' data-error="1"' : '') + '>'
+        + esc(d.error ? 'no se pudo leer el mapa: ' + d.error
+                      : 'no hay cuadros con capitalización medida para pintar') + '</div>';
+      return;
+    }
+    var movil = window.innerWidth < ANCHO_MOVIL;
+    var grupos = agrupaPorSector(cs).grupos;
+    var rects = squarify(grupos.map(function(g){ return { key:g.sector, value:g.cap_total, grupo:g }; }),
+      { x:0, y:0, w:W, h:H });
+    var html = '';
+    rects.forEach(function(r){
+      var g = r.item.grupo;
+      var nom = SECTORES[g.sector] || g.sector;
+      // La banda sólo existe si al menos la abreviatura cabe: media cabecera
+      // recortada no nombra el sector, lo insinúa.
+      var rotulo = r.h >= ALTO_CABECERA + 12 ? etiquetaQueCabe(candidatosSector(nom), r.w, 11) : null;
+      if(rotulo){
+        html += '<a class="cabecera" href="' + esc(destinoDeSector(g.sector)) + '" title="' + esc(nom)
+          + '" style="left:' + r.x + 'px;top:' + r.y + 'px;width:' + r.w + 'px;height:' + ALTO_CABECERA + 'px">'
+          + esc(rotulo) + '</a>';
+      }
+      var y0 = r.y + (rotulo ? ALTO_CABECERA : 0), h0 = r.h - (rotulo ? ALTO_CABECERA : 0);
+      squarify(itemsDe(g.items), { x:r.x, y:y0, w:r.w, h:h0 }).forEach(function(q){
+        var it = q.item, x = q.x, y = q.y, w = q.w, h = q.h;
+        if(x + w > W) w = W - x;
+        if(y + h > H) h = H - y;
+        if(w <= 0 || h <= 0) return;
+        // Una `.cuadro` no puede medir menos de 6 px (borde + padding): la
+        // astilla del borde se recuesta hacia adentro en vez de asomar.
+        if(h < PISO_CUADRO && y + PISO_CUADRO > H) y = Math.max(0, H - PISO_CUADRO);
+        if(w < PISO_CUADRO && x + PISO_CUADRO > W) x = Math.max(0, W - PISO_CUADRO);
+        var capGris = it.cap_verificada === false;
+        var incompleto = capGris || !Number.isFinite(it.pct);
+        var txt = pctTexto(it.pct);
+        var e = etiquetaCuadro(w, h, { ticker: it.key, pct: txt, fontPx: 18,
+          fontMin: movil ? 6 : 8, fontMinDos: 8 });
+        var dentro = '';
+        if(e.ticker){
+          dentro = '<span class="sym" style="font-size:' + e.font + 'px">' + esc(e.ticker) + '</span>';
+          if(e.pct) dentro += '<span class="val" style="font-size:' + e.font_pct + 'px">' + esc(e.pct) + '</span>';
+        }
+        var c = it.cuadro;
+        var titulo = it.key + (c.nombre ? ' · ' + c.nombre : '') + ' · '
+          + (Number.isFinite(it.pct) ? txt + ' ' + PERIODO : '— (' + (it.motivo || 'sin dato') + ')')
+          + (capGris ? ' · tamaño sin capitalización verificada' : '');
+        html += '<a class="cuadro' + (incompleto ? ' punteado' : '') + '" href="' + esc(destinoDeCuadro(it.key))
+          + '" title="' + esc(titulo) + '" aria-label="' + esc(titulo) + '" data-sym="' + esc(it.key)
+          + '" style="left:' + x + 'px;top:' + y + 'px;width:' + w + 'px;height:' + h + 'px;background:'
+          + (capGris ? COLOR_SIN_DATO : colorDe(it.pct)) + '">' + dentro + '</a>';
+      });
+    });
+    l.innerHTML = html;
+    l.setAttribute('data-cuadros', String(cs.length));
+  }
+
+  function pintarCabeceraMapa(d){
+    var c = chipDeMercado(d.bolsa || 'us', { ahora: new Date(),
+      ultimoCierre: d.ultimo_cierre || null, muestra: 'mapa' });
+    var el = $('chip');
+    el.className = 'chip' + (c.abierto ? ' abierto' : '');
+    el.textContent = c.chip;
+    el.title = c.motivo || '';
+    var partes = [];
+    var n = (d.cuadros || []).filter(esDibujable).length;
+    if(n) partes.push(n + ' emisoras · área por capitalización · color por el cambio ' + PERIODO);
+    if(d.al_dia && d.al_dia.ultimo_cierre){
+      partes.push(d.al_dia.atrasados
+        ? d.al_dia.con_ultimo_cierre + ' con el cierre del ' + d.al_dia.ultimo_cierre
+          + ' · ' + d.al_dia.atrasados + ' con uno anterior'
+        : 'cierre del ' + d.al_dia.ultimo_cierre);
+    }
+    if(d.fuente && d.fuente.series) partes.push('fuente: ' + d.fuente.series);
+    $('mapa-pie').textContent = partes.join(' · ');
+  }
+
+  function cargarMapa(){
+    return pide('/api/mercado-mapa?map=us')
+      .catch(function(e){ return { cuadros: [], error: String((e && e.message) || e) }; })
+      .then(function(d){
+        mapa = d || { cuadros: [], error: 'respuesta vacía' };
+        pintarCabeceraMapa(mapa);
+        pintarMapa();
+      });
+  }
+
+  // El mapa se reparte con píxeles medidos: si la caja cambia —girar el
+  // teléfono, cambiar el ancho de la ventana— se reparte de nuevo.
+  if(typeof ResizeObserver === 'function'){
+    var ultimoAncho = 0, ultimoAlto = 0;
+    new ResizeObserver(function(){
+      var r = $('lienzo').getBoundingClientRect();
+      var w = Math.floor(r.width), h = Math.floor(r.height);
+      if(w === ultimoAncho && h === ultimoAlto) return;
+      ultimoAncho = w; ultimoAlto = h;
+      if(mapa) pintarMapa();
+    }).observe($('lienzo'));
+  } else {
+    window.addEventListener('resize', function(){ if(mapa) pintarMapa(); });
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // LA LIGA — la temporada actual, tal como la trae /api/leaderboard.
+  // Acá no se calcula ni un rendimiento ni un puesto: es dinero, y dos
+  // lugares calculando dinero es la forma de que un día difieran.
+  // ═════════════════════════════════════════════════════════════════
+  var MESES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  function diaCorto(iso){
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+    return m ? Number(m[3]) + ' ' + MESES[Number(m[2]) - 1] : null;
+  }
+
+  // El rendimiento de una fila. Con número, `qdPctTag` y su etiqueta de
+  // periodo. Sin número, "sin datos" en gris y no una raya: en una tabla de
+  // posiciones "—" se lee como un cero o como un error de pantalla
+  // (Lety, 2026-11-10). La causa va en el `title`.
+  function pctDeLiga(pct, motivo){
+    if(Number.isFinite(pct)) return qdPctTag(pct, 'acum.');
+    return '<span class="falta" title="' + esc(motivo) + '">sin datos</span>';
+  }
+
+  function pintarLiga(j){
+    var cuerpo = $('liga-cuerpo'), sub = $('liga-sub');
+    if(j.error && !(j.agents && j.agents.length)){
+      sub.textContent = '';
+      cuerpo.innerHTML = '<div class="vacio" data-error="1">' + esc('no se pudo leer la tabla: ' + j.error) + '</div>';
+      return;
+    }
+    var t = j.temporada || {};
+    var partes = [];
+    if(t.name) partes.push(t.name);
+    var a = diaCorto(t.start), b = diaCorto(t.end);
+    if(a && b) partes.push(a + ' → ' + b);
+    if(t.abierta === false) partes.push('todavía no abre');
+    sub.textContent = partes.join(' · ');
+
+    var filas = (j.agents || []).slice().sort(function(x, y){
+      // El orden es el `rank` del servidor. Un modelo SIN DATOS va al final,
+      // tenga o no puesto: no se le puede comparar con nadie.
+      var dx = Number.isFinite(x.return_pct), dy = Number.isFinite(y.return_pct);
+      if(dx !== dy) return dx ? -1 : 1;
+      var rx = Number.isFinite(x.rank) ? x.rank : Infinity, ry = Number.isFinite(y.rank) ? y.rank : Infinity;
+      return rx - ry;
+    });
+    if(!filas.length){
+      cuerpo.innerHTML = '<div class="vacio">' + esc(j.enabled === false
+        ? 'la liga todavía no arranca' : 'el leaderboard no devolvió agentes') + '</div>';
+      return;
+    }
+    var html = filas.map(function(g){
+      var hay = Number.isFinite(g.return_pct);
+      var empate = hay && g.margen && g.margen.empate_tecnico;
+      var chica = [g.model_label || g.model || '', empate ? 'empate técnico con su vecino' : '']
+        .filter(Boolean).join(' · ');
+      return '<a class="fila' + (hay ? '' : ' sin-datos') + '" href="/liga" data-agente="' + esc(g.id) + '">'
+        + '<span class="puesto">' + (hay && Number.isFinite(g.rank) ? g.rank : '') + '</span>'
+        + '<span class="que"><b>' + esc(g.name || g.id) + '</b>'
+        + (chica ? '<small>' + esc(chica) + '</small>' : '') + '</span>'
+        // La etiqueta de periodo es obligatoria (`qdPctTag` lanza sin ella):
+        // "acum." = acumulado desde el arranque de la temporada, no el día.
+        + '<span class="val">' + pctDeLiga(g.return_pct,
+            g.error || 'el leaderboard no trajo el rendimiento de esta cuenta') + '</span>'
+        + '</a>';
+    }).join('');
+    // El índice va aparte y marcado: no compite, es la vara.
+    var bm = j.benchmark;
+    if(bm){
+      html += '<a class="fila indice" href="/liga" data-agente="benchmark">'
+        + '<span class="puesto">·</span>'
+        + '<span class="que"><b>' + esc(bm.name || 'S&P 500') + '</b>'
+        + '<small>' + esc('el índice, no compite') + '</small></span>'
+        + '<span class="val">' + pctDeLiga(bm.return_pct,
+            bm.detalle || bm.error || 'el índice todavía no tiene compra registrada') + '</span>'
+        + '</a>';
+    }
+    var lectura = j.margen_de_la_tabla && j.margen_de_la_tabla.indice && j.margen_de_la_tabla.indice.lectura;
+    cuerpo.innerHTML = html + (lectura ? '<p class="fuente" style="padding-top:8px">' + esc(lectura) + '</p>' : '');
+  }
+
+  function cargarLiga(){
+    return pide('/api/leaderboard')
+      .catch(function(e){ return { error: String((e && e.message) || e), agents: [] }; })
+      .then(pintarLiga);
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // NOTICIAS — la revista que eligió el servidor (portada + medianas),
+  // la misma que destacan /mercado y /mercado/noticias.
+  // ═════════════════════════════════════════════════════════════════
+  var CUANTAS_NOTAS = 5;
+  function horaDeNota(iso){
+    var d = new Date(iso);
+    if(!Number.isFinite(d.getTime())) return null;
+    try {
+      return new Intl.DateTimeFormat('es-MX', { timeZone: 'America/Mexico_City',
+        hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+    } catch(e){ return null; }
+  }
+  function metaDeNota(n){
+    var hora = horaDeNota(n.publicado_en);
+    return (hora ? esc(hora) + ' · ' : '') + '<b>' + esc(n.fuente_nombre || n.fuente_id || '') + '</b>'
+      + (n.tipo === 'oficial_derivado' ? ' · ' + esc('de la serie oficial, no un comunicado') : '');
+  }
+  // Sólo http(s): el `href` y el `src` salen de un feed de terceros.
+  function urlSegura(u){ return /^https?:\/\//i.test(String(u || '')) ? String(u) : null; }
+
+  function pintarNoticias(j){
+    var cuerpo = $('noticias-cuerpo'), sub = $('noticias-sub');
+    if(j.error){
+      sub.textContent = '';
+      cuerpo.innerHTML = '<div class="vacio" data-error="1">' + esc('no se pudo leer: ' + j.error) + '</div>';
+      return;
+    }
+    var rev = j.revista || {};
+    var vistas = {}, lista = [];
+    [rev.portada].concat(rev.medianas || [], rev.resto || [], j.noticias || []).forEach(function(n){
+      if(!n || !n.titular || !urlSegura(n.url) || vistas[n.url]) return;
+      vistas[n.url] = 1; lista.push(n);
+    });
+    lista = lista.slice(0, CUANTAS_NOTAS);
+    var caidas = j.fuentes_caidas || [];
+    sub.textContent = 'últimas 72 h · hora de México';
+    var html = '';
+    if(caidas.length){
+      html += '<p class="nota">' + esc(caidas.length + ' de ' + (j.fuentes_go || '?')
+        + ' fuentes no contestaron en la última cosecha') + '</p>';
+    }
+    if(!lista.length){
+      cuerpo.innerHTML = html + '<div class="vacio">' + esc(caidas.length
+        ? 'ninguna fuente dejó notas en las últimas 72 horas'
+        : 'sin notas en las últimas 72 horas') + '</div>';
+      return;
+    }
+    lista.forEach(function(n, i){
+      var foto = i === 0 && rev.portada && n.url === rev.portada.url ? urlSegura(n.imagen) : null;
+      var attrs = ' href="' + esc(n.url) + '" target="_blank" rel="noopener noreferrer"';
+      if(i === 0){
+        html += '<a class="nota-portada"' + attrs + '>'
+          + (foto ? '<img src="' + esc(foto) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : '')
+          + '<div class="txt"><div class="tit">' + esc(n.titular) + '</div>'
+          + '<div class="meta">' + metaDeNota(n) + '</div></div></a>';
+      } else {
+        html += '<a class="nota-fila"' + attrs + '><div class="tit">' + esc(n.titular) + '</div>'
+          + '<div class="meta">' + metaDeNota(n) + '</div></a>';
+      }
+    });
+    cuerpo.innerHTML = html;
+    // Si la foto no carga, SE QUITA: nunca un bloque de color de relleno.
+    var img = cuerpo.querySelector('.nota-portada img');
+    if(img) img.addEventListener('error', function(){ img.remove(); });
+  }
+
+  function cargarNoticias(){
+    return pide('/api/noticias?limite=30')
+      .catch(function(e){ return { error: String((e && e.message) || e) }; })
+      .then(pintarNoticias);
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // QUIÉN COMPRA, QUIÉN VENDE — los Form 4 de /mercado/insiders.
+  //
+  // Sólo compras y ventas de mercado (`tipo` compra / venta): opciones,
+  // otorgamientos y retenciones fiscales no son alguien decidiendo comprar
+  // o vender, y viven en la página entera.
+  //
+  // Una persona que vendió en cuatro tramos el mismo día es UNA línea con
+  // su total, no cuatro: si no, una sola venta partida llena la tarjeta.
+  //
+  // Y el mismo criterio de `/mercado/insiders`: primero lo que NO consta
+  // programado. Una venta bajo un plan 10b5-1 se fijó con meses de
+  // anticipación; va marcada y después de las que sí son una decisión.
+  // ═════════════════════════════════════════════════════════════════
+  var POR_BANDO = 3;
+  function fmtUsd(v){
+    if(!Number.isFinite(v)) return '—';
+    var a = Math.abs(v), s = v < 0 ? '−$' : '$';
+    if(a >= 1e9) return s + (a/1e9).toFixed(2) + ' mil M';
+    if(a >= 1e6) return s + (a/1e6).toFixed(2) + ' M';
+    if(a >= 1e3) return s + Math.round(a/1e3) + ' mil';
+    return s + Math.round(a);
+  }
+  function bandoDe(filas, tipo){
+    var grupos = {};
+    (filas || []).forEach(function(f){
+      if(f.tipo !== tipo || !Number.isFinite(f.valor) || !(f.valor > 0)) return;
+      var programada = f.plan_estado === 'programada' || (!f.plan_estado && f.plan_10b5 === true);
+      var k = (f.ticker || f.emisora || '—') + '|' + (f.quien || '?') + '|' + (programada ? 'p' : 'n');
+      if(!grupos[k]) grupos[k] = { ticker: f.ticker || null, emisora: f.emisora || null, quien: f.quien || null,
+        cargo: f.cargo || null, programada: programada, valor: 0, operaciones: 0, fecha: f.fecha || null };
+      var g = grupos[k];
+      g.valor += f.valor; g.operaciones++;
+      if(f.fecha && (!g.fecha || f.fecha > g.fecha)) g.fecha = f.fecha;
+    });
+    var todos = Object.keys(grupos).map(function(k){ return grupos[k]; });
+    todos.sort(function(a, b){
+      if(a.programada !== b.programada) return a.programada ? 1 : -1;
+      return b.valor - a.valor;
+    });
+    return { filas: todos.slice(0, POR_BANDO),
+      operaciones: (filas || []).filter(function(f){ return f.tipo === tipo; }).length };
+  }
+  function htmlBando(titulo, clase, signo, b){
+    var html = '<div class="bando" data-bando="' + clase + '"><h3 class="' + clase + '">' + esc(titulo)
+      + ' <span>· ' + b.operaciones + (b.operaciones === 1 ? ' operación' : ' operaciones') + '</span></h3>';
+    if(!b.filas.length){
+      return html + '<div class="vacio">' + esc(b.operaciones
+        ? 'ninguna declaró precio, así que no hay monto que ordenar'
+        : 'ninguna en los formularios de esta ventana') + '</div></div>';
+    }
+    return html + b.filas.map(function(g){
+      var nombre = g.ticker || g.emisora || '—';
+      var chica = [g.quien, g.cargo || 'sin cargo declarado',
+        g.operaciones > 1 ? g.operaciones + ' operaciones' : null].filter(Boolean).join(' · ');
+      return '<a class="fila" href="/mercado/insiders' + (g.ticker ? '?q=' + encodeURIComponent(g.ticker) : '') + '">'
+        + '<span class="que"><b>' + esc(nombre)
+        + (g.programada ? '<span class="marca-plan" title="Programada: salió de un plan 10b5-1, fijado con meses de anticipación. No es una decisión de hoy.">plan 10b5-1</span>' : '')
+        + '</b><small>' + esc(chica) + '</small></span>'
+        + '<span class="val ' + clase + '">' + signo + esc(fmtUsd(g.valor)) + '</span></a>';
+    }).join('') + '</div>';
+  }
+
+  function pintarInsiders(j){
+    var cuerpo = $('insiders-cuerpo'), sub = $('insiders-sub');
+    var filas = j.items || [];
+    if(j.error && !filas.length){
+      sub.textContent = '';
+      cuerpo.innerHTML = '<div class="vacio" data-error="1">' + esc('no se pudo leer: ' + j.error) + '</div>';
+      return;
+    }
+    // De cuándo son: la fecha de presentación más reciente que viajó.
+    var ultima = filas.reduce(function(m, f){ return f.filing_fecha && f.filing_fecha > m ? f.filing_fecha : m; }, '');
+    sub.textContent = 'Form 4 de la SEC' + (ultima ? ' · presentados hasta el ' + diaCorto(ultima) : '');
+    if(!filas.length){
+      cuerpo.innerHTML = '<div class="vacio">' + esc('la SEC no devolvió Form 4 en esta ventana') + '</div>';
+      return;
+    }
+    cuerpo.innerHTML = htmlBando('Compran', 'pos', '+', bandoDe(filas, 'compra'))
+      + htmlBando('Venden', 'neg', '−', bandoDe(filas, 'venta'))
+      // La cobertura la redacta el endpoint: cuántos formularios del día ya
+      // están leídos. Sin ella, "3 compras" se lee como "hubo 3 compras".
+      + (j.cobertura ? '<p class="fuente" style="padding-top:8px">' + esc(j.cobertura)
+        + (j.stale ? ' · dato en caché, la SEC no contestó la última lectura' : '') + '</p>' : '');
+  }
+
+  function cargarInsiders(){
+    return pide('/api/stock-tracker?cat=form4')
+      .catch(function(e){ return { error: String((e && e.message) || e), items: [] }; })
+      .then(pintarInsiders);
+  }
+
+  // Cada pieza pide lo suyo y pinta cuando llega: una que tarda o falla no
+  // detiene a las demás.
+  cargarMapa();
+  cargarLiga();
+  cargarNoticias();
+  cargarInsiders();
+})();
+</script>
+<!-- El menú compartido de R9. UN solo componente: qd-nav.js.
+     Se monta solo: la tira arriba y, en el celular, la barra de abajo. -->
+<script src="/qd-nav.js"></script>
+</body>
+</html>

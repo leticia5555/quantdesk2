@@ -404,6 +404,9 @@ td:first-child{color:var(--text);font-weight:500;}
     <button class="nav-btn" onclick="showPage('myagents')">MIS AGENTES</button>
     <button class="nav-btn" id="navbtn-social" onclick="showPage('social')">SOCIAL</button>
     <button class="nav-btn" onclick="showPage('gallery')">GALLERY</button>
+    <!-- La calculadora vivía en `/`. Desde que `/` es la portada (R9, PR 5) se
+         abre desde Herramientas: es una liga a su ruta, no una página de acá. -->
+    <a class="nav-btn" id="nav-calculadora" href="/calcula" style="display:inline-flex;align-items:center;text-decoration:none;">CALCULADORA ↗</a>
   </nav>
   <div class="topbar-right">
     <div class="status-dot live" id="globalDot"></div>

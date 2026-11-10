@@ -122,6 +122,20 @@ console.log('\n── ¿le ganan al SPY? ──');
 
   const sinIndice = contraElIndice({ agentes: LIGA, benchmarkReturn: null });
   ok(sinIndice.disponible === false, 'sin índice abierto no se afirma nada sobre el índice');
+
+  // EL NÚMERO GRAMATICAL. Con un solo modelo con retorno legible la frase
+  // decía "Los 1 van por encima del índice" (Lety, 2026-11-10).
+  ok(/Le gana 1\.$/.test(i.lectura), 'con uno que le gana, "Le gana 1", no "Le ganan 1"', i.lectura);
+  const uno = [{ id: 'grok', name: 'Grok', return_pct: 1.02 }];
+  const arriba = contraElIndice({ agentes: uno, benchmarkReturn: -1.69 });
+  ok(arriba.lectura === '1 va por encima del índice (-1.69%).', 'uno solo y gana: "1 va por encima"', arriba.lectura);
+  const abajo = contraElIndice({ agentes: uno, benchmarkReturn: 3 });
+  ok(/^1 va por debajo del índice \(\+3%\)\. No le gana/.test(abajo.lectura), 'uno solo y pierde: "1 va por debajo"', abajo.lectura);
+  ok(!/Los 1 /.test(arriba.lectura + abajo.lectura), 'nunca "Los 1"');
+  const dos = contraElIndice({ agentes: [...uno, { id: 'x', name: 'X', return_pct: 2 }], benchmarkReturn: -1.69 });
+  ok(/^Los 2 van por encima/.test(dos.lectura), 'con dos, el plural de siempre', dos.lectura);
+  const mezcla = contraElIndice({ agentes: [...uno, { id: 'x', name: 'X', return_pct: -5 }, { id: 'y', name: 'Y', return_pct: 4 }], benchmarkReturn: 0 });
+  ok(/^1 de 3 va por DEBAJO del índice \(\+0%\)\. Le ganan 2\.$/.test(mezcla.lectura), 'en la mezcla, "1 de 3 va"', mezcla.lectura);
 }
 
 // ── 6) EL BENCHMARK NO CONTAMINA NI EL PISO NI EL SPREAD ─────────────
