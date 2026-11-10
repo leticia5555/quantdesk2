@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
 // /api/pm-centavos2-analyze — backtest pre-registrado.
-// PM-CENTAVOS2: gap = barra − estimatedEPS de AV del trimestre (consenso final), en centavos. Criterios = los de PM-CENTAVOS. Ver docs/pm-centavos2-scope.md.
+// PM-CENTAVOS2: gap = barra − estimatedEPS de AV del trimestre (consenso final), en centavos. Estudio propio: decide coef(1[gap ≥ +1]), base gap = 0. Ver docs/pm-centavos2-scope.md.
 //
 //   ?solo=cobertura&format=md → baja lo que falte del CLOB y dice cuántos
 //                               quedan. Sin veredicto.
