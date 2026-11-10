@@ -48,6 +48,15 @@
     "api/pm-centavos-analyze.js": {
       "maxDuration": 300
     },
+    "api/pm-centavos2-analyze.js": {
+      "maxDuration": 300
+    },
+    "api/pm-drift2h-analyze.js": {
+      "maxDuration": 300
+    },
+    "api/pm-fechas-av.js": {
+      "maxDuration": 120
+    },
     "api/pead-harvest.js": {
       "maxDuration": 300
     },

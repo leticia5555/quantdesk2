@@ -37,6 +37,14 @@ test('un ticker que EDGAR no conoce no se inventa', () => {
   assert.equal(m.get('SPCX'), undefined);
 });
 
+// EL "HOY" DE LOS FIXTURES DE 2025, FIJO. `accionesDeCompanyConcept` descarta
+// una portada de más de 15 meses contra `hoy`, y `hoy` es el reloj de la
+// máquina si no se le pasa. Tres pruebas de acá leían portadas de 2025 sin
+// pasarlo: estuvieron en verde hasta que el calendario las alcanzó —la primera
+// venció el 2026-11-01— y se pusieron rojas sin que nadie tocara el código.
+// Una prueba sobre QUÉ filing gana no puede depender de qué día se corre.
+const HOY_FIXTURES_2025 = new Date('2025-10-01T00:00:00Z');
+
 // ── LEER LA PORTADA ────────────────────────────────────────────────────
 const CONCEPTO = {
   cik: 865752,
@@ -51,7 +59,7 @@ const CONCEPTO = {
 };
 
 test('gana el último 10-Q por fecha de presentación, no el archivo más nuevo', () => {
-  const a = accionesDeCompanyConcept(CONCEPTO);
+  const a = accionesDeCompanyConcept(CONCEPTO, { hoy: HOY_FIXTURES_2025 });
   assert.equal(a.acciones, 2000000000);
   assert.equal(a.form, '10-Q');
   assert.equal(a.fecha_portada, '2025-08-01', 'la fecha de portada es el instante al que vale el conteo');
@@ -404,7 +412,7 @@ const COMPANYCONCEPT_ORCL = {
 };
 
 test('la forma real de companyconcept se lee, y gana el filing más nuevo', () => {
-  const a = accionesDeCompanyConcept(COMPANYCONCEPT_ORCL);
+  const a = accionesDeCompanyConcept(COMPANYCONCEPT_ORCL, { hoy: HOY_FIXTURES_2025 });
   assert.equal(a.acciones, 2_818_000_000);
   assert.equal(a.form, '10-Q');
   assert.equal(a.fecha_portada, '2025-09-05');
@@ -429,7 +437,7 @@ test('`units` con un valor que NO es arreglo ya no tira TypeError', () => {
 test('si la clave de unidad no es "shares", se usa la que traiga el arreglo y se dice cuál', () => {
   const a = accionesDeCompanyConcept({
     units: { 'shares/item': [{ end: '2025-09-05', val: 10, form: '10-Q', filed: '2025-09-09' }] },
-  });
+  }, { hoy: HOY_FIXTURES_2025 });
   assert.equal(a.acciones, 10);
   assert.equal(a.unidad, 'shares/item');
 });
