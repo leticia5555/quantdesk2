@@ -169,6 +169,26 @@ export function empatesTecnicos({ agentes = [], pisoPp = null } = {}) {
   };
 }
 
+// LA FRASE, CON SU NÚMERO GRAMATICAL. Decía "Los 1 van por encima del índice"
+// cuando un solo modelo tenía retorno legible, y "1 de 7 van" / "Le ganan 1"
+// en la mezcla (Lety, 2026-11-10). Con uno, el verbo va en singular y no
+// lleva "Los": "1 va por encima del índice".
+export function lecturaContraElIndice(total, pierden, ganan, bench) {
+  const idx = `(${bench >= 0 ? '+' : ''}${bench}%)`;
+  const va = (n) => (n === 1 ? 'va' : 'van');
+  if (pierden === total) {
+    return total === 1
+      ? `1 va por debajo del índice ${idx}. No le gana a comprar SPY y no hacer nada.`
+      : `Los ${total} van por debajo del índice ${idx}. Ninguno le gana a comprar SPY y no hacer nada.`;
+  }
+  if (ganan === total) {
+    return total === 1
+      ? `1 va por encima del índice ${idx}.`
+      : `Los ${total} van por encima del índice ${idx}.`;
+  }
+  return `${pierden} de ${total} ${va(pierden)} por DEBAJO del índice ${idx}. ${ganan === 1 ? 'Le gana' : 'Le ganan'} ${ganan}.`;
+}
+
 // ── ¿LE GANAN AL ÍNDICE? ─────────────────────────────────────────────
 // Se cuenta, no se deja para que el lector reste fila por fila. El benchmark no
 // compite, pero es la única vara que le importa a alguien de afuera.
@@ -194,11 +214,7 @@ export function contraElIndice({ agentes = [], benchmarkReturn = null } = {}) {
     empatan: filas.length - pierden.length - ganan.length,
     pierden_ids: pierden.map((f) => f.id),
     ganan_ids: ganan.map((f) => f.id),
-    lectura: pierden.length === filas.length
-      ? `Los ${filas.length} van por debajo del índice (${bench >= 0 ? '+' : ''}${bench}%). Ninguno le gana a comprar SPY y no hacer nada.`
-      : ganan.length === filas.length
-        ? `Los ${filas.length} van por encima del índice (${bench >= 0 ? '+' : ''}${bench}%).`
-        : `${pierden.length} de ${filas.length} van por DEBAJO del índice (${bench >= 0 ? '+' : ''}${bench}%). Le ganan ${ganan.length}.`,
+    lectura: lecturaContraElIndice(filas.length, pierden.length, ganan.length, bench),
   };
 }
 

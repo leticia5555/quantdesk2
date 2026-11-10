@@ -131,6 +131,8 @@
   .fila .que b{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fila .que small{font:11px var(--mono);color:var(--tenue);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fila .val{flex:0 0 auto;font:600 13px var(--mono);text-align:right;white-space:nowrap}
+  .fila .falta{font-weight:400;color:var(--apagado)}
+  .fila.sin-datos .que b{font-weight:400;color:var(--tenue)}
   .fila.indice{border-top:1px dashed var(--linea2)}
   .fila.indice .que b{font-weight:400;color:var(--tenue)}
   .qd-pct-per{font-weight:400;font-size:10px;color:var(--apagado);margin-left:4px}
@@ -380,6 +382,15 @@
     return m ? Number(m[3]) + ' ' + MESES[Number(m[2]) - 1] : null;
   }
 
+  // El rendimiento de una fila. Con número, `qdPctTag` y su etiqueta de
+  // periodo. Sin número, "sin datos" en gris y no una raya: en una tabla de
+  // posiciones "—" se lee como un cero o como un error de pantalla
+  // (Lety, 2026-11-10). La causa va en el `title`.
+  function pctDeLiga(pct, motivo){
+    if(Number.isFinite(pct)) return qdPctTag(pct, 'acum.');
+    return '<span class="falta" title="' + esc(motivo) + '">sin datos</span>';
+  }
+
   function pintarLiga(j){
     var cuerpo = $('liga-cuerpo'), sub = $('liga-sub');
     if(j.error && !(j.agents && j.agents.length)){
@@ -396,7 +407,10 @@
     sub.textContent = partes.join(' · ');
 
     var filas = (j.agents || []).slice().sort(function(x, y){
-      // El orden es el `rank` del servidor; sin puesto, al final.
+      // El orden es el `rank` del servidor. Un modelo SIN DATOS va al final,
+      // tenga o no puesto: no se le puede comparar con nadie.
+      var dx = Number.isFinite(x.return_pct), dy = Number.isFinite(y.return_pct);
+      if(dx !== dy) return dx ? -1 : 1;
       var rx = Number.isFinite(x.rank) ? x.rank : Infinity, ry = Number.isFinite(y.rank) ? y.rank : Infinity;
       return rx - ry;
     });
@@ -406,17 +420,18 @@
       return;
     }
     var html = filas.map(function(g){
-      var empate = g.margen && g.margen.empate_tecnico;
+      var hay = Number.isFinite(g.return_pct);
+      var empate = hay && g.margen && g.margen.empate_tecnico;
       var chica = [g.model_label || g.model || '', empate ? 'empate técnico con su vecino' : '']
         .filter(Boolean).join(' · ');
-      return '<a class="fila" href="/liga" data-agente="' + esc(g.id) + '">'
-        + '<span class="puesto">' + (Number.isFinite(g.rank) ? g.rank : '—') + '</span>'
+      return '<a class="fila' + (hay ? '' : ' sin-datos') + '" href="/liga" data-agente="' + esc(g.id) + '">'
+        + '<span class="puesto">' + (hay && Number.isFinite(g.rank) ? g.rank : '') + '</span>'
         + '<span class="que"><b>' + esc(g.name || g.id) + '</b>'
         + (chica ? '<small>' + esc(chica) + '</small>' : '') + '</span>'
         // La etiqueta de periodo es obligatoria (`qdPctTag` lanza sin ella):
         // "acum." = acumulado desde el arranque de la temporada, no el día.
-        + '<span class="val">' + qdPctTag(g.return_pct, 'acum.', {
-            motivo: g.error || 'el leaderboard no trajo el rendimiento de esta cuenta' }) + '</span>'
+        + '<span class="val">' + pctDeLiga(g.return_pct,
+            g.error || 'el leaderboard no trajo el rendimiento de esta cuenta') + '</span>'
         + '</a>';
     }).join('');
     // El índice va aparte y marcado: no compite, es la vara.
@@ -426,8 +441,8 @@
         + '<span class="puesto">·</span>'
         + '<span class="que"><b>' + esc(bm.name || 'S&P 500') + '</b>'
         + '<small>' + esc('el índice, no compite') + '</small></span>'
-        + '<span class="val">' + qdPctTag(bm.return_pct, 'acum.', {
-            motivo: bm.detalle || bm.error || 'el índice todavía no tiene compra registrada' }) + '</span>'
+        + '<span class="val">' + pctDeLiga(bm.return_pct,
+            bm.detalle || bm.error || 'el índice todavía no tiene compra registrada') + '</span>'
         + '</a>';
     }
     var lectura = j.margen_de_la_tabla && j.margen_de_la_tabla.indice && j.margen_de_la_tabla.indice.lectura;
