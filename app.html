@@ -17880,6 +17880,7 @@ function margin_color(pct, threshold, COL){
           <div style="font-family:var(--mono);font-size:18px;letter-spacing:.15em;font-weight:700;color:${dirCol};">${escapeHtml(dir)}</div>
           <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:6px;">${i.transaction_count || 0} txns · ${i.buy_count || 0} buys · ${i.sell_count || 0} sells</div>
           ${i.scheduled_sell_count ? `<div style="font-family:var(--mono);font-size:9px;color:#666;margin-top:2px;">${i.scheduled_sell_count} sells programadas (10b5-1)</div>` : ''}
+          ${i.unknown_plan_sell_count ? `<div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:2px;">${i.unknown_plan_sell_count} sells sin dato de plan 10b5-1 (Finnhub)</div>` : ''}
           <div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:2px;">solo P/S en mercado abierto · ${(i.sources || []).map(s => s === 'sec_form4' ? 'SEC Form 4' : 'Finnhub').join(' + ') || 'sin datos'}</div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-family:var(--mono);font-size:11px;">

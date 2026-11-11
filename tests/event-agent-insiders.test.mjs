@@ -83,5 +83,13 @@ const filaSec = (o) => ({ ticker: 'FUN', derivada: false, plan_estado: 'no_progr
   ok(b.category === 'QUIET' && b.sources.length === 0, 'vacío → QUIET');
 }
 
+// ── Finnhub sin dato de plan: "no sabemos", no "no programada" ───
+{
+  const b = agregaInsiders(normalizaFinnhub({ data: [
+    { name: 'STEVENS MARK A', transactionCode: 'S', transactionDate: '2026-09-18', change: -1356000, transactionPrice: 219.7 },
+  ] }), 200, { ahora: AHORA });
+  ok(b.unknown_plan_sell_count === 1 && b.scheduled_sell_count === 0, 'venta de Finnhub = plan desconocido', JSON.stringify(b));
+}
+
 if (failures) { console.error(`\n${failures} fallo(s)`); process.exit(1); }
 console.log('\nOK');
