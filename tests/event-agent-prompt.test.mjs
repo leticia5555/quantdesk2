@@ -10,4 +10,6 @@ ok(/NEVER attribute knowledge, intent or motive to insiders/.test(src), 'prohíb
 ok(/10b5-1/.test(src), 'menciona ventas programadas');
 ok(!/actionable consideration/.test(src), 'ya no pide "actionable considerations"');
 ok(!/IV crush risk into earnings makes long-vol/.test(src), 'ya no trae un ejemplo de operación');
+ok(/NEVER state or imply a probability/.test(src), 'prohíbe afirmar probabilidades');
+ok(/probabilidad_quantdesk: null/.test(src), 'probabilidad_quantdesk explícita y en null');
 if (failures) process.exit(1); console.log('\nOK');

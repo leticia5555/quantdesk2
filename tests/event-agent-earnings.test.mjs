@@ -7,7 +7,8 @@
 // Sin red. Correr con `node tests/event-agent-earnings.test.mjs`.
 // ═══════════════════════════════════════════════════════════════
 
-import { buildEarningsBlock, hoyNY, diasDeCalendario } from '../api/event-agent.js';
+import { buildEarningsBlock, hoyNY, diasDeCalendario, resumenHistorial } from '../api/event-agent.js';
+import { estadisticasHistoricas } from '../api/_lib/earnings-beat.js';
 
 let failures = 0;
 function ok(cond, name, detail) {
@@ -43,6 +44,19 @@ ok(diasDeCalendario('2026-11-11', '2026-11-17') === 6, '11 → 17 = 6 días');
   ok(e.last_4_reports.map(r => r.quarters_ago).join() === '1,2,3,4', 'quarters_ago 1..4');
   ok(e.last_4_reports[0].fiscal_period === 'Q1 2027', 'etiqueta fiscal', e.last_4_reports[0].fiscal_period);
   ok(e.estimates_source === 'Finnhub', 'declara la fuente del consenso');
+}
+
+// ── Historial: misma cuenta que EARNINGS, como conteo ────────────
+{
+  const filas = Array.from({ length: 22 }, (_, i) => ({
+    reported_date: `20${String(26 - Math.floor(i / 4)).padStart(2, '0')}-${String(1 + 3 * (i % 4)).padStart(2, '0')}-15`,
+    reported_eps: i === 3 || i === 20 ? 0.9 : 1.1, estimated_eps: 1.0, surprise_pct: null,
+  }));
+  const r = resumenHistorial(estadisticasHistoricas(filas));
+  ok(r.ventana.total === 20 && r.ventana.beats === 19, 'superó 19 de 20 en la ventana', JSON.stringify(r.ventana));
+  ok(r.completo.total === 22, 'historial completo 22', r.completo.total);
+  ok(r.es_conteo_no_prediccion === true, 'marcado como conteo');
+  ok(resumenHistorial(estadisticasHistoricas([])).sin_datos === true, 'sin filas → sin_datos');
 }
 
 if (failures) { console.error(`\n${failures} fallo(s)`); process.exit(1); }

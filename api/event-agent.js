@@ -505,6 +505,45 @@ async function filasForm4DeNeon(ticker, dias = 95) {
   }
 }
 
+// ── Historial de beats: la MISMA cuenta que la pestaña EARNINGS ──────
+// (Lety, 2026-11-11) "superó 18 de 20" sale de `pead_earnings` (Alpha
+// Vantage) con `estadisticasHistoricas`, la función que pinta EARNINGS. Es un
+// CONTEO, no una probabilidad: QuantDesk todavía no emite probabilidad propia
+// (experimento earnings-beat, Fase 2). Por eso `probabilidad_quantdesk` va
+// explícito y en null, igual que en /api/earnings-beat?vista=live.
+export function resumenHistorial(est) {
+  if (!est || est.sin_datos) {
+    return { sin_datos: true, motivo: (est && est.motivo) || 'sin trimestres comparables en nuestra base',
+      fuente: 'Alpha Vantage EARNINGS vía pead_earnings' };
+  }
+  return {
+    sin_datos: false,
+    ventana: est.ventana,            // { trimestres, beats, total, pct, anios }
+    completo: est.completo,          // { beats, total, pct }
+    racha: est.racha,                // { tipo, largo, tope }
+    mediana_sorpresa_pct: est.sorpresa ? est.sorpresa.mediana_pct : null,
+    fuente: 'Alpha Vantage EARNINGS vía pead_earnings',
+    es_conteo_no_prediccion: true,
+  };
+}
+
+async function historialDeBeats(ticker) {
+  try {
+    const [{ sql }, { estadisticasHistoricas }] = await Promise.all([
+      import('./_lib/db.js'), import('./_lib/earnings-beat.js')]);
+    const filas = await sql(
+      `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date,
+              reported_eps, estimated_eps, surprise_pct
+         from pead_earnings where symbol = $1 order by reported_date desc`, [ticker]);
+    return resumenHistorial(estadisticasHistoricas(filas));
+  } catch (e) {
+    console.log('[event-agent] historial pead_earnings falló:', e && e.message);
+    return { sin_datos: true, motivo: 'no se pudo leer la base histórica', fuente: 'Alpha Vantage EARNINGS vía pead_earnings' };
+  }
+}
+
+export const PROBABILIDAD_ESTADO = 'en validación — QuantDesk todavía no emite probabilidad propia';
+
 // ── Corporate actions (splits) ───────────────────────────────────
 function buildCorporateActions(splitsArr) {
   const items = Array.isArray(splitsArr) ? splitsArr : [];
@@ -575,6 +614,7 @@ RULES — this is an information product, not investment advice (Lety, 2026-11-1
 - NEVER tell the reader to buy, sell, short, scale, trim, reduce, add, hedge or size a position, and never recommend a specific options trade. "positioning_considerations" are things to WATCH and what each outcome would mean, written as scenarios ("if X, then Y tends to…"), not instructions.
 - NEVER attribute knowledge, intent or motive to insiders ("management knew", "had forward visibility", "capitulation"). Insider rows are facts: who, what, how much, when. If sells were scheduled (scheduled_sell_count, scheduled_10b5_1), say so — pre-planned 10b5-1 sales carry little signal. unknown_plan_sell_count are sells whose plan status the source does not report: say the plan status is unknown for those, never that they were not scheduled. Do not raise, even as a question, whether insiders traded on knowledge of upcoming news. Open-market buys (code P) are the stronger signal.
 - Treat news headlines as reported claims, not facts ("a short seller alleges…", "Baird says…").
+- NEVER state or imply a probability of beating, missing or moving (no "X% chance", "highly probable", "likely to beat"). quantdesk_probability is null on purpose. beat_track_record is a COUNT of past quarters ("beat 18 of the last 20"): quote it as a count, never as a probability.
 - Do not invent numbers that are not in the brief (no implied move, IV or price targets unless present).
 
 Be quantitative. Use the actual numbers from the brief. No fluff. If a category has no data (no dividends, no M&A signals, etc.) don't fabricate; pivot to what's actually there.`;
@@ -629,6 +669,7 @@ export default async function handler(req, res) {
 
     // Los Form 4 de la SEC (Neon) arrancan junto con Finnhub.
     const form4Promesa = filasForm4DeNeon(ticker);
+    const historialPromesa = historialDeBeats(ticker);
 
     // ── 1. Parallel Finnhub fan-out ──
     const [profileRes, calendarRes, historyRes, divRes, newsRes,
@@ -679,6 +720,7 @@ export default async function handler(req, res) {
       currentPrice);
     const corp = buildCorporateActions(Array.isArray(splitJ) ? splitJ : (splitJ && splitJ.data) || []);
     const next_major_catalyst = nextMajorCatalyst(earnings, dividends, corp);
+    const beat_track_record = await historialPromesa;
 
     // Diagnostic
     console.log(`[event-agent] ${ticker}: next=${next_major_catalyst ? next_major_catalyst.type + '/' + next_major_catalyst.days_until + 'd' : 'none'} ` +
@@ -701,7 +743,9 @@ export default async function handler(req, res) {
         regulatory_signals: news.regulatory,
         insider_activity: insider,
         corporate_actions: corp,
-        next_major_catalyst
+        next_major_catalyst,
+        beat_track_record,
+        quantdesk_probability: null
       };
       const out = await runClaude(apiKey, brief, lang);
       if (out.ok) narrative = out.ok;
@@ -724,6 +768,9 @@ export default async function handler(req, res) {
       insider_activity: insider,
       corporate_actions: corp,
       next_major_catalyst,
+      beat_track_record,
+      probabilidad_quantdesk: null,
+      probabilidad_quantdesk_estado: PROBABILIDAD_ESTADO,
       catalyst_summary:           narrative ? narrative.catalyst_summary           : null,
       primary_catalyst_thesis:    narrative ? narrative.primary_catalyst_thesis    : null,
       positioning_considerations: narrative ? narrative.positioning_considerations : null,
