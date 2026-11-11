@@ -562,12 +562,18 @@ Produce a concise institutional-grade narrative. Return ONLY a JSON object, no p
   "catalyst_summary": "<2-3 sentences. What's the catalyst landscape for the next 30-90 days? Lead with the most proximate event.>",
   "primary_catalyst_thesis": "<3-4 sentences. WHICH catalyst matters most for the next price move, and WHY? Use specific numbers from the brief (beat rate, estimate, insider activity, etc).>",
   "positioning_considerations": [
-    "<actionable consideration 1 — be specific, e.g., 'IV crush risk into earnings makes long-vol cleaner than long-delta exposure'>",
-    "<actionable consideration 2>",
-    "<actionable consideration 3>"
+    "<what to watch 1 — a concrete, checkable thing and what each outcome would mean, e.g., 'If guidance on the call is below $X, the 100% beat streak matters less than the guide; implied move into earnings is the bar to compare against'>",
+    "<what to watch 2>",
+    "<what to watch 3>"
   ],
-  "institutional_insight": "<3-4 sentences of NON-OBVIOUS contrarian read. What does the catalyst combination tell you that the consensus has missed? Reference specific data points. For LATAM ADRs weight founder-CEO insider activity heavily (Galperin at MELI, Velez at NU) — these signal more than US insider patterns.>"
+  "institutional_insight": "<3-4 sentences. A non-obvious read of how the catalysts interact, built ONLY on data points in the brief. Say which part is fact and which part is interpretation. For LATAM ADRs, founder-CEO insider activity (Galperin at MELI, Velez at NU) carries more signal than typical US insider patterns.>"
 }
+
+RULES — this is an information product, not investment advice (Lety, 2026-11-11):
+- NEVER tell the reader to buy, sell, short, scale, trim, reduce, add, hedge or size a position, and never recommend a specific options trade. "positioning_considerations" are things to WATCH and what each outcome would mean, written as scenarios ("if X, then Y tends to…"), not instructions.
+- NEVER attribute knowledge, intent or motive to insiders ("management knew", "had forward visibility", "capitulation"). Insider rows are facts: who, what, how much, when. If sells were scheduled (scheduled_sell_count, scheduled_10b5_1), say so — pre-planned 10b5-1 sales carry little signal. Open-market buys (code P) are the stronger signal.
+- Treat news headlines as reported claims, not facts ("a short seller alleges…", "Baird says…").
+- Do not invent numbers that are not in the brief (no implied move, IV or price targets unless present).
 
 Be quantitative. Use the actual numbers from the brief. No fluff. If a category has no data (no dividends, no M&A signals, etc.) don't fabricate; pivot to what's actually there.`;
 

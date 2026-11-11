@@ -17919,7 +17919,7 @@ function margin_color(pct, threshold, COL){
   function renderPositioning(items) {
     if (!Array.isArray(items) || items.length === 0) return '';
     return `<div style="margin-bottom:12px;">
-      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// 🎯 POSITIONING CONSIDERATIONS</div>
+      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// 🎯 ${smL('QUÉ VIGILAR','WHAT TO WATCH')}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
         ${items.map(it => `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.5;">${escapeHtml(it || '')}</div>`).join('')}
       </div>
@@ -17980,7 +17980,7 @@ function margin_color(pct, threshold, COL){
       </div>` : '';
 
     const footer = `<div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
-      Source: ${escapeHtml(payload.source || 'Finnhub + Claude')}
+      Source: ${escapeHtml(payload.source || 'Finnhub + Claude')} · ${smL('Información, no asesoría de inversión','Information, not investment advice')}
     </div>`;
 
     setStatus(header + summary + earningsCoverageNote + earningsBlock + dividendsBlock + maBlock + regBlock + insiderBlock + corpBlock + thesis + positioning + insight + footer);
