@@ -17,7 +17,7 @@
 //   • catalyst_summary, primary_catalyst_thesis,
 //     positioning_considerations[3], institutional_insight
 //
-// All Finnhub. 30-minute CDN cache.
+// Finnhub + Form 4 de la SEC (Neon) para insiders. 30-minute CDN cache.
 // ═══════════════════════════════════════════════════════════════════
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -281,80 +281,149 @@ function categorizeNews(newsArr) {
 }
 
 // ── Insider activity ─────────────────────────────────────────────
-// Finnhub insider-transactions fields used: name, transactionCode,
-// transactionDate, share, transactionPrice, change. Buy if change>0
-// AND code is one of P/A; sell if change<0 OR code is S/D/F.
-function buildInsiderBlock(insiderRaw, currentPrice) {
+// DOS FUENTES, UNA REGLA (Lety, 2026-11-11). El agente leía sólo Finnhub,
+// que llega con días de atraso: con FUN decía "+$46.6K" mientras
+// /mercado/insiders ya mostraba $15M de compras de un director, y con SLQT
+// decía "0 transacciones" con cinco insiders comprando esa semana. Ahora
+// se juntan los Form 4 de la SEC que ya cosechamos en Neon
+// (`mercado_form4_tx`, lo mismo que pinta la pantalla de Insiders) con lo
+// que traiga Finnhub, sin contar dos veces la misma operación.
+//
+// La regla es la de la pantalla: sólo P es compra y sólo S es venta.
+// Otorgamientos (A), impuestos (F), ejercicios (M) y entregas (D) no son
+// alguien decidiendo comprar o vender.
+
+/** Finnhub → lista común. Sólo P/S, con el signo del cambio. */
+export function normalizaFinnhub(insiderRaw) {
+  const items = Array.isArray(insiderRaw && insiderRaw.data) ? insiderRaw.data : [];
+  const out = [];
+  for (const t of items) {
+    if (!t || !t.transactionDate) continue;
+    const codigo = (t.transactionCode || '').toUpperCase();
+    const acciones = Number(t.change) || 0;
+    if (!((codigo === 'P' && acciones > 0) || (codigo === 'S' && acciones < 0))) continue;
+    out.push({
+      nombre: t.name || 'Unknown', fecha: t.transactionDate, codigo, acciones,
+      precio: Number(t.transactionPrice) || null, programada: null, fuente: 'finnhub',
+    });
+  }
+  return out;
+}
+
+/** Filas de `mercado_form4_tx` (forma de `filasDeForm4`) → lista común. */
+export function normalizaForm4(filas, ticker) {
+  const tk = String(ticker || '').toUpperCase();
+  const out = [];
+  for (const f of Array.isArray(filas) ? filas : []) {
+    if (!f || f.derivada) continue;
+    if (tk && String(f.ticker || '').toUpperCase() !== tk) continue;
+    const codigo = String(f.codigo || '').toUpperCase();
+    if (codigo !== 'P' && codigo !== 'S') continue;
+    const n = Number(f.acciones);
+    if (!f.fecha || !Number.isFinite(n) || n <= 0) continue;
+    out.push({
+      nombre: f.quien || 'Unknown', fecha: f.fecha, codigo,
+      acciones: codigo === 'P' ? n : -n,
+      precio: Number(f.precio) || null,
+      programada: f.plan_estado === 'programada' ? true : (f.plan_estado === 'no_programada' ? false : null),
+      fuente: 'sec_form4',
+    });
+  }
+  return out;
+}
+
+// Misma operación vista por las dos fuentes: mismo día, mismo código,
+// mismas acciones y mismo precio al centavo. Los nombres no sirven de llave
+// ("JAFFER REHAN" en la SEC, "Jaffer Rehan" en Finnhub).
+function llaveTx(t) {
+  const p = t.precio != null ? Math.round(t.precio * 100) : 'x';
+  return `${t.fecha}|${t.codigo}|${Math.abs(t.acciones)}|${p}`;
+}
+
+/** Junta SEC + Finnhub. Gana la SEC cuando las dos traen la misma operación. */
+export function juntaInsiders(deSec = [], deFinnhub = []) {
+  const vistas = new Map();
+  for (const t of deSec) vistas.set(llaveTx(t), t);
+  for (const t of deFinnhub) if (!vistas.has(llaveTx(t))) vistas.set(llaveTx(t), t);
+  return [...vistas.values()];
+}
+
+/** Lista común → bloque que lee la pantalla y el brief de Claude. */
+export function agregaInsiders(lista, currentPrice, { dias = 90, ahora = Date.now() } = {}) {
   const out = {
     net_direction: 'QUIET', buy_count: 0, sell_count: 0,
     net_value: 0, total_buy_value: 0, total_sell_value: 0,
     largest_transaction: null, category: 'QUIET',
-    transaction_count: 0
+    transaction_count: 0, scheduled_sell_count: 0,
+    sources: [],
   };
-  const items = Array.isArray(insiderRaw && insiderRaw.data) ? insiderRaw.data : [];
-  if (items.length === 0) return out;
-  const cutoff = new Date(Date.now() - 90 * 24 * 3600 * 1000);
-  const recent = items
-    .filter(t => t && t.transactionDate)
-    .map(t => ({ ...t, _date: new Date(t.transactionDate + 'T00:00:00Z') }))
+  const cutoff = new Date(ahora - dias * 24 * 3600 * 1000);
+  const recent = (Array.isArray(lista) ? lista : [])
+    .map(t => ({ ...t, _date: new Date(t.fecha + 'T00:00:00Z') }))
     .filter(t => !isNaN(t._date) && t._date >= cutoff);
-
-  out.transaction_count = recent.length;
   if (recent.length === 0) return out;
 
+  out.sources = [...new Set(recent.map(t => t.fuente))].sort();
   let largest = null;
   for (const t of recent) {
-    const code = (t.transactionCode || '').toUpperCase();
-    const change = Number(t.change) || 0;
-    const price = Number(t.transactionPrice) || currentPrice || 0;
-    // Buy: P (open-market purchase) or A (acquisition) with positive change
-    // Sell: S (sale), D (disposition), F (tax-withholding) or negative change
-    const isBuy = (code === 'P' || code === 'A') && change > 0;
-    const isSell = (code === 'S' || code === 'D' || code === 'F') || change < 0;
-    const value = Math.abs(change) * price;
+    const isBuy = t.codigo === 'P';
+    const value = Math.abs(t.acciones) * (t.precio || currentPrice || 0);
     if (isBuy) {
-      out.buy_count++;
-      out.total_buy_value += value;
-      out.net_value += value;
-    } else if (isSell) {
-      out.sell_count++;
-      out.total_sell_value += value;
-      out.net_value -= value;
+      out.buy_count++; out.total_buy_value += value; out.net_value += value;
+    } else {
+      out.sell_count++; out.total_sell_value += value; out.net_value -= value;
+      if (t.programada === true) out.scheduled_sell_count++;
     }
-    if (!largest || value > Math.abs(largest._value || 0)) {
+    const signed = isBuy ? value : -value;
+    if (!largest || value > Math.abs(largest.value)) {
       largest = {
-        insider_name: t.name || 'Unknown',
-        transaction_type: `${code} ${isBuy ? '- Buy' : isSell ? '- Sell' : ''}`.trim(),
-        shares: change,
-        value: isSell ? -value : value,
-        _value: isSell ? -value : value,
-        date: t.transactionDate
+        insider_name: t.nombre,
+        transaction_type: `${t.codigo} - ${isBuy ? 'Buy' : 'Sell'}`,
+        shares: t.acciones, value: signed, date: t.fecha,
+        scheduled_10b5_1: t.programada,
       };
     }
   }
-  if (largest) { delete largest._value; out.largest_transaction = largest; }
+  out.largest_transaction = largest;
+  out.transaction_count = out.buy_count + out.sell_count;
 
-  // Category logic
-  const totalActions = out.buy_count + out.sell_count;
-  if (totalActions === 0) {
-    out.category = 'QUIET';
-    out.net_direction = 'QUIET';
-  } else if (out.buy_count > 0 && out.sell_count === 0) {
-    out.category = 'BUYING'; out.net_direction = 'BUYING';
+  if (out.buy_count > 0 && out.sell_count === 0) {
+    out.category = 'BUYING';
   } else if (out.sell_count > 0 && out.buy_count === 0) {
-    out.category = 'SELLING'; out.net_direction = 'SELLING';
+    out.category = 'SELLING';
   } else {
-    // Both sides present. Use net_value sign as tiebreaker; if both are
-    // material (>30% of total) call it MIXED.
+    // Las dos caras: decide la proporción en dólares; si las dos pesan
+    // (>30% del total) es MIXED.
     const buyShare = out.total_buy_value / (out.total_buy_value + out.total_sell_value || 1);
-    if (buyShare > 0.70)      { out.category = 'BUYING';  out.net_direction = 'BUYING'; }
-    else if (buyShare < 0.30) { out.category = 'SELLING'; out.net_direction = 'SELLING'; }
-    else                       { out.category = 'MIXED';   out.net_direction = 'MIXED'; }
+    out.category = buyShare > 0.70 ? 'BUYING' : buyShare < 0.30 ? 'SELLING' : 'MIXED';
   }
+  out.net_direction = out.category;
   out.net_value = +out.net_value.toFixed(0);
   out.total_buy_value = +out.total_buy_value.toFixed(0);
   out.total_sell_value = +out.total_sell_value.toFixed(0);
   return out;
+}
+
+// Compatibilidad: lo de antes, sólo Finnhub.
+export function buildInsiderBlock(insiderRaw, currentPrice) {
+  return agregaInsiders(normalizaFinnhub(insiderRaw), currentPrice);
+}
+
+// Form 4 cosechados del ticker, últimos `dias`. Si Neon falla, el agente
+// sigue con Finnhub: la base caída no deja al reporte sin insiders.
+async function filasForm4DeNeon(ticker, dias = 95) {
+  try {
+    const { sql } = await import('./_lib/db.js');
+    const rows = await sql(`
+      select filas from mercado_form4_tx
+       where filing_fecha >= (current_date - $2::int)
+         and filas @> $1::jsonb`,
+      [JSON.stringify([{ ticker }]), dias]);
+    return rows.flatMap(r => Array.isArray(r.filas) ? r.filas : []);
+  } catch (e) {
+    console.log('[event-agent] neon form4 falló:', e && e.message);
+    return [];
+  }
 }
 
 // ── Corporate actions (splits) ───────────────────────────────────
@@ -471,6 +540,9 @@ export default async function handler(req, res) {
     const fwd6moStr = ymd(new Date(today.getTime() + 180 * 24 * 3600 * 1000));
     const back90Str = ymd(new Date(today.getTime() -  90 * 24 * 3600 * 1000));
 
+    // Los Form 4 de la SEC (Neon) arrancan junto con Finnhub.
+    const form4Promesa = filasForm4DeNeon(ticker);
+
     // ── 1. Parallel Finnhub fan-out ──
     const [profileRes, calendarRes, historyRes, divRes, newsRes,
            insiderRes, splitRes, quoteRes] = await Promise.all([
@@ -514,7 +586,10 @@ export default async function handler(req, res) {
     const earnings = buildEarningsBlock(historyJ, calendarArr);
     const dividends = buildDividendBlock(divJ && divJ.length ? divJ : (Array.isArray(divJ) ? divJ : []), currentPrice);
     const news = categorizeNews(newsJ);
-    const insider = buildInsiderBlock(insiderJ, currentPrice);
+    const filasSec = await form4Promesa;
+    const insider = agregaInsiders(
+      juntaInsiders(normalizaForm4(filasSec, ticker), normalizaFinnhub(insiderJ)),
+      currentPrice);
     const corp = buildCorporateActions(Array.isArray(splitJ) ? splitJ : (splitJ && splitJ.data) || []);
     const next_major_catalyst = nextMajorCatalyst(earnings, dividends, corp);
 
