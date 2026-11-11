@@ -217,6 +217,8 @@
   .evento .que small{display:block;color:var(--tenue);font-size:11px}
   .evento .cuando{flex:0 0 auto;font:11px var(--mono);color:var(--tenue)}
   .evento.reporte .dia{color:var(--apagado)}
+  /* Los próximos macro llevan el mes: la columna del día es más ancha. */
+  .evento.despues .dia{flex-basis:78px}
   /* Volver a 1×. Flota sobre el mapa porque pertenece al mapa, y mide 44px
      como todo lo que se toca (regla 8). Sólo aparece cuando hay a qué
      volver: un botón que no hace nada es ruido. */
@@ -1828,8 +1830,28 @@
           + '</div>';
       }).join('');
     }
-    return html + '</div>';
+    html += '</div>';
+    // LO QUE VIENE DESPUÉS DE ESTA SEMANA, CON NOMBRE. "3 más adelante" dice
+    // cuántos y no cuáles: con la Fed a tres semanas el panel tenía la fecha y
+    // enseñaba un conteo. Van en su propia lista, con el mes, para que nadie
+    // los lea como eventos de esta semana.
+    var px = s.proximos_macro || [];
+    if(px.length){
+      html += '<p class="nota" id="macro-proximos-titulo">próximos datos macro</p><div class="tabla" id="macro-proximos">'
+        + px.map(function(e){
+          var dia = nombreDeDia(e.fecha);
+          var mes = MESES_CORTOS[Number(e.fecha.slice(5,7)) - 1] || '';
+          return '<div class="evento macro despues">'
+            + '<span class="dia">' + esc((dia ? dia.slice(0,3) + ' ' : '') + Number(e.fecha.slice(8)) + ' ' + mes) + '</span>'
+            + '<span class="que"><b>' + esc(e.titulo) + '</b>'
+            + (e.detalle ? '<small>' + esc(e.detalle) + '</small>' : '') + '</span>'
+            + '<span class="cuando">' + esc(e.importancia || '') + '</span>'
+            + '</div>';
+        }).join('') + '</div>';
+    }
+    return html;
   }
+  var MESES_CORTOS = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 
   // ── R3(b): LO DE HOY ──────────────────────────────────────────────
   // Titular + hora + fuente + link. El cuerpo no se guarda ni se muestra: la

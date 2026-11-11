@@ -27,6 +27,7 @@ import { sql } from './_lib/db.js';
 import { armaEstaSemana, armaArena, ventanaSemana, DIAS_HORIZONTE } from './_lib/mercado-paneles.js';
 import earningsHandler from './earnings.js';
 import leaderboardHandler from './leaderboard.js';
+import { oficialesEntre, unirMacro, OFICIAL_HASTA } from './_lib/macro-oficial.js';
 
 // ═══════════════════════════════════════════════════════════════════════
 // LOS OTROS ENDPOINTS SE LLAMAN EN PROCESO, NO POR HTTP
@@ -131,6 +132,7 @@ export default async function handler(req, res) {
   // mitades se midan igual.
   const horizonte = ventanaSemana(ahora, DIAS_HORIZONTE);
 
+  const oficiales = oficialesEntre(horizonte.desde, horizonte.hasta);
   const [macro, reportes, arena] = await Promise.all([
     // El calendario macro es una tabla nuestra: se lee directo.
     sql(`select to_char(event_date,'YYYY-MM-DD') as event_date, title, category, importance, note
@@ -138,8 +140,12 @@ export default async function handler(req, res) {
           where event_date >= $1::date and event_date <= $2::date
           order by event_date asc, importance desc, title asc
           limit 200`, [horizonte.desde, horizonte.hasta])
-      .then((filas) => ({ filas }))
-      .catch((e) => ({ error: String((e && e.message) || e) })),
+      // LO CURADO + LO OFICIAL. La tabla es a mano y estuvo en cero filas
+      // (2026-11-11): las reuniones de la Fed y los informes del BLS ya
+      // están publicados y viven en `_lib/macro-oficial.js`. Si la tabla
+      // falla, lo oficial se pinta igual y el error se dice.
+      .then((filas) => ({ filas: unirMacro(filas, oficiales), oficial_hasta: OFICIAL_HASTA }))
+      .catch((e) => ({ filas: oficiales, oficial_hasta: OFICIAL_HASTA, error: String((e && e.message) || e) })),
     // LA MISMA CONSULTA QUE SE PINTA, CON SUS FECHAS EXPLÍCITAS.
     //
     // Antes se pedía `?mega=1` SIN fechas —el handler cae a hoy..hoy+30— y la

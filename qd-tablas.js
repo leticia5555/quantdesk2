@@ -141,6 +141,12 @@ function fraseDeFuente(cual, fuentes) {
   const quien = cual === 'macro' ? 'macro' : 'de reportes';
   if (!f.ok) return `el calendario ${quien} no respondió: ${f.motivo}`;
   if (f.en_ventana > 0) return null;
+  // LA LISTA OFICIAL SE ACABÓ. Las fechas de la Fed y del BLS viven en el repo
+  // hasta una fecha; pasada ésa, un panel vacío no quiere decir "no hay
+  // eventos" sino "nadie extendió la lista", y hay que decirlo así.
+  if (cual === 'macro' && f.oficial_agotado && !(f.mas_adelante > 0)) {
+    return `el calendario macro oficial llega sólo hasta el ${f.oficial_hasta}: falta extenderlo`;
+  }
   // EL FILTRO SE NOMBRA ANTES QUE EL VACÍO. En plena temporada de reportes,
   // "sin reportes esta semana" era verdad sobre las mega-caps y falso sobre el
   // mercado: el calendario traía decenas y el filtro curado las tiraba. Decir

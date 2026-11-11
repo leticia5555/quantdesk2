@@ -57,7 +57,23 @@ console.log('macro-events: GET público');
   global.fetch = neonMock();
   const res = mockRes();
   await handler({ method: 'GET', query: {}, headers: {} }, res);
-  ok(res.code === 200 && Array.isArray(res.body.events) && res.body.events.length === 2, 'GET devuelve los eventos', JSON.stringify(res.body));
+  // El GET público suma las fechas oficiales del repo (Fed y BLS,
+  // `_lib/macro-oficial.js`) a lo curado. Cuántas oficiales entran depende de
+  // qué día se corre —se sirven de hoy en adelante—, así que NO se cuenta el
+  // total: se cuenta lo curado, y se exige que todo lo demás sea oficial.
+  const curados = (res.body.events || []).filter((e) => !String(e.id).startsWith('oficial_'));
+  const oficiales = (res.body.events || []).filter((e) => String(e.id).startsWith('oficial_'));
+  ok(res.code === 200 && Array.isArray(res.body.events) && curados.length === 2, 'GET devuelve los eventos curados', JSON.stringify(res.body));
+  ok(oficiales.every((e) => /^oficial:(federalreserve|bls)\.gov$/.test(e.fuente) && /^https:/.test(e.fuente_url)),
+    'y lo que no es curado es oficial, con su fuente', JSON.stringify(oficiales.slice(0, 2)));
+  ok(res.body.count === res.body.events.length && typeof res.body.oficial_hasta === 'string',
+    'el conteo es el de lo que viaja, y dice hasta dónde llega la lista oficial', JSON.stringify({ count: res.body.count, hasta: res.body.oficial_hasta }));
+  {
+    const admin = mockRes();
+    await handler({ method: 'GET', query: { all: '1' }, headers: {} }, admin);
+    ok(admin.body.events.length === 2 && admin.body.events.every((e) => !String(e.id).startsWith('oficial_')),
+      'el admin (?all=1) ve SÓLO lo curado: es lo único que puede borrar', JSON.stringify(admin.body.events.map((e) => e.id)));
+  }
   ok(res.body.events[0].event_date === '2026-08-15' && res.body.events[0].title.includes('Fed'), 'evento bien formado', JSON.stringify(res.body.events[0]));
   ok(res.headers['Cache-Control'] && res.headers['Cache-Control'].includes('s-maxage'), 'GET público lleva cache CDN');
 }
