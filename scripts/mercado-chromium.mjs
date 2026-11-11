@@ -375,6 +375,27 @@ const server = createServer(async (req, res) => {
       points: pts, latest: pts[pts.length - 1], fetched_at: '2026-09-21T20:00:00.000Z',
     }));
   }
+  // LA LIGA sale de `/api/leaderboard`, igual que en la portada. El fixture
+  // tiene la forma real del endpoint: uno con número, uno SIN número (con las
+  // llaves puestas y la cuenta sin leer), el índice aparte y la frase.
+  if (url.pathname === '/api/leaderboard') {
+    pedidosApi++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({
+      enabled: true, count: 2,
+      temporada: { id: 'T3', name: 'Temporada 3', start: '2026-10-20', end: '2026-11-18', abierta: true },
+      agents: [
+        // El SIN número va PRIMERO en la respuesta a propósito: la pantalla
+        // lo tiene que mandar al final.
+        { id: 'mudo', name: 'Sin número', model_label: 'Modelo X', has_keys: true, account: null,
+          baseline_equity: 100000, return_pct: null, rank: null },
+        { id: 'claude', name: 'Claude', model_label: 'opus', has_keys: true, account: { equity: 112400 },
+          baseline_equity: 100000, return_pct: 12.4, rank: 1, margen: { empate_tecnico: false } },
+      ],
+      benchmark: { id: 'benchmark-spy', name: 'S&P 500 · SPY', abierto: true, return_pct: -1.69 },
+      margen_de_la_tabla: { indice: { disponible: true, lectura: '1 va por encima del índice (-1.69%).' } },
+    }));
+  }
   if (url.pathname === '/api/mercado-paneles') {
     pedidosApi++;
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -1595,7 +1616,7 @@ try {
   });
   const porTitulo = Object.fromEntries(tablas.map((t) => [t.titulo, t]));
   chequeo('están los seis bloques del encargo',
-    ['Más suben', 'Más bajan', 'Más operadas', 'Lo de hoy', 'Esta semana', 'Arena'].every((k) => porTitulo[k]),
+    ['Más suben', 'Más bajan', 'Más operadas', 'Lo de hoy', 'Esta semana', 'La Liga'].every((k) => porTitulo[k]),
     tablas.map((t) => t.titulo).join(' · '));
 
   const pctDe = (s) => parseFloat(String(s).replace(/[^\-0-9.]/g, ''));
@@ -1628,24 +1649,31 @@ try {
   chequeo('y lo que SÍ llegó se pinta igual',
     porTitulo['Esta semana'].eventos.some((e) => /Banxico/.test(e)),
     porTitulo['Esta semana'].eventos.join(' | '));
-  chequeo('Arena pinta el % que trae el leaderboard, y el que no lo trae sale "—"',
-    /12\.40%/.test(porTitulo.Arena.eventos.join(' '))
-      && /—/.test(porTitulo.Arena.eventos.join(' ')),
-    porTitulo.Arena.eventos.join(' | '));
-  // LA CAUSA SE LEE EN LA PANTALLA, NO EN UN `title`. `qdPctTag` mete el
-  // motivo en un atributo que en un teléfono NO EXISTE: los cinco agentes
-  // salían en "—" sin una palabra de por qué (Lety, 2026-10-20).
-  chequeo('y el agente sin número dice SU CAUSA en la propia fila',
-    /No se pudo leer su cuenta de Alpaca/.test(porTitulo.Arena.eventos.join(' ')),
-    porTitulo.Arena.eventos.join(' | '));
-  // Y en UNA línea: lo que salía era el párrafo del leaderboard, con comillas
-  // invertidas, repetido una vez por agente (Lety, 2026-10-20).
-  chequeo('la causa cabe en una línea y no trae jerga con comillas invertidas',
-    !/`/.test(porTitulo.Arena.eventos.join(' ')),
-    porTitulo.Arena.eventos.join(' | '));
-  chequeo('mientras que el que sí tiene número conserva su modelo',
-    /Claude/.test(porTitulo.Arena.eventos[0]) && /opus/.test(porTitulo.Arena.eventos[0]),
-    porTitulo.Arena.eventos[0]);
+  // ── LA LIGA: la misma tarjeta que la portada, de /api/leaderboard ──
+  const liga = porTitulo['La Liga'];
+  chequeo('La Liga dice la temporada actual, la que trae el leaderboard',
+    /Temporada 3 · 20 oct → 18 nov/.test(liga.nota || ''), liga.nota);
+  chequeo('La Liga pinta el % que trae el leaderboard, con su etiqueta',
+    /Claude/.test(liga.eventos[0]) && /\+12\.40%\s*acum\./.test(liga.eventos[0]) && /opus/.test(liga.eventos[0]),
+    liga.eventos[0]);
+  chequeo('el que no trae número sale "sin datos", no una raya, y va AL FINAL de los modelos',
+    /Sin número/.test(liga.eventos[1]) && /sin datos/.test(liga.eventos[1]) && !/—/.test(liga.eventos[1]),
+    liga.eventos.join(' | '));
+  // LA CAUSA SE LEE EN LA PANTALLA, NO EN UN `title`, que en un teléfono no
+  // existe (Lety, 2026-10-20). Y en una línea, sin jerga.
+  chequeo('y dice SU CAUSA en la propia fila, en una línea y sin comillas invertidas',
+    /No se pudo leer su cuenta de Alpaca/.test(liga.eventos[1]) && !/`/.test(liga.eventos.join(' ')),
+    liga.eventos[1]);
+  chequeo('el índice va aparte, al final, y dice que no compite',
+    /S&P 500/.test(liga.eventos[2]) && /no compite/.test(liga.eventos[2]) && /-1\.69%/.test(liga.eventos[2]),
+    liga.eventos[2]);
+  const ligaExtra = await p.evaluate(() => ({
+    lectura: (document.getElementById('liga-lectura') || {}).textContent || null,
+    ver: [...document.querySelectorAll('#paneles a.ver-todas')].map((a) => a.getAttribute('href')),
+  }));
+  chequeo('la frase contra el índice es la del servidor, y hay liga a la tabla completa',
+    ligaExtra.lectura === '1 va por encima del índice (-1.69%).' && ligaExtra.ver.includes('/liga'),
+    JSON.stringify(ligaExtra));
 
   // TAP EN UNA FILA → LA MISMA HOJA QUE EL CUADRO.
   const simTabla = porTitulo['Más suben'].filas[0].sym;
@@ -1667,8 +1695,8 @@ try {
   await p.goto(`${BASE}/mercado?mapa=mundo`, { waitUntil: 'networkidle' });
   await p.waitForSelector('#paneles .tabla');
   const titMundo = await p.evaluate(() => [...document.querySelectorAll('#paneles h2')].map((h) => h.textContent.trim()));
-  chequeo('en Mundo no se ofrecen las tablas de emisoras, pero sí el calendario y Arena',
-    !titMundo.includes('Más operadas') && titMundo.includes('Esta semana') && titMundo.includes('Arena'),
+  chequeo('en Mundo no se ofrecen las tablas de emisoras, pero sí el calendario y La Liga',
+    !titMundo.includes('Más operadas') && titMundo.includes('Esta semana') && titMundo.includes('La Liga'),
     titMundo.join(' · '));
 
   // ── EL TOGGLE MXN TAMBIÉN EN EL MAPA DE EE.UU. ─────────────────────
