@@ -37,12 +37,24 @@ function langDirective(lang) {
 // Each phrase is tested as a lowercased substring against the
 // headline + summary. M&A is checked BEFORE regulatory so a deal
 // triggering antitrust review lands in M&A.
+// Se prueban SÓLO contra el titular (Lety, 2026-11-11): el resumen de
+// Finnhub arrastra contexto viejo — el reporte de pérdidas de Six Flags salía
+// como "merger" porque el resumen recordaba la fusión con Cedar Fair—.
+// 'consolidation' se fue: en titulares casi siempre es precio lateral o
+// "consolidación del sector", no una operación de la empresa.
 const MA_KEYWORDS = [
-  'acquir', 'merger', 'buyout', 'takeover', 'tender offer',
-  'definitive agreement', 'all-cash deal', 'all-stock deal',
-  'strategic combination', 'consolidation', 'lbo', 'spin-off',
-  'spinoff', 'carve-out', 'divest', 'stake in', 'majority stake',
-  'minority stake', 'joint venture'
+  { re: /\bacquir(e|es|ed|ing)\b|\bacquisition\b/i, label: 'acquisition' },
+  { re: /\bmerger\b|\bmerge(s|d)?\b/i,              label: 'merger' },
+  { re: /\bbuyout\b|\blbo\b/i,                      label: 'buyout' },
+  { re: /\btakeover\b/i,                            label: 'takeover' },
+  { re: /\btender offer\b/i,                        label: 'tender offer' },
+  { re: /\bdefinitive agreement\b/i,                label: 'definitive agreement' },
+  { re: /\ball-(cash|stock) deal\b/i,               label: 'deal' },
+  { re: /\bstrategic combination\b/i,               label: 'combination' },
+  { re: /\bspin-?off\b|\bcarve-out\b/i,             label: 'spin-off' },
+  { re: /\bdivest(s|ed|iture|ing)?\b/i,             label: 'divestiture' },
+  { re: /\b(majority|minority)? ?stake in\b/i,      label: 'stake' },
+  { re: /\bjoint venture\b/i,                       label: 'joint venture' },
 ];
 // Regulatory keywords. Short tokens use word boundaries so "cade" doesn't
 // match "decade", "fine" doesn't match "define", "doj" doesn't match
@@ -59,10 +71,11 @@ const REGULATORY_KEYWORDS = [
   { kind: 'sub', text: 'regulatory approval',label: 'regulatory approval' },
   { kind: 'sub', text: 'regulatory action',  label: 'regulatory action' },
   { kind: 'sub', text: 'lawsuit',            label: 'lawsuit' },
-  { kind: 'sub', text: 'settle',             label: 'settle' },
+  // 'settle' a secas casaba "…Doesn't Settle It" (NVDA, 2026-11-11).
+  { kind: 'word', re: /\bsettle(s|d|ment|ments)\b|\bto settle\b/i, label: 'settlement' },
   { kind: 'sub', text: 'penalty',            label: 'penalty' },
   { kind: 'sub', text: 'sanction',           label: 'sanction' },
-  { kind: 'sub', text: 'compliance',         label: 'compliance' },
+  { kind: 'word', re: /\b(non-?compliance|compliance (review|probe|failure|issues?))\b/i, label: 'compliance' },
   // Short tokens — word-boundary regex
   { kind: 'word', re: /\bftc\b/i,            label: 'ftc' },
   { kind: 'word', re: /\bdoj\b/i,            label: 'doj' },
@@ -227,10 +240,52 @@ function buildDividendBlock(divArr, currentPrice) {
 }
 
 // ── News categorization (M&A / regulatory) ───────────────────────
-function categorizeNews(newsArr) {
+// Palabras de un nombre legal que no identifican a nadie: "Six Flags
+// Entertainment Corp" se reconoce por "flags", no por "entertainment".
+const NOMBRE_GENERICO = new Set([
+  'inc', 'corp', 'corporation', 'co', 'company', 'ltd', 'limited', 'plc', 'llc', 'lp',
+  'sa', 'nv', 'ag', 'se', 'ab', 'asa', 'spa', 'adr', 'cl', 'class', 'the',
+  'holdings', 'holding', 'group', 'entertainment', 'technologies', 'technology',
+  'international', 'global', 'systems', 'financial', 'industries', 'enterprises',
+  'pharmaceuticals', 'therapeutics', 'bancorp', 'bank', 'energy', 'resources',
+  'american', 'united', 'national', 'general', 'first', 'new', 'brands', 'partners',
+]);
+
+/** Las palabras del nombre de la empresa que sí la identifican en un titular. */
+export function palabrasDeEmpresa(company) {
+  return String(company || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9áéíóúñü&\s-]/g, ' ')
+    .split(/[\s-]+/)
+    .filter(w => w.length >= 4 && !NOMBRE_GENERICO.has(w));
+}
+
+/**
+ * ¿El titular habla de ESTA empresa? Finnhub manda por símbolo notas de
+ * mercado general ("Big Banks Earn Billions, Bumble Soars on Buyout" salía
+ * como M&A de Six Flags). Se exige el ticker en mayúsculas o una palabra
+ * propia del nombre. Sin nombre ni ticker no se puede filtrar: pasa.
+ */
+export function hablaDeLaEmpresa(headline, { ticker, company } = {}) {
+  const h = String(headline || '');
+  const tk = String(ticker || '').toUpperCase();
+  const tkEsc = tk.replace(/[.^$*+?()[\]{}|\\]/g, '\\$&');
+  // Un ticker de 1–2 letras ("S", "U", "AI") casa con "U.S." o con palabras
+  // comunes: sólo cuenta escrito como ticker ($S, (S), NYSE: S).
+  const reTk = tk.length <= 2
+    ? new RegExp('\\$' + tkEsc + '\\b|\\(' + tkEsc + '\\)|(NYSE|NASDAQ|Nasdaq):\\s?' + tkEsc + '\\b')
+    : new RegExp('(^|[^A-Za-z])\\$?' + tkEsc + '([^A-Za-z]|$)');
+  if (tk && reTk.test(h)) return true;
+  const palabras = palabrasDeEmpresa(company);
+  if (!palabras.length) return !tk;
+  const hl = h.toLowerCase();
+  return palabras.some(w => new RegExp('\\b' + w + '\\b').test(hl));
+}
+
+export function categorizeNews(newsArr, { ticker, company, ahora = Date.now() } = {}) {
   const items = Array.isArray(newsArr) ? newsArr : [];
   // Last 30 days
-  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  const cutoff = ahora - 30 * 24 * 3600 * 1000;
   const cleaned = items
     .filter(n => n && n.headline && n.datetime)
     // Finnhub datetime is unix-seconds
@@ -240,43 +295,37 @@ function categorizeNews(newsArr) {
   const matchedMA = [];
   const matchedReg = [];
   const seenHeadlines = new Set();
+  let descartadas = 0;
   for (const n of cleaned) {
-    const text = ((n.headline || '') + ' ' + (n.summary || '')).toLowerCase();
     const dedupKey = (n.headline || '').toLowerCase().slice(0, 60);
     if (seenHeadlines.has(dedupKey)) continue;
     seenHeadlines.add(dedupKey);
+    if (!hablaDeLaEmpresa(n.headline, { ticker, company })) { descartadas++; continue; }
 
-    const maHit = MA_KEYWORDS.find(k => text.includes(k));
-    if (maHit) {
-      matchedMA.push({
-        headline: n.headline,
-        date: new Date(n._ts).toISOString().slice(0, 10),
-        category: 'm&a',
-        keyword: maHit,
-        url: n.url || null,
-        source: n.source || null
-      });
-      continue;  // priority: M&A first
-    }
+    // SÓLO el titular. El resumen se queda fuera de la clasificación.
+    const text = n.headline || '';
+    const item = (category, keyword) => ({
+      headline: n.headline,
+      date: new Date(n._ts).toISOString().slice(0, 10),
+      category, keyword,
+      url: n.url || null,
+      source: n.source || null
+    });
+
+    const maHit = MA_KEYWORDS.find(k => k.re.test(text));
+    if (maHit) { matchedMA.push(item('m&a', maHit.label)); continue; }  // priority: M&A first
     // Regulatory: short tokens use word-boundary regex (so "cade"
     // doesn't match "decade"), long phrases use substring.
+    const tl = text.toLowerCase();
     const regHit = REGULATORY_KEYWORDS.find(k =>
-      k.kind === 'word' ? k.re.test(text) : text.includes(k.text)
+      k.kind === 'word' ? k.re.test(text) : tl.includes(k.text)
     );
-    if (regHit) {
-      matchedReg.push({
-        headline: n.headline,
-        date: new Date(n._ts).toISOString().slice(0, 10),
-        category: 'regulatory',
-        keyword: regHit.label,
-        url: n.url || null,
-        source: n.source || null
-      });
-    }
+    if (regHit) matchedReg.push(item('regulatory', regHit.label));
   }
   return {
     ma: { deals_mentioned: matchedMA.length, top_news: matchedMA.slice(0, 5) },
-    regulatory: { active_concerns: matchedReg.length, top_news: matchedReg.slice(0, 5) }
+    regulatory: { active_concerns: matchedReg.length, top_news: matchedReg.slice(0, 5) },
+    unrelated_dropped: descartadas
   };
 }
 
@@ -585,7 +634,7 @@ export default async function handler(req, res) {
     const calendarArr = (calendarJ && calendarJ.earningsCalendar) || [];
     const earnings = buildEarningsBlock(historyJ, calendarArr);
     const dividends = buildDividendBlock(divJ && divJ.length ? divJ : (Array.isArray(divJ) ? divJ : []), currentPrice);
-    const news = categorizeNews(newsJ);
+    const news = categorizeNews(newsJ, { ticker, company });
     const filasSec = await form4Promesa;
     const insider = agregaInsiders(
       juntaInsiders(normalizaForm4(filasSec, ticker), normalizaFinnhub(insiderJ)),
