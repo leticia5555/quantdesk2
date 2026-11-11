@@ -1,10 +1,19 @@
 # e2e — suite de regresión de app.html (Chromium)
 
 Harness de la auditoría de wrappers (#42-#45), ahora regresión permanente:
-34 checks que cubren el mapa de wrappers, el autocomplete (#45), la
+94 checks que cubren el mapa de wrappers, el autocomplete (#45), la
 biblioteca de edges (#43), agentes (#44), paywall (#42), el restore de tabs
 y la integridad del flag `illiquid` — con todas las APIs stubbeadas
 (sin red, sin claves).
+
+**El paywall va ENCENDIDO en el stub** (`/api/config` → `paywall_enabled:
+true`), porque los escenarios S4e y S9 miden el paywall. La app, sin esa
+respuesta, abre todo como Pro (kill-switch, `api/_lib/paywall.js`): la suite
+se escribió antes del kill-switch y estuvo semanas cayéndose en S9 por eso.
+S25 mide los tres lados —encendido, apagado y `/api/config` caído— con un
+usuario que nunca pagó.
+
+El proceso sale con código 1 si hay algún FAIL.
 
 ```bash
 node e2e/server.mjs &   # sirve el repo en :8931
