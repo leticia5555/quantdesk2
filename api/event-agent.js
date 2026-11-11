@@ -431,7 +431,7 @@ export function agregaInsiders(lista, currentPrice, { dias = 90, ahora = Date.no
     net_direction: 'QUIET', buy_count: 0, sell_count: 0,
     net_value: 0, total_buy_value: 0, total_sell_value: 0,
     largest_transaction: null, category: 'QUIET',
-    transaction_count: 0, scheduled_sell_count: 0,
+    transaction_count: 0, scheduled_sell_count: 0, unknown_plan_sell_count: 0,
     sources: [],
   };
   const cutoff = new Date(ahora - dias * 24 * 3600 * 1000);
@@ -450,6 +450,8 @@ export function agregaInsiders(lista, currentPrice, { dias = 90, ahora = Date.no
     } else {
       out.sell_count++; out.total_sell_value += value; out.net_value -= value;
       if (t.programada === true) out.scheduled_sell_count++;
+      // Finnhub no dice si la venta era de un plan 10b5-1: "no sabemos" no es "no".
+      else if (t.programada == null) out.unknown_plan_sell_count++;
     }
     const signed = isBuy ? value : -value;
     if (!largest || value > Math.abs(largest.value)) {
@@ -571,7 +573,7 @@ Produce a concise institutional-grade narrative. Return ONLY a JSON object, no p
 
 RULES — this is an information product, not investment advice (Lety, 2026-11-11):
 - NEVER tell the reader to buy, sell, short, scale, trim, reduce, add, hedge or size a position, and never recommend a specific options trade. "positioning_considerations" are things to WATCH and what each outcome would mean, written as scenarios ("if X, then Y tends to…"), not instructions.
-- NEVER attribute knowledge, intent or motive to insiders ("management knew", "had forward visibility", "capitulation"). Insider rows are facts: who, what, how much, when. If sells were scheduled (scheduled_sell_count, scheduled_10b5_1), say so — pre-planned 10b5-1 sales carry little signal. Open-market buys (code P) are the stronger signal.
+- NEVER attribute knowledge, intent or motive to insiders ("management knew", "had forward visibility", "capitulation"). Insider rows are facts: who, what, how much, when. If sells were scheduled (scheduled_sell_count, scheduled_10b5_1), say so — pre-planned 10b5-1 sales carry little signal. unknown_plan_sell_count are sells whose plan status the source does not report: say the plan status is unknown for those, never that they were not scheduled. Do not raise, even as a question, whether insiders traded on knowledge of upcoming news. Open-market buys (code P) are the stronger signal.
 - Treat news headlines as reported claims, not facts ("a short seller alleges…", "Baird says…").
 - Do not invent numbers that are not in the brief (no implied move, IV or price targets unless present).
 
