@@ -17769,6 +17769,7 @@ function margin_color(pct, threshold, COL){
     const nextSub = e.next_eps_estimate != null
       ? `EPS est <span style="color:#bbb;">$${e.next_eps_estimate.toFixed(2)}</span>${e.next_revenue_estimate ? ` · Rev est <span style="color:#bbb;">${fmtMoney(e.next_revenue_estimate, 1)}</span>` : ''}${e.fiscal_period ? ` · <span style="color:${BLUE};">${escapeHtml(e.fiscal_period)}</span>` : ''}`
       : 'No estimate published';
+    const fuenteEst = `<div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:2px;">consenso: ${escapeHtml(e.estimates_source || 'Finnhub')} · puede diferir del de EARNINGS (Alpha Vantage)</div>`;
 
     let beatCol = '#bbb';
     if (e.beat_rate_4q != null) {
@@ -17786,7 +17787,7 @@ function margin_color(pct, threshold, COL){
     const lqVal = lq && lq.eps_actual != null ? `$${lq.eps_actual.toFixed(2)}` : 'N/A';
     const lqCol = lq && lq.beat ? GREEN : lq && lq.beat === false ? RED : '#ddd';
     const lqSub = lq
-      ? `${escapeHtml(lq.date || '')} · est $${lq.eps_estimate != null ? lq.eps_estimate.toFixed(2) : '—'} · <span style="color:${lqCol};font-weight:600;">${lq.beat ? 'BEAT' : lq.beat === false ? 'MISS' : '—'} ${lq.surprise_pct != null ? `(${fmtSignedPct(lq.surprise_pct)})` : ''}</span>`
+      ? `periodo al ${escapeHtml(lq.period_end || lq.date || '')}${lq.fiscal_period ? ' (' + escapeHtml(lq.fiscal_period) + ')' : ''} · est $${lq.eps_estimate != null ? lq.eps_estimate.toFixed(2) : '—'} · <span style="color:${lqCol};font-weight:600;">${lq.beat ? 'BEAT' : lq.beat === false ? 'MISS' : '—'} ${lq.surprise_pct != null ? `(${fmtSignedPct(lq.surprise_pct)})` : ''}</span>`
       : 'No data';
 
     // 4Q history mini bars
@@ -17815,7 +17816,7 @@ function margin_color(pct, threshold, COL){
     return `<div style="margin-bottom:12px;">
       <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// 📅 EARNINGS CALENDAR</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;">
-        ${microCard('Next Earnings', next, nextSub)}
+        ${microCard('Next Earnings', next, nextSub + fuenteEst)}
         ${microCard('Beat Rate (4Q)', beatVal, beatSub, beatCol)}
         ${microCard('Last Quarter', lqVal, lqSub, lqCol)}
         ${historyCard}
