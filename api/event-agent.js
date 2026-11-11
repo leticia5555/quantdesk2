@@ -137,39 +137,66 @@ function daysBetween(a, b) {
 }
 
 // ── Earnings ─────────────────────────────────────────────────────
-function buildEarningsBlock(historyArr, calendarArr) {
+// EL DÍA DE HOY ES EL DE NUEVA YORK (Lety, 2026-11-11). Antes se comparaba
+// la medianoche UTC del reporte contra la HORA actual: el 17-nov visto el
+// 11-nov a las 10:38 de Monterrey daba 5.3 → "5d", mientras EARNINGS decía
+// "en 6d". Y un reporte de HOY quedaba fuera (su medianoche ya pasó). Ahora
+// los dos son fechas de calendario y se restan como días enteros.
+export function hoyNY(ahora = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit' }).format(ahora);
+}
+export function diasDeCalendario(desdeYmd, hastaYmd) {
+  const d = (x) => Date.UTC(+x.slice(0, 4), +x.slice(5, 7) - 1, +x.slice(8, 10));
+  return Math.round((d(hastaYmd) - d(desdeYmd)) / (24 * 3600 * 1000));
+}
+
+export function buildEarningsBlock(historyArr, calendarArr, { ahora = new Date() } = {}) {
   const out = {
     next_date: null, days_until: null, next_eps_estimate: null,
     next_revenue_estimate: null, fiscal_period: null,
-    last_4_reports: [], beat_rate_4q: null, avg_surprise_pct: null
+    last_4_reports: [], beat_rate_4q: null, avg_surprise_pct: null,
+    most_recent_report: null,
+    estimates_source: 'Finnhub',
   };
 
   // Upcoming earnings (Finnhub /calendar/earnings)
   const calendar = Array.isArray(calendarArr) ? calendarArr : [];
-  const today = new Date();
+  const hoy = hoyNY(ahora);
   const upcoming = calendar
-    .filter(e => e && e.date && e.epsEstimate != null)
-    .map(e => ({ ...e, _date: new Date(e.date + 'T00:00:00Z') }))
-    .filter(e => !isNaN(e._date) && e._date >= today)
-    .sort((a, b) => a._date - b._date);
+    .filter(e => e && /^\d{4}-\d{2}-\d{2}$/.test(String(e.date || '')) && e.epsEstimate != null)
+    .filter(e => e.date >= hoy)
+    .sort((a, b) => a.date.localeCompare(b.date));
   if (upcoming.length > 0) {
     const next = upcoming[0];
     out.next_date = next.date;
-    out.days_until = Math.max(0, daysBetween(next._date, today));
+    out.days_until = diasDeCalendario(hoy, next.date);
     out.next_eps_estimate = next.epsEstimate;
     out.next_revenue_estimate = next.revenueEstimate || null;
     if (next.quarter && next.year) out.fiscal_period = `Q${next.quarter} ${next.year}`;
+    if (next.hour) out.next_hour = next.hour; // bmo / amc
   }
 
-  // Last 4 reports (Finnhub /stock/earnings — actuals only)
-  const history = Array.isArray(historyArr) ? historyArr : [];
-  const last4 = history.slice(0, 4).map(q => {
+  // Last 4 reports (Finnhub /stock/earnings — actuals only).
+  // EL ORDEN SE FIJA ACÁ, no se confía en Finnhub: el más reciente primero,
+  // y cada uno dice cuántos trimestres atrás está. Claude leyó el brief de
+  // SLQT al revés y llamó "el más reciente" al de hace tres trimestres.
+  // `date` es el CIERRE DEL PERIODO que da Finnhub, no el día del reporte:
+  // se manda también como `period_end` para que nadie lo confunda.
+  const history = (Array.isArray(historyArr) ? historyArr : [])
+    .filter(q => q && q.period)
+    .slice()
+    .sort((a, b) => String(b.period).localeCompare(String(a.period)));
+  const last4 = history.slice(0, 4).map((q, i) => {
     const epsEst = (typeof q.estimate === 'number') ? q.estimate : null;
     const epsAct = (typeof q.actual === 'number') ? q.actual : null;
     const surprise = (epsEst != null && epsEst !== 0 && epsAct != null)
       ? ((epsAct - epsEst) / Math.abs(epsEst)) * 100 : null;
     return {
       date: q.period || null,
+      period_end: q.period || null,
+      fiscal_period: q.quarter && q.year ? `Q${q.quarter} ${q.year}` : null,
+      quarters_ago: i + 1,
       eps_actual: epsAct,
       eps_estimate: epsEst,
       surprise_pct: surprise != null ? +surprise.toFixed(2) : null,
@@ -177,6 +204,7 @@ function buildEarningsBlock(historyArr, calendarArr) {
     };
   });
   out.last_4_reports = last4;
+  out.most_recent_report = last4[0] || null;
 
   const validBeats = last4.filter(r => r.beat != null);
   if (validBeats.length > 0) {
@@ -525,6 +553,8 @@ function nextMajorCatalyst(earnings, dividends, corp) {
 // ── Claude narrative ─────────────────────────────────────────────
 async function runClaude(apiKey, brief, lang) {
   const system = `You are a senior event-driven research analyst at a top-tier hedge fund. You will be given a structured JSON brief covering a ticker's catalyst calendar: upcoming earnings (date, estimates, beat history), dividends, M&A signals from news, regulatory signals, insider transactions, corporate actions, and the identified next major catalyst.
+
+Earnings history: earnings.last_4_reports is ordered MOST RECENT FIRST (quarters_ago = 1 is the latest). When you mention the latest quarter, use earnings.most_recent_report and nothing else. "period_end" is the fiscal period close, not the report date.
 
 Produce a concise institutional-grade narrative. Return ONLY a JSON object, no preamble:
 
