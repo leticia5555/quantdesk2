@@ -211,7 +211,7 @@
   .evento{display:flex;gap:10px;align-items:baseline;min-height:36px;
     padding:7px 10px;border-top:1px solid var(--linea)}
   .evento:first-child{border-top:0}
-  .evento .dia{flex:0 0 58px;font:600 11px var(--mono);color:var(--tenue)}
+  .evento .dia{flex:0 0 78px;font:600 11px var(--mono);color:var(--tenue)}
   .evento .que{flex:1 1 auto;font-size:12px;line-height:1.35}
   .evento .que b{font-weight:600}
   .evento .que small{display:block;color:var(--tenue);font-size:11px}
@@ -1829,16 +1829,49 @@
         : 'sin eventos ni reportes en los próximos ' + ((s.ventana && s.ventana.dias) || 7) + ' días') + '</div>';
     } else {
       html += ev.slice(0, 12).map(function(e){
-        var dia = nombreDeDia(e.fecha);
         return '<div class="evento ' + esc(e.tipo) + '">'
-          + '<span class="dia">' + esc(dia ? dia.slice(0,3) + ' ' + e.fecha.slice(8) : e.fecha) + '</span>'
+          + '<span class="dia">' + esc(diaConMes(e.fecha)) + '</span>'
           + '<span class="que"><b>' + esc(e.titulo) + '</b>'
           + (e.detalle ? '<small>' + esc(e.detalle) + '</small>' : '') + '</span>'
-          + '<span class="cuando">' + esc(e.tipo === 'reporte' ? (e.cuando || 'TBD') : (e.importancia || '')) + '</span>'
+          + '<span class="cuando">' + esc(e.tipo === 'reporte' ? (e.cuando || 'TBD') : importanciaEs(e.importancia)) + '</span>'
           + '</div>';
       }).join('');
     }
-    return html + '</div>';
+    html += '</div>';
+    // LO QUE VIENE DESPUÉS DE ESTA SEMANA, CON NOMBRE. "3 más adelante" dice
+    // cuántos y no cuáles: con la Fed a tres semanas el panel tenía la fecha y
+    // enseñaba un conteo. Van en su propia lista, con el mes, para que nadie
+    // los lea como eventos de esta semana.
+    var px = s.proximos_macro || [];
+    if(px.length){
+      html += '<p class="nota" id="macro-proximos-titulo">próximos datos macro</p><div class="tabla" id="macro-proximos">'
+        + px.map(function(e){
+          return '<div class="evento macro despues">'
+            + '<span class="dia">' + esc(diaConMes(e.fecha)) + '</span>'
+            + '<span class="que"><b>' + esc(e.titulo) + '</b>'
+            + (e.detalle ? '<small>' + esc(e.detalle) + '</small>' : '') + '</span>'
+            + '<span class="cuando">' + esc(importanciaEs(e.importancia)) + '</span>'
+            + '</div>';
+        }).join('') + '</div>';
+    }
+    return html;
+  }
+  var MESES_CORTOS = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  // EL DÍA SIEMPRE CON SU MES: "mar 17 nov". "mar 17" a secas se leía como
+  // "17 de marzo" —"mar" es martes y también marzo— (Lety, 2026-11-13). Una
+  // sola función para la semana y para los próximos: son la misma columna.
+  function diaConMes(fecha){
+    var f = String(fecha || '');
+    var dia = nombreDeDia(f);
+    var mes = MESES_CORTOS[Number(f.slice(5,7)) - 1];
+    var n = Number(f.slice(8,10));
+    if(!dia || !mes || !n) return f;
+    return dia.slice(0,3) + ' ' + n + ' ' + mes;
+  }
+  // La importancia viaja en inglés porque así la guarda la tabla curada
+  // (high/med/low); en pantalla va en español.
+  function importanciaEs(i){
+    return { high: 'alta', med: 'media', low: 'baja' }[i] || (i || '');
   }
 
   // ── R3(b): LO DE HOY ──────────────────────────────────────────────

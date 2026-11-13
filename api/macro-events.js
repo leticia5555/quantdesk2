@@ -22,6 +22,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { sql, ensureSchema } from './_lib/db.js';
+import { oficialesEntre, unirMacro, OFICIAL_HASTA } from './_lib/macro-oficial.js';
 
 const IMPORTANCE = new Set(['high', 'med', 'low']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -74,9 +75,18 @@ export default async function handler(req, res) {
              where event_date >= current_date
              order by event_date asc, importance desc, title asc
              limit 60`);
+      // El admin (?all=1) ve SÓLO lo curado: es lo único que puede borrar.
+      if (all) return res.status(200).json({ events: rows, count: rows.length });
+      // El público ve lo curado + las fechas oficiales del repo (Fed y BLS,
+      // `_lib/macro-oficial.js`), desde hoy. Lo curado gana si coincide en
+      // fecha y categoría.
+      const hoy = new Date().toISOString().slice(0, 10);
+      const oficiales = oficialesEntre(hoy, OFICIAL_HASTA).map((e) => ({
+        id: 'oficial_' + e.category + '_' + e.event_date, ...e }));
+      const events = unirMacro(rows, oficiales).slice(0, 60);
       // El calendario cambia poco: cache CDN corto con revalidación.
-      if (!all) res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
-      return res.status(200).json({ events: rows, count: rows.length });
+      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
+      return res.status(200).json({ events, count: events.length, oficial_hasta: OFICIAL_HASTA });
     }
 
     // ── mutaciones: gated ─────────────────────────────────────────

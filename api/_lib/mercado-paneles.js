@@ -48,6 +48,9 @@ export function ventanaSemana(ahora = new Date(), dias = DIAS_SEMANA) {
  * apertura" es un hecho del calendario, y "08:00 CT" sería una hora que
  * Finnhub no dio. Un `TBD` se dice TBD.
  */
+// Cuántos eventos macro de "más adelante" se nombran.
+export const PROXIMOS_MACRO = 3;
+
 export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), dias = DIAS_SEMANA,
   horizonte = DIAS_HORIZONTE } = {}) {
   const v = ventanaSemana(ahora, dias);
@@ -60,19 +63,32 @@ export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), 
   const eventos = [];
   let macroDespues = 0;
   let reportesDespues = 0;
+  // LOS PRÓXIMOS, cuando caen después de la semana. "sin eventos macro esta
+  // semana · 3 más adelante" dice cuántos y no CUÁLES: con la Fed a tres
+  // semanas, la pantalla tenía el dato y enseñaba un conteo. Van aparte de
+  // `eventos` —no son de esta semana y no se pueden pintar como si lo fueran—.
+  const proximos = [];
 
+  const eventoMacro = (e) => ({
+    tipo: 'macro',
+    fecha: String(e.event_date).slice(0, 10),
+    titulo: e.title || '',
+    detalle: e.note || null,
+    importancia: e.importance || null,
+    categoria: e.category || null,
+    // Curado u oficial: se dice cuál. Lo oficial trae además la página de la
+    // que salió la fecha.
+    fuente: e.fuente || 'neon:macro_events',
+    fuente_url: e.fuente_url || null,
+  });
   for (const e of (macro.filas || [])) {
-    if (despues(e.event_date)) { macroDespues++; continue; }
+    if (despues(e.event_date)) {
+      macroDespues++;
+      if (proximos.length < PROXIMOS_MACRO) proximos.push(eventoMacro(e));
+      continue;
+    }
     if (!dentro(e.event_date)) continue;
-    eventos.push({
-      tipo: 'macro',
-      fecha: String(e.event_date).slice(0, 10),
-      titulo: e.title || '',
-      detalle: e.note || null,
-      importancia: e.importance || null,
-      categoria: e.category || null,
-      fuente: 'neon:macro_events',
-    });
+    eventos.push(eventoMacro(e));
   }
   for (const r of (reportes.filas || [])) {
     if (despues(r.date)) { reportesDespues++; continue; }
@@ -100,9 +116,21 @@ export function armaEstaSemana({ macro = {}, reportes = {}, ahora = new Date(), 
   return {
     ventana: v,
     eventos,
+    proximos_macro: proximos,
     // POR SEPARADO, nunca fundidas: ver la cabecera del archivo.
     fuentes: {
-      macro: estadoFuente(macro, 'neon:macro_events', macroDespues, horizonte),
+      macro: {
+        ...estadoFuente(macro, 'neon:macro_events', macroDespues, horizonte),
+        // Lo que se PINTA de macro esta semana. `filas` es todo el horizonte
+        // (la consulta es de un mes) y con las fechas oficiales adentro ya no
+        // es cero casi nunca: sin esta cuenta, "sin eventos macro esta semana"
+        // no se podía decir.
+        en_ventana: eventos.filter((e) => e.tipo === 'macro').length,
+        // Hasta dónde llega la lista oficial del repo. Si la ventana ya pasó
+        // de ahí, el vacío no es "no hay eventos": es que la lista se acabó.
+        oficial_hasta: macro.oficial_hasta || null,
+        oficial_agotado: !!(macro.oficial_hasta && v.hasta > macro.oficial_hasta),
+      },
       reportes: {
         // `mas_adelante` lo manda el llamador cuando lo PREGUNTÓ aparte (una
         // consulta acotada al resto del horizonte). Contarlo de las filas sólo
