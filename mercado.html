@@ -207,7 +207,7 @@
     font-family:var(--mono);font-size:10px;color:var(--texto);cursor:pointer;
     -webkit-tap-highlight-color:transparent}
   @media (pointer:fine){ .nota-fila:hover{background:#141c25} .chip-tk:hover{border-color:#2b3845} }
-  /* "Esta semana" y Arena: listas de dos líneas, no tablas de números. */
+  /* "Esta semana" y La Liga: listas de dos líneas, no tablas de números. */
   .evento{display:flex;gap:10px;align-items:baseline;min-height:36px;
     padding:7px 10px;border-top:1px solid var(--linea)}
   .evento:first-child{border-top:0}
@@ -217,6 +217,13 @@
   .evento .que small{display:block;color:var(--tenue);font-size:11px}
   .evento .cuando{flex:0 0 auto;font:11px var(--mono);color:var(--tenue)}
   .evento.reporte .dia{color:var(--apagado)}
+  /* La Liga: el puesto en la columna del día, el % a la derecha. */
+  .evento .puesto{flex:0 0 18px;text-align:right;font-weight:400}
+  .evento .val{flex:0 0 auto;font:600 12px var(--mono);white-space:nowrap}
+  .evento .falta{font-weight:400;color:var(--apagado)}
+  .evento.sin-datos .que b{font-weight:400;color:var(--tenue)}
+  .evento.indice{border-top:1px dashed #232c37}
+  .evento.indice .que b{font-weight:400;color:var(--tenue)}
   /* Volver a 1×. Flota sobre el mapa porque pertenece al mapa, y mide 44px
      como todo lo que se toca (regla 8). Sólo aparece cuando hay a qué
      volver: un botón que no hace nada es ruido. */
@@ -565,6 +572,7 @@
 <script src="/qd-pesos.js"></script>
 <script src="/qd-mundo.js"></script>
 <script src="/qd-tablas.js"></script>
+<script src="/qd-liga.js"></script>
 <script src="/qd-compartir.js"></script>
 <script>
 (function(){
@@ -1750,6 +1758,8 @@
   // ═══════════════════════════════════════════════════════════════════
   var paneles = null;          // lo que devolvió /api/mercado-paneles
   var panelesPedido = false;
+  var liga = null;             // lo que devolvió /api/leaderboard (La Liga)
+  var ligaPedida = false;
   var noticias = null;         // lo que devolvió /api/noticias
   var noticiasPedido = false;
 
@@ -1966,47 +1976,63 @@
     return html;
   }
 
-  function bloqueArena(){
-    var html = '<h2>Arena</h2>';
-    if(!paneles){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
-    var a = paneles.arena || {};
-    if(!a.agentes || !a.agentes.length){
-      return html + '<div class="tabla"><div class="vacio">'
-        + esc(a.motivo || 'el leaderboard no devolvió agentes') + '</div></div>';
+  // ── LA LIGA: LA MISMA TARJETA QUE LA PORTADA, DE LA MISMA FUENTE ──
+  // Hasta acá este bloque se llamaba "Arena" y salía de `/api/mercado-paneles`,
+  // que le pregunta al leaderboard por dentro con un reloj de 6 s, se queda
+  // con cinco agentes y se guarda en caché hasta veinte minutos. Podía decir
+  // otra cosa que la portada, o quedarse en "no contestó en 6000 ms"
+  // (Lety, 2026-11-11).
+  //
+  // Ahora lee `/api/leaderboard` y lo pasa por `qdLigaModelo` (qd-liga.js),
+  // igual que la portada: la temporada actual, los siete, el índice aparte y
+  // la frase contra el índice. Acá no se calcula ningún rendimiento.
+  function bloqueLiga(){
+    var html = '<h2 id="liga-titulo">La Liga</h2>';
+    if(!liga){ return html + '<div class="tabla"><div class="vacio">cargando…</div></div>'; }
+    var m = qdLigaModelo(liga);
+    if(m.temporada) html += '<p class="nota" id="liga-temporada">' + esc(m.temporada) + '</p>';
+    if(m.error || m.vacio){
+      return html + '<div class="tabla"><div class="vacio"' + (m.error ? ' data-error="1"' : '') + '>'
+        + esc(m.error || m.vacio) + '</div></div>';
     }
-    // UNA LÍNEA, UNA VEZ, ARRIBA. Cuando los cinco fallan por lo mismo —el
-    // caso real: la temporada no se ha reiniciado— la causa se decía en cada
-    // fila, cinco veces, con jerga. Repetirla no informa cinco veces: tapa la
-    // tarjeta. Si hay MEZCLA de causas, cada fila dice la suya, porque ahí la
-    // diferencia es el dato.
-    var comun = causaComunArena(a.agentes);
-    if(comun) html += '<p class="nota">' + esc(comun) + '</p>';
+    // UNA LÍNEA, UNA VEZ, ARRIBA, cuando ninguno tiene número y todos por lo
+    // mismo. Con MEZCLA de causas, cada fila dice la suya.
+    if(m.causaComun) html += '<p class="nota">' + esc(m.causaComun) + '</p>';
     html += '<div class="tabla">';
-    html += a.agentes.map(function(g){
-      // Con número, la línea chica es el modelo. Sin número y SIN causa común,
-      // es la causa: `qdPctTag` la mete en un `title` que en un teléfono no
-      // existe, así que ahí no se podía leer.
-      var abajo = Number.isFinite(g.pct)
-        ? (g.modelo ? esc(g.modelo) : '')
-        : (comun ? (g.modelo ? esc(g.modelo) : '') : esc(g.pct_motivo || 'sin causa declarada'));
-      return '<div class="evento">'
-        + '<span class="que"><b>' + esc(g.nombre) + '</b>'
-        + (abajo ? '<small>' + abajo + '</small>' : '') + '</span>'
+    function fila(f, clase, abajo){
+      return '<div class="evento' + (clase ? ' ' + clase : '') + '"' + (f.id ? ' data-agente="' + esc(f.id) + '"' : '') + '>'
+        + '<span class="dia puesto">' + (f.puesto == null ? '' : f.puesto) + '</span>'
+        + '<span class="que"><b>' + esc(f.nombre) + '</b>'
+        + (abajo ? '<small>' + esc(abajo) + '</small>' : '') + '</span>'
         + '<span class="val">'
-        // `qdPctTag` exige etiqueta de periodo: la de Arena es el acumulado
-        // desde su baseline, y decirlo es lo que impide leerlo como el % del
-        // día. El número NO se calcula acá: lo trae el leaderboard.
-        + qdPctTag(g.pct, 'acum.', { motivo: g.pct_motivo }) + '</span>'
-        + '</div>';
+        // Con número, `qdPctTag` y su etiqueta: "acum." es el acumulado de la
+        // temporada, y decirlo es lo que impide leerlo como el % del día.
+        // Sin número, "sin datos" en gris y no una raya (Lety, 2026-11-10).
+        + (f.sinDatos ? '<span class="falta">sin datos</span>' : qdPctTag(f.pct, 'acum.'))
+        + '</span></div>';
+    }
+    html += m.filas.map(function(f){
+      // Sin número y SIN causa común, la línea chica es LA CAUSA: un `title`
+      // en un teléfono no existe, así que ahí no se podía leer
+      // (Lety, 2026-10-20). Con número, es el modelo.
+      var abajo = f.sinDatos && !m.causaComun ? f.causa
+        : [f.modelo, f.empate ? 'empate técnico con su vecino' : ''].filter(Boolean).join(' · ');
+      return fila(f, f.sinDatos ? 'sin-datos' : '', abajo);
     }).join('');
-    return html + '</div>';
+    if(m.indice){
+      html += fila({ id: 'benchmark', puesto: null, nombre: m.indice.nombre, pct: m.indice.pct, sinDatos: m.indice.sinDatos },
+        'indice', m.indice.sinDatos ? m.indice.causa : 'el índice, no compite');
+    }
+    html += '</div>';
+    if(m.lectura) html += '<p class="nota" id="liga-lectura">' + esc(m.lectura) + '</p>';
+    return html + '<a class="ver-todas" href="/liga">ver la tabla completa →</a>';
   }
 
   function pintarPaneles(d){
     var el = document.getElementById('paneles');
     // En Mundo no hay tablas de emisoras: un índice no tiene capitalización ni
     // volumen, y "más operadas" no significa nada sobre el Nikkei. El resto de
-    // los paneles sí va, porque el calendario y Arena no son de un mapa.
+    // los paneles sí va, porque el calendario y La Liga no son de un mapa.
     var html = '';
     if(estado.mapa !== 'mundo'){
       // EL ERROR DEL MAPA VIAJA A LAS TABLAS. Sin esto, un mapa que no se pudo
@@ -2027,10 +2053,11 @@
     // cabecera, que en el celular le quitaría alto al mapa.
     document.getElementById('p-revista').innerHTML = bloqueRevista();
     atarFotosDeRevista();
-    document.getElementById('p-lado').innerHTML = bloqueHoy() + bloqueSemana() + bloqueArena()
+    document.getElementById('p-lado').innerHTML = bloqueHoy() + bloqueSemana() + bloqueLiga()
       + '<a class="ver-todas" id="abrir-terminal" href="/app">Abrir la terminal completa · Modo experto →</a>';
     el.hidden = false;
     if(!panelesPedido) cargarPaneles();
+    if(!ligaPedida) cargarLiga();
     if(!noticiasPedido) cargarNoticias();
     cargarTiras();
   }
@@ -2047,6 +2074,18 @@
       });
   }
 
+  function cargarLiga(){
+    ligaPedida = true;
+    fetch('/api/leaderboard')
+      .then(function(r){ if(!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(j){ liga = j; if(cache[estado.mapa]) pintarPaneles(cache[estado.mapa]); })
+      .catch(function(e){
+        // Un fallo no deja el bloque en "cargando…" para siempre: dice qué pasó.
+        liga = { error: String((e && e.message) || e), agents: [] };
+        if(cache[estado.mapa]) pintarPaneles(cache[estado.mapa]);
+      });
+  }
+
   function cargarPaneles(){
     panelesPedido = true;
     fetch('/api/mercado-paneles')
@@ -2057,7 +2096,7 @@
         // siempre: se dice qué pasó.
         paneles = { esta_semana: { eventos: [], fuentes: {
           macro: { ok: false, motivo: e.message }, reportes: { ok: false, motivo: e.message } } },
-          arena: { agentes: [], motivo: 'no se pudo pedir el leaderboard: ' + e.message } };
+          arena: { agentes: [] } };
         if(cache[estado.mapa]) pintarPaneles(cache[estado.mapa]);
       });
   }

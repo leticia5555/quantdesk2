@@ -209,6 +209,7 @@
 <script src="/qd-periods.js"></script>
 <script src="/qd-treemap.js"></script>
 <script src="/qd-mercados.js"></script>
+<script src="/qd-liga.js"></script>
 <script>
 (function(){
   'use strict';
@@ -376,77 +377,51 @@
   // Acá no se calcula ni un rendimiento ni un puesto: es dinero, y dos
   // lugares calculando dinero es la forma de que un día difieran.
   // ═════════════════════════════════════════════════════════════════
-  var MESES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
-  function diaCorto(iso){
-    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
-    return m ? Number(m[3]) + ' ' + MESES[Number(m[2]) - 1] : null;
-  }
-
   // El rendimiento de una fila. Con número, `qdPctTag` y su etiqueta de
   // periodo. Sin número, "sin datos" en gris y no una raya: en una tabla de
   // posiciones "—" se lee como un cero o como un error de pantalla
   // (Lety, 2026-11-10). La causa va en el `title`.
-  function pctDeLiga(pct, motivo){
-    if(Number.isFinite(pct)) return qdPctTag(pct, 'acum.');
-    return '<span class="falta" title="' + esc(motivo) + '">sin datos</span>';
+  function pctDeLiga(f){
+    // La etiqueta de periodo es obligatoria (`qdPctTag` lanza sin ella):
+    // "acum." = acumulado desde el arranque de la temporada, no el día.
+    if(!f.sinDatos) return qdPctTag(f.pct, 'acum.');
+    return '<span class="falta" title="' + esc(f.causa || '') + '">sin datos</span>';
   }
 
+  // El orden, quién va sin datos y con qué causa lo decide `qdLigaModelo`
+  // (qd-liga.js), el mismo que usa `/mercado`: acá sólo se le pone el HTML.
   function pintarLiga(j){
     var cuerpo = $('liga-cuerpo'), sub = $('liga-sub');
-    if(j.error && !(j.agents && j.agents.length)){
-      sub.textContent = '';
-      cuerpo.innerHTML = '<div class="vacio" data-error="1">' + esc('no se pudo leer la tabla: ' + j.error) + '</div>';
+    var m = qdLigaModelo(j);
+    sub.textContent = m.temporada;
+    if(m.error){
+      cuerpo.innerHTML = '<div class="vacio" data-error="1">' + esc(m.error) + '</div>';
       return;
     }
-    var t = j.temporada || {};
-    var partes = [];
-    if(t.name) partes.push(t.name);
-    var a = diaCorto(t.start), b = diaCorto(t.end);
-    if(a && b) partes.push(a + ' → ' + b);
-    if(t.abierta === false) partes.push('todavía no abre');
-    sub.textContent = partes.join(' · ');
-
-    var filas = (j.agents || []).slice().sort(function(x, y){
-      // El orden es el `rank` del servidor. Un modelo SIN DATOS va al final,
-      // tenga o no puesto: no se le puede comparar con nadie.
-      var dx = Number.isFinite(x.return_pct), dy = Number.isFinite(y.return_pct);
-      if(dx !== dy) return dx ? -1 : 1;
-      var rx = Number.isFinite(x.rank) ? x.rank : Infinity, ry = Number.isFinite(y.rank) ? y.rank : Infinity;
-      return rx - ry;
-    });
-    if(!filas.length){
-      cuerpo.innerHTML = '<div class="vacio">' + esc(j.enabled === false
-        ? 'la liga todavía no arranca' : 'el leaderboard no devolvió agentes') + '</div>';
+    if(m.vacio){
+      cuerpo.innerHTML = '<div class="vacio">' + esc(m.vacio) + '</div>';
       return;
     }
-    var html = filas.map(function(g){
-      var hay = Number.isFinite(g.return_pct);
-      var empate = hay && g.margen && g.margen.empate_tecnico;
-      var chica = [g.model_label || g.model || '', empate ? 'empate técnico con su vecino' : '']
-        .filter(Boolean).join(' · ');
-      return '<a class="fila' + (hay ? '' : ' sin-datos') + '" href="/liga" data-agente="' + esc(g.id) + '">'
-        + '<span class="puesto">' + (hay && Number.isFinite(g.rank) ? g.rank : '') + '</span>'
-        + '<span class="que"><b>' + esc(g.name || g.id) + '</b>'
+    var html = m.causaComun ? '<p class="nota">' + esc(m.causaComun) + '</p>' : '';
+    html += m.filas.map(function(f){
+      var chica = [f.modelo, f.empate ? 'empate técnico con su vecino' : ''].filter(Boolean).join(' · ');
+      return '<a class="fila' + (f.sinDatos ? ' sin-datos' : '') + '" href="/liga" data-agente="' + esc(f.id) + '">'
+        + '<span class="puesto">' + (f.puesto == null ? '' : f.puesto) + '</span>'
+        + '<span class="que"><b>' + esc(f.nombre) + '</b>'
         + (chica ? '<small>' + esc(chica) + '</small>' : '') + '</span>'
-        // La etiqueta de periodo es obligatoria (`qdPctTag` lanza sin ella):
-        // "acum." = acumulado desde el arranque de la temporada, no el día.
-        + '<span class="val">' + pctDeLiga(g.return_pct,
-            g.error || 'el leaderboard no trajo el rendimiento de esta cuenta') + '</span>'
+        + '<span class="val">' + pctDeLiga(f) + '</span>'
         + '</a>';
     }).join('');
     // El índice va aparte y marcado: no compite, es la vara.
-    var bm = j.benchmark;
-    if(bm){
+    if(m.indice){
       html += '<a class="fila indice" href="/liga" data-agente="benchmark">'
         + '<span class="puesto">·</span>'
-        + '<span class="que"><b>' + esc(bm.name || 'S&P 500') + '</b>'
+        + '<span class="que"><b>' + esc(m.indice.nombre) + '</b>'
         + '<small>' + esc('el índice, no compite') + '</small></span>'
-        + '<span class="val">' + pctDeLiga(bm.return_pct,
-            bm.detalle || bm.error || 'el índice todavía no tiene compra registrada') + '</span>'
+        + '<span class="val">' + pctDeLiga(m.indice) + '</span>'
         + '</a>';
     }
-    var lectura = j.margen_de_la_tabla && j.margen_de_la_tabla.indice && j.margen_de_la_tabla.indice.lectura;
-    cuerpo.innerHTML = html + (lectura ? '<p class="fuente" style="padding-top:8px">' + esc(lectura) + '</p>' : '');
+    cuerpo.innerHTML = html + (m.lectura ? '<p class="fuente" style="padding-top:8px">' + esc(m.lectura) + '</p>' : '');
   }
 
   function cargarLiga(){
@@ -601,7 +576,7 @@
     }
     // De cuándo son: la fecha de presentación más reciente que viajó.
     var ultima = filas.reduce(function(m, f){ return f.filing_fecha && f.filing_fecha > m ? f.filing_fecha : m; }, '');
-    sub.textContent = 'Form 4 de la SEC' + (ultima ? ' · presentados hasta el ' + diaCorto(ultima) : '');
+    sub.textContent = 'Form 4 de la SEC' + (ultima ? ' · presentados hasta el ' + qdLigaDia(ultima) : '');
     if(!filas.length){
       cuerpo.innerHTML = '<div class="vacio">' + esc('la SEC no devolvió Form 4 en esta ventana') + '</div>';
       return;
