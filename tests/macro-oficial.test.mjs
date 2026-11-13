@@ -19,7 +19,8 @@ import assert from 'node:assert/strict';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { CALENDARIO_OFICIAL, OFICIAL_HASTA, oficialesEntre, unirMacro } from '../api/_lib/macro-oficial.js';
+import { readFileSync } from 'node:fs';
+import { CALENDARIO_OFICIAL, OFICIAL_HASTA, oficialesEntre, unirMacro, horaCdmx } from '../api/_lib/macro-oficial.js';
 import { armaEstaSemana, PROXIMOS_MACRO } from '../api/_lib/mercado-paneles.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -97,9 +98,44 @@ test('la semana del dato lo pinta como evento de la semana, con su hora en CT', 
   const m = s.eventos.filter((e) => e.tipo === 'macro');
   assert.deepEqual(m.map((e) => e.fecha), ['2026-12-09', '2026-12-10']);
   assert.match(m[0].titulo, /Fed/);
-  assert.match(m[0].detalle, /13:00 CT/);
-  assert.match(m[1].detalle, /7:30 CT/);
+  assert.match(m[0].detalle, /13:00 hora de CDMX/);
+  assert.match(m[1].detalle, /7:30 hora de CDMX/);
+  assert.doesNotMatch(m[0].detalle + m[1].detalle, /\bCT\b/, '"CT" no dice de qué ciudad es la hora');
   assert.equal(fraseDeFuente('macro', s.fuentes), null, 'con eventos esta semana no hay aviso');
+});
+
+test('la hora de CDMX se CALCULA: en horario de verano de EE.UU. son dos horas, no una', () => {
+  // México ya no cambia de horario y Estados Unidos sí. En invierno Nueva York
+  // va una hora adelante de CDMX; del segundo domingo de marzo a noviembre,
+  // dos. Con la hora escrita a mano, la Fed de marzo salía una hora mal.
+  assert.equal(horaCdmx('2026-12-09', '14:00'), '13:00', 'invierno: una hora');
+  assert.equal(horaCdmx('2026-12-10', '08:30'), '7:30');
+  assert.equal(horaCdmx('2027-03-10', '08:30'), '7:30', 'el 10 de marzo EE.UU. todavía no cambia');
+  assert.equal(horaCdmx('2027-03-17', '14:00'), '12:00', 'el 17 de marzo ya cambió: dos horas');
+  assert.equal(horaCdmx('2027-07-02', '08:30'), '6:30', 'verano');
+  const marzo = CALENDARIO_OFICIAL.find((e) => e.event_date === '2027-03-17');
+  assert.match(marzo.note, /comunicado 12:00 hora de CDMX/);
+  for (const e of CALENDARIO_OFICIAL) {
+    assert.match(e.note, /\d{1,2}:\d{2} hora de CDMX/, `${e.event_date}: sin hora de CDMX`);
+    assert.doesNotMatch(e.note, /\bCT\b|null|undefined/, e.note);
+  }
+});
+
+test('en pantalla: el día lleva su mes y la importancia va en español', () => {
+  // "mar 17" se leía como 17 de marzo —"mar" es martes y también marzo— y la
+  // importancia salía "high" (Lety, 2026-11-13).
+  const html = readFileSync(join(ROOT, 'mercado.html'), 'utf8');
+  const cuerpo = /function diaConMes\(fecha\)\{([\s\S]*?)\n  \}/.exec(html);
+  assert.ok(cuerpo, 'no encontré diaConMes en mercado.html');
+  const MESES_CORTOS = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const DIAS = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+  const nombreDeDia = (f) => DIAS[(new Date(f + 'T12:00:00Z').getUTCDay() + 6) % 7];
+  const diaConMes = new Function('nombreDeDia', 'MESES_CORTOS', 'fecha', cuerpo[1]).bind(null, nombreDeDia, MESES_CORTOS);
+  assert.equal(diaConMes('2026-11-17'), 'mar 17 nov');
+  assert.equal(diaConMes('2026-12-04'), 'vie 4 dic');
+  assert.equal(diaConMes('2027-03-17'), 'mié 17 mar');
+  assert.match(html, /high: 'alta', med: 'media', low: 'baja'/);
+  assert.doesNotMatch(html, /e\.fecha\.slice\(8\) : e\.fecha/, 'la semana ya no pinta el día sin mes');
 });
 
 test('cuando la lista se acaba, el panel lo DICE', () => {

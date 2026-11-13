@@ -17769,6 +17769,7 @@ function margin_color(pct, threshold, COL){
     const nextSub = e.next_eps_estimate != null
       ? `EPS est <span style="color:#bbb;">$${e.next_eps_estimate.toFixed(2)}</span>${e.next_revenue_estimate ? ` · Rev est <span style="color:#bbb;">${fmtMoney(e.next_revenue_estimate, 1)}</span>` : ''}${e.fiscal_period ? ` · <span style="color:${BLUE};">${escapeHtml(e.fiscal_period)}</span>` : ''}`
       : 'No estimate published';
+    const fuenteEst = `<div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:2px;">consenso: ${escapeHtml(e.estimates_source || 'Finnhub')} · puede diferir del de EARNINGS (Alpha Vantage)</div>`;
 
     let beatCol = '#bbb';
     if (e.beat_rate_4q != null) {
@@ -17786,7 +17787,7 @@ function margin_color(pct, threshold, COL){
     const lqVal = lq && lq.eps_actual != null ? `$${lq.eps_actual.toFixed(2)}` : 'N/A';
     const lqCol = lq && lq.beat ? GREEN : lq && lq.beat === false ? RED : '#ddd';
     const lqSub = lq
-      ? `${escapeHtml(lq.date || '')} · est $${lq.eps_estimate != null ? lq.eps_estimate.toFixed(2) : '—'} · <span style="color:${lqCol};font-weight:600;">${lq.beat ? 'BEAT' : lq.beat === false ? 'MISS' : '—'} ${lq.surprise_pct != null ? `(${fmtSignedPct(lq.surprise_pct)})` : ''}</span>`
+      ? `periodo al ${escapeHtml(lq.period_end || lq.date || '')}${lq.fiscal_period ? ' (' + escapeHtml(lq.fiscal_period) + ')' : ''} · est $${lq.eps_estimate != null ? lq.eps_estimate.toFixed(2) : '—'} · <span style="color:${lqCol};font-weight:600;">${lq.beat ? 'BEAT' : lq.beat === false ? 'MISS' : '—'} ${lq.surprise_pct != null ? `(${fmtSignedPct(lq.surprise_pct)})` : ''}</span>`
       : 'No data';
 
     // 4Q history mini bars
@@ -17815,7 +17816,7 @@ function margin_color(pct, threshold, COL){
     return `<div style="margin-bottom:12px;">
       <div style="font-family:var(--mono);font-size:9px;color:${BLUE};letter-spacing:.15em;margin-bottom:8px;">// 📅 EARNINGS CALENDAR</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;">
-        ${microCard('Next Earnings', next, nextSub)}
+        ${microCard('Next Earnings', next, nextSub + fuenteEst)}
         ${microCard('Beat Rate (4Q)', beatVal, beatSub, beatCol)}
         ${microCard('Last Quarter', lqVal, lqSub, lqCol)}
         ${historyCard}
@@ -17878,6 +17879,9 @@ function margin_color(pct, threshold, COL){
           <div style="font-family:var(--mono);font-size:9px;color:#666;letter-spacing:.1em;margin-bottom:4px;">DIRECTION</div>
           <div style="font-family:var(--mono);font-size:18px;letter-spacing:.15em;font-weight:700;color:${dirCol};">${escapeHtml(dir)}</div>
           <div style="font-family:var(--mono);font-size:10px;color:#666;margin-top:6px;">${i.transaction_count || 0} txns · ${i.buy_count || 0} buys · ${i.sell_count || 0} sells</div>
+          ${i.scheduled_sell_count ? `<div style="font-family:var(--mono);font-size:9px;color:#666;margin-top:2px;">${i.scheduled_sell_count} sells programadas (10b5-1)</div>` : ''}
+          ${i.unknown_plan_sell_count ? `<div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:2px;">${i.unknown_plan_sell_count} sells sin dato de plan 10b5-1 (Finnhub)</div>` : ''}
+          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-top:2px;">solo P/S en mercado abierto · ${(i.sources || []).map(s => s === 'sec_form4' ? 'SEC Form 4' : 'Finnhub').join(' + ') || 'sin datos'}</div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-family:var(--mono);font-size:11px;">
           <div>
@@ -17913,10 +17917,58 @@ function margin_color(pct, threshold, COL){
     </div>`;
   }
 
+  // ── PROBABILIDAD: lo que QuantDesk NO calcula, dicho (Lety, 2026-11-11) ──
+  // Tres números con su nombre: (1) la probabilidad propia, que vale null a
+  // propósito porque el experimento earnings-beat no la validó; (2) el
+  // historial, que es un CONTEO de trimestres; (3) Polymarket, si hay un
+  // mercado abierto, con su libro al lado. Misma lectura que la pestaña
+  // EARNINGS: nunca se presenta el conteo como pronóstico.
+  function renderProbabilidad(p) {
+    const h = p.beat_track_record || {};
+    const v = h.ventana, comp = h.completo;
+    const histTxt = (h.sin_datos || !v || !v.total)
+      ? smL('Historial: sin trimestres comparables en nuestra base', 'Track record: no comparable quarters in our base')
+      : smL('Historial: superó ', 'Track record: beat ') + v.beats + smL(' de ', ' of ') + v.total
+        + ' (' + v.pct + '%)' + (v.anios ? smL(' · últimos ' + v.anios + ' años', ' · last ' + v.anios + ' years') : '');
+    const compTxt = (!comp || !v || comp.total <= v.total) ? ''
+      : smL('historial completo: ', 'full history: ') + comp.beats + smL(' de ', ' of ') + comp.total + ' (' + comp.pct + '%)';
+    const rachaTxt = (h.racha && h.racha.largo)
+      ? smL('Racha: ', 'Streak: ') + h.racha.largo + (h.racha.tope ? '+' : '') + ' ' + (h.racha.tipo === 'beats' ? smL('superando al hilo', 'beats in a row') : smL('fallando al hilo', 'misses in a row'))
+      : '';
+    return `<div style="margin-bottom:12px;padding:12px 14px;background:#080808;border:1px solid #1a1a1a;border-left:3px solid ${PURPLE};border-radius:3px;font-family:var(--mono);font-size:11px;color:#bbb;line-height:1.6;">
+      <div style="font-size:9px;color:${PURPLE};letter-spacing:.15em;margin-bottom:6px;">// 🎲 ${smL('PROBABILIDAD', 'PROBABILITY')}</div>
+      <div style="color:#ddd;">${smL('QuantDesk: no calcula probabilidad propia', 'QuantDesk: does not publish its own probability')} <span style="color:#666;">· ${smL('en validación', 'being validated')}</span></div>
+      <div id="eaPolymarket" style="margin-top:4px;color:#888;">${smL('Polymarket: buscando mercado abierto…', 'Polymarket: looking for an open market…')}</div>
+      <div style="margin-top:4px;">${escapeHtml(histTxt)}${compTxt ? ` <span style="color:#666;">· ${escapeHtml(compTxt)}</span>` : ''}</div>
+      ${rachaTxt ? `<div style="color:#888;">${escapeHtml(rachaTxt)}</div>` : ''}
+      <div style="margin-top:6px;font-size:9px;color:#555;">${smL('El historial es un CONTEO de trimestres pasados, no una predicción', 'The track record counts past quarters — it is not a forecast')} · ${escapeHtml(h.fuente || 'Alpha Vantage')}</div>
+    </div>`;
+  }
+
+  // Polymarket: la misma vista cacheada que usa EARNINGS (5 min de CDN).
+  async function fillPolymarket(ticker) {
+    const el = () => document.getElementById('eaPolymarket');
+    try {
+      const r = await fetch('/api/earnings-beat?vista=live');
+      const j = await r.json();
+      const e = (j.empresas || []).find(x => String(x.symbol || '').toUpperCase() === String(ticker).toUpperCase());
+      if (!el()) return;
+      if (!e) { el().textContent = smL('Polymarket: sin mercado abierto de beat/miss para esta acción', 'Polymarket: no open beat/miss market for this stock'); return; }
+      const m = (e.mercados && e.mercados[0]) || {};
+      if (m.polymarket_yes_pct == null) { el().textContent = smL('Polymarket: mercado abierto, sin precio', 'Polymarket: open market, no price'); return; }
+      const lb = m.libro || {};
+      const liq = m.liquidez != null ? ' · ' + smL('liquidez', 'liquidity') + ' $' + Math.round(m.liquidez).toLocaleString() : '';
+      const dif = lb.estado === 'ok' && lb.spread_puntos != null ? ' · ' + smL('diferencia', 'spread') + ' ' + Number(lb.spread_puntos).toFixed(1) + '¢' : '';
+      el().innerHTML = `<span style="color:#ff6600;">Polymarket: ${escapeHtml(String(m.polymarket_yes_pct))}%</span> <span style="color:#666;">${escapeHtml(smL('de que supere', 'to beat') + (m.precio_tipo === 'mid' ? smL(' · punto medio del libro', ' · book midpoint') : '') + dif + liq)}</span>`;
+    } catch (_) {
+      if (el()) el().textContent = smL('Polymarket: no se pudo consultar', 'Polymarket: could not be checked');
+    }
+  }
+
   function renderPositioning(items) {
     if (!Array.isArray(items) || items.length === 0) return '';
     return `<div style="margin-bottom:12px;">
-      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// 🎯 POSITIONING CONSIDERATIONS</div>
+      <div style="font-family:var(--mono);font-size:9px;color:${GREEN};letter-spacing:.15em;margin-bottom:8px;">// 🎯 ${smL('QUÉ VIGILAR','WHAT TO WATCH')}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
         ${items.map(it => `<div style="background:#0a0a0a;border:1px solid #1a1a1a;border-left:3px solid ${GREEN};border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:11px;color:#ddd;line-height:1.5;">${escapeHtml(it || '')}</div>`).join('')}
       </div>
@@ -17949,6 +18001,7 @@ function margin_color(pct, threshold, COL){
       </div>` : '';
 
     const earningsBlock = renderEarnings(payload.earnings);
+    const probBlock = renderProbabilidad(payload);
     const earningsCoverageNote = (!payload.earnings || !payload.earnings.next_date && (!payload.earnings.last_4_reports || payload.earnings.last_4_reports.length === 0))
       ? `<div style="padding:10px 12px;background:rgba(239,159,39,.05);border:1px solid rgba(239,159,39,.3);border-radius:3px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:#bbb;">
           ⓘ Calendar coverage limited for this ticker.
@@ -17977,10 +18030,10 @@ function margin_color(pct, threshold, COL){
       </div>` : '';
 
     const footer = `<div style="margin-top:10px;font-family:var(--mono);font-size:9px;color:#444;text-align:right;letter-spacing:.05em;">
-      Source: ${escapeHtml(payload.source || 'Finnhub + Claude')}
+      Source: ${escapeHtml(payload.source || 'Finnhub + Claude')} · ${smL('Información, no asesoría de inversión','Information, not investment advice')}
     </div>`;
 
-    setStatus(header + summary + earningsCoverageNote + earningsBlock + dividendsBlock + maBlock + regBlock + insiderBlock + corpBlock + thesis + positioning + insight + footer);
+    setStatus(header + summary + earningsCoverageNote + earningsBlock + probBlock + dividendsBlock + maBlock + regBlock + insiderBlock + corpBlock + thesis + positioning + insight + footer);
   }
 
   // ── Autocomplete dropdown (mirrors other agents) ───────────────
@@ -18072,6 +18125,7 @@ function margin_color(pct, threshold, COL){
       const data = await r.json();
       if (data.error) { renderError(data.error); return; }
       renderResults(data);
+      fillPolymarket(data.ticker || ticker);
     } catch (err) {
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
       renderError('Network error: ' + (err && err.message ? err.message : 'unknown'));

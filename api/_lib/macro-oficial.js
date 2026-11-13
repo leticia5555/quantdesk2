@@ -22,8 +22,15 @@
 // hay que extenderla (`fraseDeFuente`, en qd-tablas.js). Un calendario que se
 // queda mudo al agotarse es el mismo defecto con otra causa.
 //
-// LAS HORAS VAN EN CT, como el resto de la pantalla: el BLS publica a las
-// 8:30 ET (7:30 CT) y el comunicado de la Fed sale a las 14:00 ET (13:00 CT).
+// LAS HORAS VAN EN HORA DE LA CIUDAD DE MÉXICO, y se CALCULAN, no se escriben.
+// El BLS publica a las 8:30 de Nueva York y el comunicado de la Fed sale a las
+// 14:00 de Nueva York. En invierno eso son las 7:30 y las 13:00 de CDMX — pero
+// México ya no cambia de horario y Estados Unidos sí: desde el segundo domingo
+// de marzo hasta noviembre la diferencia es de DOS horas, no de una. La
+// decisión de la Fed del 17 de marzo de 2027 es a las 12:00 de CDMX, no a las
+// 13:00. Con la hora tatuada como "13:00" esa fila habría salido una hora mal,
+// y diciendo "hora de CDMX" (Lety, 2026-11-13) ya no hay "CT" ambiguo que lo
+// disimule. `horaCdmx` hace la cuenta con las zonas de `Intl`.
 // La fecha de la Fed es el SEGUNDO día de la reunión, que es el de la decisión.
 //
 // Las fechas literales llevan `date-lint-ok`: el lint de relojes rotos
@@ -41,18 +48,45 @@ const EMPLEO = 'https://www.bls.gov/schedule/news_release/empsit.htm';
 // dice de cuándo es la foto.
 export const OFICIAL_VERIFICADO_EN = '2026-11-11'; /* date-lint-ok: fecha de la lectura, no un evento */
 
+const HORA_BLS_NY = '08:30';   // el BLS publica a las 8:30 de Nueva York
+const HORA_FED_NY = '14:00';   // el comunicado del FOMC sale a las 14:00 de Nueva York
+
+const hhmmEn = (instante, zona) => new Intl.DateTimeFormat('en-GB', {
+  timeZone: zona, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(instante);
+
+/**
+ * Una hora de reloj de Nueva York, ese día, dicha en hora de la Ciudad de
+ * México: `horaCdmx('2026-12-09', '14:00')` → '13:00'.
+ *
+ * No se resta "una hora": se busca el instante que en Nueva York marca esa
+ * hora (probando los dos desfases posibles, invierno y verano) y se lee en la
+ * zona de México. Así el cambio de horario de EE.UU. sale bien sin tabla de
+ * fechas, y si algún día México vuelve a cambiar el suyo, también.
+ */
+export function horaCdmx(fecha, hhmmNy) {
+  for (const desfase of [5, 4]) {
+    const [h, m] = hhmmNy.split(':').map(Number);
+    const instante = new Date(`${fecha}T00:00:00Z`);
+    instante.setUTCHours(h + desfase, m);
+    if (hhmmEn(instante, 'America/New_York') === hhmmNy) {
+      return hhmmEn(instante, 'America/Mexico_City').replace(/^0/, '');
+    }
+  }
+  return null;
+}
+
 const fed = (event_date, reunion, sep) => ({
   event_date, title: 'Decisión de la Fed (FOMC)', category: 'fed', importance: 'high',
-  note: `reunión del ${reunion} · comunicado 13:00 CT${sep ? ' · con proyecciones' : ''}`,
+  note: `reunión del ${reunion} · comunicado ${horaCdmx(event_date, HORA_FED_NY)} hora de CDMX${sep ? ' · con proyecciones' : ''}`,
   fuente: 'oficial:federalreserve.gov', fuente_url: FED,
 });
 const cpi = (event_date, mes) => ({
   event_date, title: `Inflación de EE.UU. (CPI) de ${mes}`, category: 'inflacion', importance: 'high',
-  note: 'BLS · 7:30 CT', fuente: 'oficial:bls.gov', fuente_url: CPI,
+  note: `BLS · ${horaCdmx(event_date, HORA_BLS_NY)} hora de CDMX`, fuente: 'oficial:bls.gov', fuente_url: CPI,
 });
 const empleo = (event_date, mes) => ({
   event_date, title: `Empleo de EE.UU. (nóminas) de ${mes}`, category: 'empleo', importance: 'high',
-  note: 'BLS · 7:30 CT', fuente: 'oficial:bls.gov', fuente_url: EMPLEO,
+  note: `BLS · ${horaCdmx(event_date, HORA_BLS_NY)} hora de CDMX`, fuente: 'oficial:bls.gov', fuente_url: EMPLEO,
 });
 
 export const CALENDARIO_OFICIAL = [

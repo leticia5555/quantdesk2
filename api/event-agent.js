@@ -17,7 +17,7 @@
 //   • catalyst_summary, primary_catalyst_thesis,
 //     positioning_considerations[3], institutional_insight
 //
-// All Finnhub. 30-minute CDN cache.
+// Finnhub + Form 4 de la SEC (Neon) para insiders. 30-minute CDN cache.
 // ═══════════════════════════════════════════════════════════════════
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -37,12 +37,24 @@ function langDirective(lang) {
 // Each phrase is tested as a lowercased substring against the
 // headline + summary. M&A is checked BEFORE regulatory so a deal
 // triggering antitrust review lands in M&A.
+// Se prueban SÓLO contra el titular (Lety, 2026-11-11): el resumen de
+// Finnhub arrastra contexto viejo — el reporte de pérdidas de Six Flags salía
+// como "merger" porque el resumen recordaba la fusión con Cedar Fair—.
+// 'consolidation' se fue: en titulares casi siempre es precio lateral o
+// "consolidación del sector", no una operación de la empresa.
 const MA_KEYWORDS = [
-  'acquir', 'merger', 'buyout', 'takeover', 'tender offer',
-  'definitive agreement', 'all-cash deal', 'all-stock deal',
-  'strategic combination', 'consolidation', 'lbo', 'spin-off',
-  'spinoff', 'carve-out', 'divest', 'stake in', 'majority stake',
-  'minority stake', 'joint venture'
+  { re: /\bacquir(e|es|ed|ing)\b|\bacquisition\b/i, label: 'acquisition' },
+  { re: /\bmerger\b|\bmerge(s|d)?\b/i,              label: 'merger' },
+  { re: /\bbuyout\b|\blbo\b/i,                      label: 'buyout' },
+  { re: /\btakeover\b/i,                            label: 'takeover' },
+  { re: /\btender offer\b/i,                        label: 'tender offer' },
+  { re: /\bdefinitive agreement\b/i,                label: 'definitive agreement' },
+  { re: /\ball-(cash|stock) deal\b/i,               label: 'deal' },
+  { re: /\bstrategic combination\b/i,               label: 'combination' },
+  { re: /\bspin-?off\b|\bcarve-out\b/i,             label: 'spin-off' },
+  { re: /\bdivest(s|ed|iture|ing)?\b/i,             label: 'divestiture' },
+  { re: /\b(majority|minority)? ?stake in\b/i,      label: 'stake' },
+  { re: /\bjoint venture\b/i,                       label: 'joint venture' },
 ];
 // Regulatory keywords. Short tokens use word boundaries so "cade" doesn't
 // match "decade", "fine" doesn't match "define", "doj" doesn't match
@@ -59,10 +71,11 @@ const REGULATORY_KEYWORDS = [
   { kind: 'sub', text: 'regulatory approval',label: 'regulatory approval' },
   { kind: 'sub', text: 'regulatory action',  label: 'regulatory action' },
   { kind: 'sub', text: 'lawsuit',            label: 'lawsuit' },
-  { kind: 'sub', text: 'settle',             label: 'settle' },
+  // 'settle' a secas casaba "…Doesn't Settle It" (NVDA, 2026-11-11).
+  { kind: 'word', re: /\bsettle(s|d|ment|ments)\b|\bto settle\b/i, label: 'settlement' },
   { kind: 'sub', text: 'penalty',            label: 'penalty' },
   { kind: 'sub', text: 'sanction',           label: 'sanction' },
-  { kind: 'sub', text: 'compliance',         label: 'compliance' },
+  { kind: 'word', re: /\b(non-?compliance|compliance (review|probe|failure|issues?))\b/i, label: 'compliance' },
   // Short tokens — word-boundary regex
   { kind: 'word', re: /\bftc\b/i,            label: 'ftc' },
   { kind: 'word', re: /\bdoj\b/i,            label: 'doj' },
@@ -124,39 +137,66 @@ function daysBetween(a, b) {
 }
 
 // ── Earnings ─────────────────────────────────────────────────────
-function buildEarningsBlock(historyArr, calendarArr) {
+// EL DÍA DE HOY ES EL DE NUEVA YORK (Lety, 2026-11-11). Antes se comparaba
+// la medianoche UTC del reporte contra la HORA actual: el 17-nov visto el
+// 11-nov a las 10:38 de Monterrey daba 5.3 → "5d", mientras EARNINGS decía
+// "en 6d". Y un reporte de HOY quedaba fuera (su medianoche ya pasó). Ahora
+// los dos son fechas de calendario y se restan como días enteros.
+export function hoyNY(ahora = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit' }).format(ahora);
+}
+export function diasDeCalendario(desdeYmd, hastaYmd) {
+  const d = (x) => Date.UTC(+x.slice(0, 4), +x.slice(5, 7) - 1, +x.slice(8, 10));
+  return Math.round((d(hastaYmd) - d(desdeYmd)) / (24 * 3600 * 1000));
+}
+
+export function buildEarningsBlock(historyArr, calendarArr, { ahora = new Date() } = {}) {
   const out = {
     next_date: null, days_until: null, next_eps_estimate: null,
     next_revenue_estimate: null, fiscal_period: null,
-    last_4_reports: [], beat_rate_4q: null, avg_surprise_pct: null
+    last_4_reports: [], beat_rate_4q: null, avg_surprise_pct: null,
+    most_recent_report: null,
+    estimates_source: 'Finnhub',
   };
 
   // Upcoming earnings (Finnhub /calendar/earnings)
   const calendar = Array.isArray(calendarArr) ? calendarArr : [];
-  const today = new Date();
+  const hoy = hoyNY(ahora);
   const upcoming = calendar
-    .filter(e => e && e.date && e.epsEstimate != null)
-    .map(e => ({ ...e, _date: new Date(e.date + 'T00:00:00Z') }))
-    .filter(e => !isNaN(e._date) && e._date >= today)
-    .sort((a, b) => a._date - b._date);
+    .filter(e => e && /^\d{4}-\d{2}-\d{2}$/.test(String(e.date || '')) && e.epsEstimate != null)
+    .filter(e => e.date >= hoy)
+    .sort((a, b) => a.date.localeCompare(b.date));
   if (upcoming.length > 0) {
     const next = upcoming[0];
     out.next_date = next.date;
-    out.days_until = Math.max(0, daysBetween(next._date, today));
+    out.days_until = diasDeCalendario(hoy, next.date);
     out.next_eps_estimate = next.epsEstimate;
     out.next_revenue_estimate = next.revenueEstimate || null;
     if (next.quarter && next.year) out.fiscal_period = `Q${next.quarter} ${next.year}`;
+    if (next.hour) out.next_hour = next.hour; // bmo / amc
   }
 
-  // Last 4 reports (Finnhub /stock/earnings — actuals only)
-  const history = Array.isArray(historyArr) ? historyArr : [];
-  const last4 = history.slice(0, 4).map(q => {
+  // Last 4 reports (Finnhub /stock/earnings — actuals only).
+  // EL ORDEN SE FIJA ACÁ, no se confía en Finnhub: el más reciente primero,
+  // y cada uno dice cuántos trimestres atrás está. Claude leyó el brief de
+  // SLQT al revés y llamó "el más reciente" al de hace tres trimestres.
+  // `date` es el CIERRE DEL PERIODO que da Finnhub, no el día del reporte:
+  // se manda también como `period_end` para que nadie lo confunda.
+  const history = (Array.isArray(historyArr) ? historyArr : [])
+    .filter(q => q && q.period)
+    .slice()
+    .sort((a, b) => String(b.period).localeCompare(String(a.period)));
+  const last4 = history.slice(0, 4).map((q, i) => {
     const epsEst = (typeof q.estimate === 'number') ? q.estimate : null;
     const epsAct = (typeof q.actual === 'number') ? q.actual : null;
     const surprise = (epsEst != null && epsEst !== 0 && epsAct != null)
       ? ((epsAct - epsEst) / Math.abs(epsEst)) * 100 : null;
     return {
       date: q.period || null,
+      period_end: q.period || null,
+      fiscal_period: q.quarter && q.year ? `Q${q.quarter} ${q.year}` : null,
+      quarters_ago: i + 1,
       eps_actual: epsAct,
       eps_estimate: epsEst,
       surprise_pct: surprise != null ? +surprise.toFixed(2) : null,
@@ -164,6 +204,7 @@ function buildEarningsBlock(historyArr, calendarArr) {
     };
   });
   out.last_4_reports = last4;
+  out.most_recent_report = last4[0] || null;
 
   const validBeats = last4.filter(r => r.beat != null);
   if (validBeats.length > 0) {
@@ -227,10 +268,52 @@ function buildDividendBlock(divArr, currentPrice) {
 }
 
 // ── News categorization (M&A / regulatory) ───────────────────────
-function categorizeNews(newsArr) {
+// Palabras de un nombre legal que no identifican a nadie: "Six Flags
+// Entertainment Corp" se reconoce por "flags", no por "entertainment".
+const NOMBRE_GENERICO = new Set([
+  'inc', 'corp', 'corporation', 'co', 'company', 'ltd', 'limited', 'plc', 'llc', 'lp',
+  'sa', 'nv', 'ag', 'se', 'ab', 'asa', 'spa', 'adr', 'cl', 'class', 'the',
+  'holdings', 'holding', 'group', 'entertainment', 'technologies', 'technology',
+  'international', 'global', 'systems', 'financial', 'industries', 'enterprises',
+  'pharmaceuticals', 'therapeutics', 'bancorp', 'bank', 'energy', 'resources',
+  'american', 'united', 'national', 'general', 'first', 'new', 'brands', 'partners',
+]);
+
+/** Las palabras del nombre de la empresa que sí la identifican en un titular. */
+export function palabrasDeEmpresa(company) {
+  return String(company || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9áéíóúñü&\s-]/g, ' ')
+    .split(/[\s-]+/)
+    .filter(w => w.length >= 4 && !NOMBRE_GENERICO.has(w));
+}
+
+/**
+ * ¿El titular habla de ESTA empresa? Finnhub manda por símbolo notas de
+ * mercado general ("Big Banks Earn Billions, Bumble Soars on Buyout" salía
+ * como M&A de Six Flags). Se exige el ticker en mayúsculas o una palabra
+ * propia del nombre. Sin nombre ni ticker no se puede filtrar: pasa.
+ */
+export function hablaDeLaEmpresa(headline, { ticker, company } = {}) {
+  const h = String(headline || '');
+  const tk = String(ticker || '').toUpperCase();
+  const tkEsc = tk.replace(/[.^$*+?()[\]{}|\\]/g, '\\$&');
+  // Un ticker de 1–2 letras ("S", "U", "AI") casa con "U.S." o con palabras
+  // comunes: sólo cuenta escrito como ticker ($S, (S), NYSE: S).
+  const reTk = tk.length <= 2
+    ? new RegExp('\\$' + tkEsc + '\\b|\\(' + tkEsc + '\\)|(NYSE|NASDAQ|Nasdaq):\\s?' + tkEsc + '\\b')
+    : new RegExp('(^|[^A-Za-z])\\$?' + tkEsc + '([^A-Za-z]|$)');
+  if (tk && reTk.test(h)) return true;
+  const palabras = palabrasDeEmpresa(company);
+  if (!palabras.length) return !tk;
+  const hl = h.toLowerCase();
+  return palabras.some(w => new RegExp('\\b' + w + '\\b').test(hl));
+}
+
+export function categorizeNews(newsArr, { ticker, company, ahora = Date.now() } = {}) {
   const items = Array.isArray(newsArr) ? newsArr : [];
   // Last 30 days
-  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  const cutoff = ahora - 30 * 24 * 3600 * 1000;
   const cleaned = items
     .filter(n => n && n.headline && n.datetime)
     // Finnhub datetime is unix-seconds
@@ -240,122 +323,226 @@ function categorizeNews(newsArr) {
   const matchedMA = [];
   const matchedReg = [];
   const seenHeadlines = new Set();
+  let descartadas = 0;
   for (const n of cleaned) {
-    const text = ((n.headline || '') + ' ' + (n.summary || '')).toLowerCase();
     const dedupKey = (n.headline || '').toLowerCase().slice(0, 60);
     if (seenHeadlines.has(dedupKey)) continue;
     seenHeadlines.add(dedupKey);
+    if (!hablaDeLaEmpresa(n.headline, { ticker, company })) { descartadas++; continue; }
 
-    const maHit = MA_KEYWORDS.find(k => text.includes(k));
-    if (maHit) {
-      matchedMA.push({
-        headline: n.headline,
-        date: new Date(n._ts).toISOString().slice(0, 10),
-        category: 'm&a',
-        keyword: maHit,
-        url: n.url || null,
-        source: n.source || null
-      });
-      continue;  // priority: M&A first
-    }
+    // SÓLO el titular. El resumen se queda fuera de la clasificación.
+    const text = n.headline || '';
+    const item = (category, keyword) => ({
+      headline: n.headline,
+      date: new Date(n._ts).toISOString().slice(0, 10),
+      category, keyword,
+      url: n.url || null,
+      source: n.source || null
+    });
+
+    const maHit = MA_KEYWORDS.find(k => k.re.test(text));
+    if (maHit) { matchedMA.push(item('m&a', maHit.label)); continue; }  // priority: M&A first
     // Regulatory: short tokens use word-boundary regex (so "cade"
     // doesn't match "decade"), long phrases use substring.
+    const tl = text.toLowerCase();
     const regHit = REGULATORY_KEYWORDS.find(k =>
-      k.kind === 'word' ? k.re.test(text) : text.includes(k.text)
+      k.kind === 'word' ? k.re.test(text) : tl.includes(k.text)
     );
-    if (regHit) {
-      matchedReg.push({
-        headline: n.headline,
-        date: new Date(n._ts).toISOString().slice(0, 10),
-        category: 'regulatory',
-        keyword: regHit.label,
-        url: n.url || null,
-        source: n.source || null
-      });
-    }
+    if (regHit) matchedReg.push(item('regulatory', regHit.label));
   }
   return {
     ma: { deals_mentioned: matchedMA.length, top_news: matchedMA.slice(0, 5) },
-    regulatory: { active_concerns: matchedReg.length, top_news: matchedReg.slice(0, 5) }
+    regulatory: { active_concerns: matchedReg.length, top_news: matchedReg.slice(0, 5) },
+    unrelated_dropped: descartadas
   };
 }
 
 // ── Insider activity ─────────────────────────────────────────────
-// Finnhub insider-transactions fields used: name, transactionCode,
-// transactionDate, share, transactionPrice, change. Buy if change>0
-// AND code is one of P/A; sell if change<0 OR code is S/D/F.
-function buildInsiderBlock(insiderRaw, currentPrice) {
+// DOS FUENTES, UNA REGLA (Lety, 2026-11-11). El agente leía sólo Finnhub,
+// que llega con días de atraso: con FUN decía "+$46.6K" mientras
+// /mercado/insiders ya mostraba $15M de compras de un director, y con SLQT
+// decía "0 transacciones" con cinco insiders comprando esa semana. Ahora
+// se juntan los Form 4 de la SEC que ya cosechamos en Neon
+// (`mercado_form4_tx`, lo mismo que pinta la pantalla de Insiders) con lo
+// que traiga Finnhub, sin contar dos veces la misma operación.
+//
+// La regla es la de la pantalla: sólo P es compra y sólo S es venta.
+// Otorgamientos (A), impuestos (F), ejercicios (M) y entregas (D) no son
+// alguien decidiendo comprar o vender.
+
+/** Finnhub → lista común. Sólo P/S, con el signo del cambio. */
+export function normalizaFinnhub(insiderRaw) {
+  const items = Array.isArray(insiderRaw && insiderRaw.data) ? insiderRaw.data : [];
+  const out = [];
+  for (const t of items) {
+    if (!t || !t.transactionDate) continue;
+    const codigo = (t.transactionCode || '').toUpperCase();
+    const acciones = Number(t.change) || 0;
+    if (!((codigo === 'P' && acciones > 0) || (codigo === 'S' && acciones < 0))) continue;
+    out.push({
+      nombre: t.name || 'Unknown', fecha: t.transactionDate, codigo, acciones,
+      precio: Number(t.transactionPrice) || null, programada: null, fuente: 'finnhub',
+    });
+  }
+  return out;
+}
+
+/** Filas de `mercado_form4_tx` (forma de `filasDeForm4`) → lista común. */
+export function normalizaForm4(filas, ticker) {
+  const tk = String(ticker || '').toUpperCase();
+  const out = [];
+  for (const f of Array.isArray(filas) ? filas : []) {
+    if (!f || f.derivada) continue;
+    if (tk && String(f.ticker || '').toUpperCase() !== tk) continue;
+    const codigo = String(f.codigo || '').toUpperCase();
+    if (codigo !== 'P' && codigo !== 'S') continue;
+    const n = Number(f.acciones);
+    if (!f.fecha || !Number.isFinite(n) || n <= 0) continue;
+    out.push({
+      nombre: f.quien || 'Unknown', fecha: f.fecha, codigo,
+      acciones: codigo === 'P' ? n : -n,
+      precio: Number(f.precio) || null,
+      programada: f.plan_estado === 'programada' ? true : (f.plan_estado === 'no_programada' ? false : null),
+      fuente: 'sec_form4',
+    });
+  }
+  return out;
+}
+
+// Misma operación vista por las dos fuentes: mismo día, mismo código,
+// mismas acciones y mismo precio al centavo. Los nombres no sirven de llave
+// ("JAFFER REHAN" en la SEC, "Jaffer Rehan" en Finnhub).
+function llaveTx(t) {
+  const p = t.precio != null ? Math.round(t.precio * 100) : 'x';
+  return `${t.fecha}|${t.codigo}|${Math.abs(t.acciones)}|${p}`;
+}
+
+/** Junta SEC + Finnhub. Gana la SEC cuando las dos traen la misma operación. */
+export function juntaInsiders(deSec = [], deFinnhub = []) {
+  const vistas = new Map();
+  for (const t of deSec) vistas.set(llaveTx(t), t);
+  for (const t of deFinnhub) if (!vistas.has(llaveTx(t))) vistas.set(llaveTx(t), t);
+  return [...vistas.values()];
+}
+
+/** Lista común → bloque que lee la pantalla y el brief de Claude. */
+export function agregaInsiders(lista, currentPrice, { dias = 90, ahora = Date.now() } = {}) {
   const out = {
     net_direction: 'QUIET', buy_count: 0, sell_count: 0,
     net_value: 0, total_buy_value: 0, total_sell_value: 0,
     largest_transaction: null, category: 'QUIET',
-    transaction_count: 0
+    transaction_count: 0, scheduled_sell_count: 0, unknown_plan_sell_count: 0,
+    sources: [],
   };
-  const items = Array.isArray(insiderRaw && insiderRaw.data) ? insiderRaw.data : [];
-  if (items.length === 0) return out;
-  const cutoff = new Date(Date.now() - 90 * 24 * 3600 * 1000);
-  const recent = items
-    .filter(t => t && t.transactionDate)
-    .map(t => ({ ...t, _date: new Date(t.transactionDate + 'T00:00:00Z') }))
+  const cutoff = new Date(ahora - dias * 24 * 3600 * 1000);
+  const recent = (Array.isArray(lista) ? lista : [])
+    .map(t => ({ ...t, _date: new Date(t.fecha + 'T00:00:00Z') }))
     .filter(t => !isNaN(t._date) && t._date >= cutoff);
-
-  out.transaction_count = recent.length;
   if (recent.length === 0) return out;
 
+  out.sources = [...new Set(recent.map(t => t.fuente))].sort();
   let largest = null;
   for (const t of recent) {
-    const code = (t.transactionCode || '').toUpperCase();
-    const change = Number(t.change) || 0;
-    const price = Number(t.transactionPrice) || currentPrice || 0;
-    // Buy: P (open-market purchase) or A (acquisition) with positive change
-    // Sell: S (sale), D (disposition), F (tax-withholding) or negative change
-    const isBuy = (code === 'P' || code === 'A') && change > 0;
-    const isSell = (code === 'S' || code === 'D' || code === 'F') || change < 0;
-    const value = Math.abs(change) * price;
+    const isBuy = t.codigo === 'P';
+    const value = Math.abs(t.acciones) * (t.precio || currentPrice || 0);
     if (isBuy) {
-      out.buy_count++;
-      out.total_buy_value += value;
-      out.net_value += value;
-    } else if (isSell) {
-      out.sell_count++;
-      out.total_sell_value += value;
-      out.net_value -= value;
+      out.buy_count++; out.total_buy_value += value; out.net_value += value;
+    } else {
+      out.sell_count++; out.total_sell_value += value; out.net_value -= value;
+      if (t.programada === true) out.scheduled_sell_count++;
+      // Finnhub no dice si la venta era de un plan 10b5-1: "no sabemos" no es "no".
+      else if (t.programada == null) out.unknown_plan_sell_count++;
     }
-    if (!largest || value > Math.abs(largest._value || 0)) {
+    const signed = isBuy ? value : -value;
+    if (!largest || value > Math.abs(largest.value)) {
       largest = {
-        insider_name: t.name || 'Unknown',
-        transaction_type: `${code} ${isBuy ? '- Buy' : isSell ? '- Sell' : ''}`.trim(),
-        shares: change,
-        value: isSell ? -value : value,
-        _value: isSell ? -value : value,
-        date: t.transactionDate
+        insider_name: t.nombre,
+        transaction_type: `${t.codigo} - ${isBuy ? 'Buy' : 'Sell'}`,
+        shares: t.acciones, value: signed, date: t.fecha,
+        scheduled_10b5_1: t.programada,
       };
     }
   }
-  if (largest) { delete largest._value; out.largest_transaction = largest; }
+  out.largest_transaction = largest;
+  out.transaction_count = out.buy_count + out.sell_count;
 
-  // Category logic
-  const totalActions = out.buy_count + out.sell_count;
-  if (totalActions === 0) {
-    out.category = 'QUIET';
-    out.net_direction = 'QUIET';
-  } else if (out.buy_count > 0 && out.sell_count === 0) {
-    out.category = 'BUYING'; out.net_direction = 'BUYING';
+  if (out.buy_count > 0 && out.sell_count === 0) {
+    out.category = 'BUYING';
   } else if (out.sell_count > 0 && out.buy_count === 0) {
-    out.category = 'SELLING'; out.net_direction = 'SELLING';
+    out.category = 'SELLING';
   } else {
-    // Both sides present. Use net_value sign as tiebreaker; if both are
-    // material (>30% of total) call it MIXED.
+    // Las dos caras: decide la proporción en dólares; si las dos pesan
+    // (>30% del total) es MIXED.
     const buyShare = out.total_buy_value / (out.total_buy_value + out.total_sell_value || 1);
-    if (buyShare > 0.70)      { out.category = 'BUYING';  out.net_direction = 'BUYING'; }
-    else if (buyShare < 0.30) { out.category = 'SELLING'; out.net_direction = 'SELLING'; }
-    else                       { out.category = 'MIXED';   out.net_direction = 'MIXED'; }
+    out.category = buyShare > 0.70 ? 'BUYING' : buyShare < 0.30 ? 'SELLING' : 'MIXED';
   }
+  out.net_direction = out.category;
   out.net_value = +out.net_value.toFixed(0);
   out.total_buy_value = +out.total_buy_value.toFixed(0);
   out.total_sell_value = +out.total_sell_value.toFixed(0);
   return out;
 }
+
+// Compatibilidad: lo de antes, sólo Finnhub.
+export function buildInsiderBlock(insiderRaw, currentPrice) {
+  return agregaInsiders(normalizaFinnhub(insiderRaw), currentPrice);
+}
+
+// Form 4 cosechados del ticker, últimos `dias`. Si Neon falla, el agente
+// sigue con Finnhub: la base caída no deja al reporte sin insiders.
+async function filasForm4DeNeon(ticker, dias = 95) {
+  try {
+    const { sql } = await import('./_lib/db.js');
+    const rows = await sql(`
+      select filas from mercado_form4_tx
+       where filing_fecha >= (current_date - $2::int)
+         and filas @> $1::jsonb`,
+      [JSON.stringify([{ ticker }]), dias]);
+    return rows.flatMap(r => Array.isArray(r.filas) ? r.filas : []);
+  } catch (e) {
+    console.log('[event-agent] neon form4 falló:', e && e.message);
+    return [];
+  }
+}
+
+// ── Historial de beats: la MISMA cuenta que la pestaña EARNINGS ──────
+// (Lety, 2026-11-11) "superó 18 de 20" sale de `pead_earnings` (Alpha
+// Vantage) con `estadisticasHistoricas`, la función que pinta EARNINGS. Es un
+// CONTEO, no una probabilidad: QuantDesk todavía no emite probabilidad propia
+// (experimento earnings-beat, Fase 2). Por eso `probabilidad_quantdesk` va
+// explícito y en null, igual que en /api/earnings-beat?vista=live.
+export function resumenHistorial(est) {
+  if (!est || est.sin_datos) {
+    return { sin_datos: true, motivo: (est && est.motivo) || 'sin trimestres comparables en nuestra base',
+      fuente: 'Alpha Vantage EARNINGS vía pead_earnings' };
+  }
+  return {
+    sin_datos: false,
+    ventana: est.ventana,            // { trimestres, beats, total, pct, anios }
+    completo: est.completo,          // { beats, total, pct }
+    racha: est.racha,                // { tipo, largo, tope }
+    mediana_sorpresa_pct: est.sorpresa ? est.sorpresa.mediana_pct : null,
+    fuente: 'Alpha Vantage EARNINGS vía pead_earnings',
+    es_conteo_no_prediccion: true,
+  };
+}
+
+async function historialDeBeats(ticker) {
+  try {
+    const [{ sql }, { estadisticasHistoricas }] = await Promise.all([
+      import('./_lib/db.js'), import('./_lib/earnings-beat.js')]);
+    const filas = await sql(
+      `select symbol, to_char(reported_date, 'YYYY-MM-DD') as reported_date,
+              reported_eps, estimated_eps, surprise_pct
+         from pead_earnings where symbol = $1 order by reported_date desc`, [ticker]);
+    return resumenHistorial(estadisticasHistoricas(filas));
+  } catch (e) {
+    console.log('[event-agent] historial pead_earnings falló:', e && e.message);
+    return { sin_datos: true, motivo: 'no se pudo leer la base histórica', fuente: 'Alpha Vantage EARNINGS vía pead_earnings' };
+  }
+}
+
+export const PROBABILIDAD_ESTADO = 'en validación — QuantDesk todavía no emite probabilidad propia';
 
 // ── Corporate actions (splits) ───────────────────────────────────
 function buildCorporateActions(splitsArr) {
@@ -408,18 +595,27 @@ function nextMajorCatalyst(earnings, dividends, corp) {
 async function runClaude(apiKey, brief, lang) {
   const system = `You are a senior event-driven research analyst at a top-tier hedge fund. You will be given a structured JSON brief covering a ticker's catalyst calendar: upcoming earnings (date, estimates, beat history), dividends, M&A signals from news, regulatory signals, insider transactions, corporate actions, and the identified next major catalyst.
 
+Earnings history: earnings.last_4_reports is ordered MOST RECENT FIRST (quarters_ago = 1 is the latest). When you mention the latest quarter, use earnings.most_recent_report and nothing else. "period_end" is the fiscal period close, not the report date.
+
 Produce a concise institutional-grade narrative. Return ONLY a JSON object, no preamble:
 
 {
   "catalyst_summary": "<2-3 sentences. What's the catalyst landscape for the next 30-90 days? Lead with the most proximate event.>",
   "primary_catalyst_thesis": "<3-4 sentences. WHICH catalyst matters most for the next price move, and WHY? Use specific numbers from the brief (beat rate, estimate, insider activity, etc).>",
   "positioning_considerations": [
-    "<actionable consideration 1 — be specific, e.g., 'IV crush risk into earnings makes long-vol cleaner than long-delta exposure'>",
-    "<actionable consideration 2>",
-    "<actionable consideration 3>"
+    "<what to watch 1 — a concrete, checkable thing and what each outcome would mean, e.g., 'If guidance on the call is below $X, the 100% beat streak matters less than the guide; implied move into earnings is the bar to compare against'>",
+    "<what to watch 2>",
+    "<what to watch 3>"
   ],
-  "institutional_insight": "<3-4 sentences of NON-OBVIOUS contrarian read. What does the catalyst combination tell you that the consensus has missed? Reference specific data points. For LATAM ADRs weight founder-CEO insider activity heavily (Galperin at MELI, Velez at NU) — these signal more than US insider patterns.>"
+  "institutional_insight": "<3-4 sentences. A non-obvious read of how the catalysts interact, built ONLY on data points in the brief. Say which part is fact and which part is interpretation. For LATAM ADRs, founder-CEO insider activity (Galperin at MELI, Velez at NU) carries more signal than typical US insider patterns.>"
 }
+
+RULES — this is an information product, not investment advice (Lety, 2026-11-11):
+- NEVER tell the reader to buy, sell, short, scale, trim, reduce, add, hedge or size a position, and never recommend a specific options trade. "positioning_considerations" are things to WATCH and what each outcome would mean, written as scenarios ("if X, then Y tends to…"), not instructions.
+- NEVER attribute knowledge, intent or motive to insiders ("management knew", "had forward visibility", "capitulation"). Insider rows are facts: who, what, how much, when. If sells were scheduled (scheduled_sell_count, scheduled_10b5_1), say so — pre-planned 10b5-1 sales carry little signal. unknown_plan_sell_count are sells whose plan status the source does not report: say the plan status is unknown for those, never that they were not scheduled. Do not raise, even as a question, whether insiders traded on knowledge of upcoming news. Open-market buys (code P) are the stronger signal.
+- Treat news headlines as reported claims, not facts ("a short seller alleges…", "Baird says…").
+- NEVER state or imply a probability of beating, missing or moving (no "X% chance", "highly probable", "likely to beat"). quantdesk_probability is null on purpose. beat_track_record is a COUNT of past quarters ("beat 18 of the last 20"): quote it as a count, never as a probability.
+- Do not invent numbers that are not in the brief (no implied move, IV or price targets unless present).
 
 Be quantitative. Use the actual numbers from the brief. No fluff. If a category has no data (no dividends, no M&A signals, etc.) don't fabricate; pivot to what's actually there.`;
 
@@ -471,6 +667,10 @@ export default async function handler(req, res) {
     const fwd6moStr = ymd(new Date(today.getTime() + 180 * 24 * 3600 * 1000));
     const back90Str = ymd(new Date(today.getTime() -  90 * 24 * 3600 * 1000));
 
+    // Los Form 4 de la SEC (Neon) arrancan junto con Finnhub.
+    const form4Promesa = filasForm4DeNeon(ticker);
+    const historialPromesa = historialDeBeats(ticker);
+
     // ── 1. Parallel Finnhub fan-out ──
     const [profileRes, calendarRes, historyRes, divRes, newsRes,
            insiderRes, splitRes, quoteRes] = await Promise.all([
@@ -513,10 +713,14 @@ export default async function handler(req, res) {
     const calendarArr = (calendarJ && calendarJ.earningsCalendar) || [];
     const earnings = buildEarningsBlock(historyJ, calendarArr);
     const dividends = buildDividendBlock(divJ && divJ.length ? divJ : (Array.isArray(divJ) ? divJ : []), currentPrice);
-    const news = categorizeNews(newsJ);
-    const insider = buildInsiderBlock(insiderJ, currentPrice);
+    const news = categorizeNews(newsJ, { ticker, company });
+    const filasSec = await form4Promesa;
+    const insider = agregaInsiders(
+      juntaInsiders(normalizaForm4(filasSec, ticker), normalizaFinnhub(insiderJ)),
+      currentPrice);
     const corp = buildCorporateActions(Array.isArray(splitJ) ? splitJ : (splitJ && splitJ.data) || []);
     const next_major_catalyst = nextMajorCatalyst(earnings, dividends, corp);
+    const beat_track_record = await historialPromesa;
 
     // Diagnostic
     console.log(`[event-agent] ${ticker}: next=${next_major_catalyst ? next_major_catalyst.type + '/' + next_major_catalyst.days_until + 'd' : 'none'} ` +
@@ -539,7 +743,9 @@ export default async function handler(req, res) {
         regulatory_signals: news.regulatory,
         insider_activity: insider,
         corporate_actions: corp,
-        next_major_catalyst
+        next_major_catalyst,
+        beat_track_record,
+        quantdesk_probability: null
       };
       const out = await runClaude(apiKey, brief, lang);
       if (out.ok) narrative = out.ok;
@@ -562,6 +768,9 @@ export default async function handler(req, res) {
       insider_activity: insider,
       corporate_actions: corp,
       next_major_catalyst,
+      beat_track_record,
+      probabilidad_quantdesk: null,
+      probabilidad_quantdesk_estado: PROBABILIDAD_ESTADO,
       catalyst_summary:           narrative ? narrative.catalyst_summary           : null,
       primary_catalyst_thesis:    narrative ? narrative.primary_catalyst_thesis    : null,
       positioning_considerations: narrative ? narrative.positioning_considerations : null,
