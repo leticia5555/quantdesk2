@@ -41,6 +41,8 @@ let calMode = 'none';
 // (para probar el guard de frescura sobre el calendario compuesto por IA).
 let econAI = null;
 
+let paywallOn = true;
+let macroEvents = null;
 async function routeApis(page) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
@@ -48,6 +50,15 @@ async function routeApis(page) {
     apiCalls.push({ phase: currentPhase, path: p + url.search });
     const json = (obj, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(obj) });
 
+    // EL KILL-SWITCH DEL PAYWALL. La app le pregunta a /api/config si el
+    // paywall existe y, si no contesta `paywall_enabled: true`, abre todo como
+    // Pro (default deliberado, ver api/_lib/paywall.js). Este stub no existía:
+    // la suite se escribió antes del kill-switch, así que corría con el
+    // paywall APAGADO y los escenarios que lo prueban (S4e: el contador free;
+    // S9: el correo del modal) se caían — el botón decía "PRO ✓" y el campo
+    // del correo no se pintaba. Va ENCENDIDO por omisión porque eso es lo que
+    // esos escenarios miden; S25 lo apaga para medir el otro lado.
+    if (p === '/api/config') return paywallOn === 'caido' ? json({ error: 'x' }, 500) : json({ paywall_enabled: paywallOn });
     if (p === '/api/signal-backtester') return json(signalOK(url.searchParams.get('ticker')));
     if (p === '/api/pairs-validator') return json(pairsOK(url.searchParams.get('x'), url.searchParams.get('y')));
     if (p === '/api/ticker-search') {
@@ -115,6 +126,10 @@ async function routeApis(page) {
       return json({ this_week: [], next_30d: [], later: [],
         recent: [{ symbol: 'OLDCO', name: 'OldCo', date: '2026-04-12', exchange: 'NYSE', status: 'priced', bucket: 'recent' }] });
     }
+    // El calendario económico ya NO lo compone la IA: sale de la tabla curada
+    // (+ las fechas oficiales) vía /api/macro-events. `macroEvents` null deja
+    // el stub vacío de siempre (`{}`), que la app trata como fuente caída.
+    if (p === '/api/macro-events' && macroEvents) return json({ events: macroEvents, count: macroEvents.length });
     if (p === '/api/claude' && econAI) {
       return json({ content: [{ type: 'text', text: JSON.stringify(econAI) }] });
     }
@@ -560,13 +575,22 @@ await page.evaluate(() => showPage('smartmoney'));
 await page.evaluate(() => loadMarketSignals());
 await page.waitForTimeout(600);
 const s15a = await page.evaluate(() => document.getElementById('marketSignalsPanel').innerText);
+// El fallback ya no dice siempre "cobertura limitada del plan gratuito": la
+// app clasifica la causa (qdReasonKey) y con la IA sin contestar dice que la
+// FUENTE no respondió. Lo que se exige es lo de fondo: un mensaje de "no
+// disponible" con su causa, nunca el "Loading…" colgado ni un dato inventado.
+const FALLBACK_HONESTO = /free-tier|plan gratuito|unreachable|unavailable|no disponible|no respondi/i;
 report('S15a market-wide con IA caída muestra fallback honesto',
-  /free-tier|plan gratuito/.test(s15a) && !/Loading market signals/.test(s15a), s15a.slice(0, 80));
+  FALLBACK_HONESTO.test(s15a) && !/Loading market signals/.test(s15a), s15a.slice(0, 80));
 await page.evaluate(() => { document.getElementById('smTicker').value = 'AAPL'; return runSmartMoney(); });
-await page.waitForTimeout(800);
-const s15b = await page.evaluate(() => document.getElementById('smVerdictPanel').innerText);
+// El veredicto de IA vive en `#smVerdictWrap` (el `#smVerdictPanel` que esta
+// prueba buscaba ya no existe: tronaba con un TypeError y se llevaba el resto
+// de la corrida). Se espera a que termine de sintetizar en vez de un tiempo fijo.
+await page.waitForFunction(() => /unavailable|no disponible/i.test((document.getElementById('smVerdictWrap') || {}).innerText || ''),
+  null, { timeout: 15000 }).catch(() => {});
+const s15b = await page.evaluate(() => (document.getElementById('smVerdictWrap') || { innerText: '<<no existe #smVerdictWrap>>' }).innerText);
 report('S15b SMART $ con IA caída: fallback, nunca "API error: N"',
-  /free-tier|plan gratuito/.test(s15b) && !/API error/.test(s15b), s15b.slice(0, 80));
+  /unavailable|no disponible/i.test(s15b) && !/API error/.test(s15b), s15b.slice(0, 80));
 const pageErrors = consoleLog.filter(c => c.type === 'PAGEERROR');
 report('S15c cero PAGEERROR en toda la corrida', pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 2)));
 
@@ -701,30 +725,31 @@ report('S19c el request pide ventana de 7 días (from=hoy, to=hoy+7d)',
   window19 === 7, q19.get('from') + ' → ' + q19.get('to'));
 calMode = 'none';
 
-// d) calendario económico compuesto por IA: stale → 2 intentos → fallback honesto
-econAI = [
-  { date: 'Apr 9', event: 'FOMC Minutes', country: 'US', impact: 'HIGH', expected: '', previous: '', description: 'old' },
-  { date: 'Apr 10', event: 'CPI Inflation', country: 'US', impact: 'HIGH', expected: '', previous: '', description: 'old' },
-];
+// d) calendario económico: YA NO LO COMPONE LA IA. Sale de /api/macro-events
+//    (tabla curada + fechas oficiales), que sólo sirve eventos de hoy en
+//    adelante. Estas dos pruebas alimentaban /api/claude y por eso llevaban
+//    tiempo rojas: la app ya no le pregunta. Se conserva lo que medían —vacío
+//    → fallback honesto; con eventos → se pintan— contra la fuente de verdad.
 const claudeBefore = apiCalls.filter(c => c.path.startsWith('/api/claude')).length;
+macroEvents = [];
 await page.evaluate(() => loadEconCalendar());
 await page.waitForTimeout(1200);
 const s18g = await page.evaluate(() => document.getElementById('econCalendar').innerText);
 const claudeCalls = apiCalls.filter(c => c.path.startsWith('/api/claude')).length - claudeBefore;
-report('S18g econ calendar IA con fechas de abril → fallback honesto (no FOMC Apr 9)',
-  /unavailable|no disponible/i.test(s18g) && !/FOMC/.test(s18g), s18g.slice(0, 60) + ' · ' + claudeCalls + ' intentos IA');
+report('S18g econ calendar sin eventos → fallback honesto, y sin preguntarle a la IA',
+  /unavailable|no disponible|nothing loaded|nada cargado/i.test(s18g) && claudeCalls === 0, s18g.slice(0, 60) + ' · ' + claudeCalls + ' intentos IA');
 
-// e) calendario económico IA con fechas frescas → se renderea
-const soonLbl = new Date(Date.now() + 5 * 864e5).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-econAI = [
-  { date: soonLbl, event: 'CPI Inflation', country: 'US', impact: 'HIGH', expected: '3.0%', previous: '3.1%', description: 'fresh' },
-  { date: soonLbl, event: 'Banxico Decision', country: 'MX', impact: 'HIGH', expected: '8.0%', previous: '8.5%', description: 'fresh' },
+// e) con eventos → se renderean, con su fecha
+const soonIso = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
+macroEvents = [
+  { id: 'me_1', event_date: soonIso, title: 'Inflación de EE.UU. (CPI)', category: 'inflacion', importance: 'high', note: 'BLS · 7:30 CT' },
+  { id: 'me_2', event_date: soonIso, title: 'Decisión de Banxico', category: 'banxico', importance: 'high', note: null },
 ];
 await page.evaluate(() => loadEconCalendar());
 await page.waitForTimeout(800);
 const s18h = await page.evaluate(() => document.getElementById('econCalendar').innerText);
-report('S18h econ calendar IA fresco se renderea', /CPI Inflation/.test(s18h) && /Banxico/.test(s18h), s18h.slice(0, 60));
-econAI = null;
+report('S18h econ calendar con eventos se renderea', /CPI/.test(s18h) && /Banxico/.test(s18h), s18h.slice(0, 60));
+macroEvents = null;
 
 // ── S20: cards con nombre local + popover de identidad (opción A) ──
 currentPhase = 'S20-company-popover';
@@ -1103,6 +1128,46 @@ report('S24n TAP móvil (no hover) abre el modal con la serie correcta (^N225)',
   s24n.open === true && s24n.sym === '^N225' && s24n.candleCall === 1,
   JSON.stringify(s24n));
 
+// ── S25: EL KILL-SWITCH DEL PAYWALL, POR SUS TRES LADOS ──
+// Lo que un usuario NUEVO ve depende de UNA variable del servidor
+// (PAYWALL_ENABLED → /api/config). El 2026-11-11 producción contestaba
+// `paywall_enabled: false`: cualquiera entra como Pro, sin pagar y sin límite.
+// Eso es el default DELIBERADO del kill-switch (fase de pruebas), no un bug
+// del front — pero nada lo fijaba, y por eso esta suite llevaba semanas
+// midiendo el paywall con el paywall apagado sin que se notara. Acá queda
+// dicho qué hace la app en cada caso, con un usuario que nunca pagó.
+currentPhase = 'S25-kill-switch';
+async function usuarioNuevoCon(modo) {
+  paywallOn = modo;
+  const c = await browser.newContext({ viewport: { width: 1360, height: 900 } });
+  const pg = await c.newPage();
+  attachConsole(pg);
+  await routeApis(pg);
+  await pg.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await pg.waitForTimeout(1500);
+  const out = await pg.evaluate(() => {
+    // Un usuario nuevo que ya gastó sus 3 validaciones de hoy.
+    const d = new Date();
+    const hoy = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    localStorage.setItem('qd_valids', JSON.stringify({ date: hoy, count: 3 }));
+    qdRenderProUi();
+    return { boton: document.getElementById('qdProBtn').innerText, esPro: qdIsPro(), puedeValidar: qdCanValidate(),
+      pagado: !!(JSON.parse(localStorage.getItem('qd_pro') || 'null') || {}).pro };
+  });
+  await c.close();
+  return out;
+}
+const ksOn = await usuarioNuevoCon(true);
+report('S25a paywall ENCENDIDO: un usuario nuevo NO es Pro, ve su cuota y a la cuarta validación topa',
+  ksOn.esPro === false && ksOn.puedeValidar === false && /3\/3/.test(ksOn.boton) && !ksOn.pagado, JSON.stringify(ksOn));
+const ksOff = await usuarioNuevoCon(false);
+report('S25b paywall APAGADO (producción hoy): un usuario nuevo entra como Pro SIN pagar y sin límite',
+  ksOff.esPro === true && ksOff.puedeValidar === true && /PRO ✓/.test(ksOff.boton) && !ksOff.pagado, JSON.stringify(ksOff));
+const ksCaido = await usuarioNuevoCon('caido');
+report('S25c /api/config caído: la app abre como Pro (default deliberado: falla ABIERTO)',
+  ksCaido.esPro === true && ksCaido.puedeValidar === true && !ksCaido.pagado, JSON.stringify(ksCaido));
+paywallOn = true;
+
 // ── console summary ──
 console.log('\n=== CONSOLA (errores/warnings/pageerrors) ===');
 for (const c of consoleLog) console.log(`[${c.tab}] ${c.type}: ${c.text}`);
@@ -1113,4 +1178,6 @@ console.log('\n=== RESUMEN ===');
 console.log(results.filter(r => !r.ok).length + ' FAIL / ' + results.length + ' checks');
 
 await browser.close();
-process.exit(0);
+// El código de salida dice la verdad: salía SIEMPRE en 0, con o sin FAIL, así
+// que quien corriera esto desde un script lo veía verde pasara lo que pasara.
+process.exit(results.some((r) => !r.ok) ? 1 : 0);
