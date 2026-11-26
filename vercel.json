@@ -302,6 +302,14 @@
     {
       "path": "/api/stock-tracker?job=form4",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/alertas?job=vigia",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/alertas?job=resumen",
+      "schedule": "0 2 * * *"
     }
   ],
   "redirects": [
