@@ -38,6 +38,8 @@ al final.
 | `mercado:universo` | `/api/mercado-r0?job=universo`        | `30,45 13-21 * * 1-5`  | **vercel.json** |
 | `bmv:precios`      | `/api/bmv-harvest?job=precios`        | `10 22 * * 1-5`        | **vercel.json** |
 | `libro:equity`     | `/api/libro?equity=1`                 | `5 21 * * 1-5`         | **vercel.json** |
+| `alertas:vigia`    | `/api/alertas?job=vigia`              | `*/10 * * * *`         | **vercel.json** — alertas a Telegram, ver `docs/alertas.md` |
+| `alertas:resumen`  | `/api/alertas?job=resumen`            | `0 2 * * *` (20:00 Monterrey) | **vercel.json** |
 | *(sin latido)*     | `/api/xbrl-capture?run=1`             | `0 13 * * 1`           | **vercel.json** — exento con motivo en `SIN_VIGILANCIA` |
 
 `tests/crons-declarados.test.mjs` exige que cada cron de `vercel.json` esté en

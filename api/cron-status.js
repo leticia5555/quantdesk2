@@ -148,6 +148,15 @@ export const EXPECTED = [
   // de un cron muerto.
   { job: 'mercado:form4-xml', path: '/api/stock-tracker?job=form4',
     schedule: '*/10 * * * *', cadence: 'cada 10 min', stale_after_h: 3 },
+  // ── LAS ALERTAS A TELEGRAM ──────────────────────────────────────────
+  // El vigía es el que AVISA cuando otro cron falla, así que si se muere él
+  // nadie avisa: por eso está acá, en la lista que sí se pone roja. Late en
+  // cada tick aunque no mande nada — cero alertas es el estado bueno.
+  { job: 'alertas:vigia', path: '/api/alertas?job=vigia',
+    schedule: '*/10 * * * *', cadence: 'cada 10 min', stale_after_h: 2 },
+  // 02:00 UTC = 20:00 en Monterrey (UTC−6 todo el año, sin horario de verano).
+  { job: 'alertas:resumen', path: '/api/alertas?job=resumen',
+    schedule: '0 2 * * *', cadence: 'diario 20:00 Monterrey', stale_after_h: 30 },
 ];
 
 // Crons de vercel.json que a propósito NO se vigilan acá, con el porqué. La
