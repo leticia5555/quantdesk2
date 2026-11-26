@@ -38,12 +38,26 @@ al final.
 | `mercado:universo` | `/api/mercado-r0?job=universo`        | `30,45 13-21 * * 1-5`  | **vercel.json** |
 | `bmv:precios`      | `/api/bmv-harvest?job=precios`        | `10 22 * * 1-5`        | **vercel.json** |
 | `libro:equity`     | `/api/libro?equity=1`                 | `5 21 * * 1-5`         | **vercel.json** |
+| `alertas:manana`   | `/api/alertas?job=manana`             | `0 14 * * 1-5`         | **vercel.json** |
+| `alertas:cierre`   | `/api/alertas?job=cierre`             | `15 21 * * 1-5`        | **vercel.json** |
+| `alertas:vispera`  | `/api/alertas?job=vispera`            | `30 21 * * 1-5`        | **vercel.json** |
+| `alertas:acciones` | `/api/alertas?job=acciones`           | `*/10 12-23 * * 1-5`   | **vercel.json** |
 | *(sin latido)*     | `/api/xbrl-capture?run=1`             | `0 13 * * 1`           | **vercel.json** — exento con motivo en `SIN_VIGILANCIA` |
 
 `tests/crons-declarados.test.mjs` exige que cada cron de `vercel.json` esté en
 `EXPECTED` de `api/cron-status.js` con el mismo schedule, o en `SIN_VIGILANCIA`
 con su porqué escrito. Un cron que nadie vigila es un cron que se puede morir
 en silencio; uno que nadie agenda ni siquiera llega a morirse.
+
+## `alertas:*` — las alertas de Telegram
+
+Cuatro crons que le mandan mensajes a Lety. El detalle (qué dice cada una, de
+dónde sale cada dato, cómo se prueba) está en [`docs/alertas-telegram.md`](alertas-telegram.md).
+
+Las horas son de **Monterrey, que no cambia de horario**, así que el cron en UTC
+es fijo todo el año: 8:00 = `14:00 UTC`, 15:15 = `21:15 UTC`. Los feriados no
+están en el cron: el handler le pregunta al calendario de Alpaca y, si hoy no
+hay sesión, late `skipped` y no manda nada.
 
 ## `bmv:precios` — la cosecha que NUNCA se agendó (desde 2026-09-21)
 

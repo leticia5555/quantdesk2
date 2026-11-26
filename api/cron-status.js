@@ -148,6 +148,16 @@ export const EXPECTED = [
   // de un cron muerto.
   { job: 'mercado:form4-xml', path: '/api/stock-tracker?job=form4',
     schedule: '*/10 * * * *', cadence: 'cada 10 min', stale_after_h: 3 },
+  // ── LAS ALERTAS DE TELEGRAM ──────────────────────────────────────
+  // Horas de Monterrey, que no cambia de horario: 8:00 = 14:00 UTC y
+  // 15:15 = 21:15 UTC todo el año. Los cuatro laten TODOS los días hábiles
+  // aunque no manden nada (`skipped` en feriado, `ok` sin envíos un día
+  // tranquilo): el latido dice "el cron corrió", no "hubo alerta". La ventana
+  // de stale la manda el fin de semana, como en los otros de lun-vie.
+  { job: 'alertas:manana',   path: '/api/alertas?job=manana',   schedule: '0 14 * * 1-5',        cadence: 'días hábiles 8:00 Monterrey',  stale_after_h: 80 },
+  { job: 'alertas:cierre',   path: '/api/alertas?job=cierre',   schedule: '15 21 * * 1-5',       cadence: 'días hábiles 15:15 Monterrey', stale_after_h: 80 },
+  { job: 'alertas:vispera',  path: '/api/alertas?job=vispera',  schedule: '30 21 * * 1-5',       cadence: 'días hábiles 15:30 Monterrey', stale_after_h: 80 },
+  { job: 'alertas:acciones', path: '/api/alertas?job=acciones', schedule: '*/10 12-23 * * 1-5',  cadence: 'cada 10 min, 6:00–17:50 Monterrey', stale_after_h: 72 },
 ];
 
 // Crons de vercel.json que a propósito NO se vigilan acá, con el porqué. La
