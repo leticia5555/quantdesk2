@@ -302,6 +302,22 @@
     {
       "path": "/api/stock-tracker?job=form4",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/alertas?job=manana",
+      "schedule": "0 14 * * 1-5"
+    },
+    {
+      "path": "/api/alertas?job=cierre",
+      "schedule": "15 21 * * 1-5"
+    },
+    {
+      "path": "/api/alertas?job=vispera",
+      "schedule": "30 21 * * 1-5"
+    },
+    {
+      "path": "/api/alertas?job=acciones",
+      "schedule": "*/10 12-23 * * 1-5"
     }
   ],
   "redirects": [

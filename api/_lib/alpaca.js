@@ -335,6 +335,13 @@ async function snapshotsPorFeed(wanted, creds, feed) {
         day_open: Number(day && day.o) || null,
         prev_close: Number(prev && prev.c) || null,
         as_of: (trade && trade.t) || (minute && minute.t) || (day && day.t) || null,
+        // El CIERRE de la barra del día y DE QUÉ DÍA es cada barra. Sin la
+        // fecha no se puede saber si "hoy" es hoy: una emisora suspendida o
+        // sin operar trae la barra de su último día, y su cambio contra el
+        // cierre previo compara dos días viejos (lo usan las alertas).
+        day_close: Number(day && day.c) || null,
+        day_t: (day && day.t) || null,
+        prev_t: (prev && prev.t) || null,
       };
     }
   }

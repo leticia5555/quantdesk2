@@ -13,6 +13,12 @@ export function literal(v) {
   if (v === null || v === undefined) return 'NULL';
   if (typeof v === 'number') return String(v);
   if (typeof v === 'boolean') return v ? 'true' : 'false';
+  // Un arreglo viaja como literal de arreglo de Postgres (`'{"a","b"}'`), que
+  // es lo que espera un `$1::text[]`. Sin esto salía 'a,b' y el cast tronaba.
+  if (Array.isArray(v)) {
+    return literal('{' + v.map((x) => (x === null || x === undefined ? 'NULL'
+      : '"' + String(x).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"')).join(',') + '}');
+  }
   return `'${String(v).replace(/'/g, "''")}'`;
 }
 export function sustituye(query, params) {
